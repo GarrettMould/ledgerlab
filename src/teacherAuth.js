@@ -1,6 +1,7 @@
 import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signOut,
   updateProfile,
@@ -30,6 +31,9 @@ function friendlyAuthError(err) {
   if (code === "auth/too-many-requests") {
     return "Too many attempts. Wait a moment and try again.";
   }
+  if (code === "auth/missing-email") {
+    return "Enter your email address first.";
+  }
   if (code === "auth/configuration-not-found" || /configuration-not-found/i.test(err?.message || "")) {
     return "Firebase Authentication isn’t set up yet. In the Firebase console, open Authentication → Get started, then enable Email/Password under Sign-in method.";
   }
@@ -41,6 +45,24 @@ function friendlyAuthError(err) {
 
 export function isValidInstructorCode(code) {
   return String(code || "").trim() === INSTRUCTOR_CODE;
+}
+
+/** Send a Firebase password-reset email. Always succeeds message-wise for unknown emails (privacy). */
+export async function sendPasswordReset(email) {
+  const trimmedEmail = String(email || "").trim().toLowerCase();
+  if (!trimmedEmail) throw new Error("Enter your email address first.");
+  try {
+    await sendPasswordResetEmail(auth, trimmedEmail);
+  } catch (err) {
+    // Don't reveal whether the account exists.
+    if (err?.code === "auth/user-not-found" || err?.code === "auth/invalid-email") {
+      if (err.code === "auth/invalid-email") {
+        throw new Error("Enter a valid email address.");
+      }
+      return;
+    }
+    throw new Error(friendlyAuthError(err));
+  }
 }
 
 export async function signUpTeacher({ name, email, password, instructorCode }) {
@@ -83,6 +105,18 @@ export async function signUpTeacher({ name, email, password, instructorCode }) {
 }
 
 export async function signInTeacher({ email, password }) {
+  const result = await signInAccount({ email, password });
+  if (result.role !== "teacher") {
+    await signOut(auth);
+    throw new Error(
+      "This account is for students. Use Sign in on the home page, or your class invite link."
+    );
+  }
+  return result.profile;
+}
+
+/** Sign in any Ledger Lab account and route by role (teacher | student). */
+export async function signInAccount({ email, password }) {
   const trimmedEmail = String(email || "").trim().toLowerCase();
   if (!trimmedEmail) throw new Error("Enter your email.");
   if (!password) throw new Error("Enter your password.");
@@ -96,24 +130,52 @@ export async function signInTeacher({ email, password }) {
     const profileSnap = await getDoc(doc(db, "users", cred.user.uid));
     const profile = profileSnap.exists() ? profileSnap.data() : {};
     const role = profile.role || "student";
-    if (role !== "teacher" && role !== "admin") {
-      await signOut(auth);
-      throw new Error(
-        "This account is for students. Open your class invite link to sign in."
-      );
-    }
     const name =
       profile.name ||
       cred.user.displayName ||
       trimmedEmail.split("@")[0];
-    return {
-      uid: cred.user.uid,
+    const emailOut = cred.user.email || trimmedEmail;
+
+    if (role === "teacher" || role === "admin") {
+      return {
+        role: "teacher",
+        profile: {
+          uid: cred.user.uid,
+          name,
+          email: emailOut,
+          role: role === "admin" ? "admin" : "teacher",
+        },
+      };
+    }
+
+    const { buildStudentSessionFromAuth, getStudentSession } = await import(
+      "./classStore"
+    );
+    let session = await buildStudentSessionFromAuth(cred.user.uid, {
       name,
-      email: cred.user.email || trimmedEmail,
-      role: role === "admin" ? "admin" : "teacher",
-    };
+      email: emailOut,
+      investmentGoal: profile.investmentGoal,
+    });
+    if (!session) {
+      const local = getStudentSession();
+      if (local?.authUid === cred.user.uid || local?.email === emailOut) {
+        session = { ...local, authUid: cred.user.uid, email: emailOut };
+      }
+    }
+    if (!session) {
+      await signOut(auth);
+      throw new Error(
+        "No class found for this account. Open your class invite link to join first, then you can sign in here."
+      );
+    }
+    return { role: "student", session };
   } catch (err) {
-    if (err?.message?.includes("invite link")) throw err;
+    if (
+      err?.message?.includes("invite link") ||
+      err?.message?.includes("No class found")
+    ) {
+      throw err;
+    }
     throw new Error(friendlyAuthError(err));
   }
 }
@@ -141,13 +203,50 @@ export async function resolveTeacherProfile(user) {
   };
 }
 
-export function watchTeacherAuth(onChange) {
+/**
+ * Watch Firebase auth and resolve teacher or student session.
+ * onChange({ type: 'teacher', profile } | { type: 'student', session } | null)
+ */
+export function watchAccountAuth(onChange) {
   return onAuthStateChanged(auth, async (user) => {
     try {
-      const profile = await resolveTeacherProfile(user);
-      onChange(profile);
+      if (!user) {
+        onChange(null);
+        return;
+      }
+      const teacher = await resolveTeacherProfile(user);
+      if (teacher) {
+        onChange({ type: "teacher", profile: teacher });
+        return;
+      }
+      const { buildStudentSessionFromAuth, getStudentSession } = await import(
+        "./classStore"
+      );
+      const profileSnap = await getDoc(doc(db, "users", user.uid));
+      const profile = profileSnap.exists() ? profileSnap.data() : {};
+      let session = await buildStudentSessionFromAuth(user.uid, {
+        name: profile.name || user.displayName,
+        email: user.email || profile.email,
+        investmentGoal: profile.investmentGoal,
+      });
+      if (!session) {
+        const local = getStudentSession();
+        if (local?.authUid === user.uid) session = local;
+      }
+      if (session) {
+        onChange({ type: "student", session });
+        return;
+      }
+      onChange(null);
     } catch {
       onChange(null);
     }
+  });
+}
+
+/** @deprecated Prefer watchAccountAuth */
+export function watchTeacherAuth(onChange) {
+  return watchAccountAuth((account) => {
+    onChange(account?.type === "teacher" ? account.profile : null);
   });
 }

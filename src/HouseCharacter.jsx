@@ -108,37 +108,24 @@ function HouseModel({ style }) {
 
   return (
     <group ref={group} position={[0, -0.55, 0]} scale={0.95}>
-      {/* foundation */}
       <Block args={[1.35, 0.12, 1.15]} position={[0, 0.06, 0]} color={look.trim} />
-
-      {/* walls */}
       <Block args={[1.25, 1.05, 1.05]} position={[0, 0.64, 0]} color={look.walls} />
-
-      {/* roof (pyramid-ish via square cone) */}
       <mesh position={[0, 1.42, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
         <coneGeometry args={[0.98, 0.62, 4]} />
         <meshStandardMaterial color={look.roof} roughness={0.78} metalness={0.05} />
       </mesh>
-
-      {/* chimney */}
       <Block args={[0.18, 0.38, 0.18]} position={[0.38, 1.55, -0.18]} color={look.frame} />
-
-      {/* door */}
       <Block args={[0.32, 0.58, 0.08]} position={[0, 0.41, 0.54]} color={look.door} />
       <mesh position={[0.1, 0.4, 0.59]}>
         <sphereGeometry args={[0.03, 10, 10]} />
         <meshStandardMaterial color="#c4a035" roughness={0.35} metalness={0.4} />
       </mesh>
-
-      {/* windows */}
       <Block args={[0.28, 0.28, 0.06]} position={[-0.34, 0.78, 0.54]} color={look.window} roughness={0.35} />
       <Block args={[0.28, 0.28, 0.06]} position={[0.34, 0.78, 0.54]} color={look.window} roughness={0.35} />
       <Block args={[0.3, 0.04, 0.07]} position={[-0.34, 0.78, 0.55]} color={look.frame} />
       <Block args={[0.04, 0.3, 0.07]} position={[-0.34, 0.78, 0.55]} color={look.frame} />
       <Block args={[0.3, 0.04, 0.07]} position={[0.34, 0.78, 0.55]} color={look.frame} />
       <Block args={[0.04, 0.3, 0.07]} position={[0.34, 0.78, 0.55]} color={look.frame} />
-
-      {/* side window */}
       <Block args={[0.06, 0.26, 0.26]} position={[0.63, 0.72, 0.1]} color={look.window} roughness={0.35} />
     </group>
   );

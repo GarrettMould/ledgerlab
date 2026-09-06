@@ -1,8 +1,10 @@
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { ContactShadows, Float } from "@react-three/drei";
+import { ContactShadows, Float, useGLTF } from "@react-three/drei";
 import { createPortal } from "react-dom";
 import { adjustCash } from "./api";
+
+const BLENDER_CHARACTER_URL = "/models/character.glb?v=2";
 
 const DEFAULT_OUTFIT = {
   skin: "#e0b090",
@@ -250,7 +252,78 @@ function LuxuryProps({ outfit }) {
   );
 }
 
-function AvatarModel({ outfit, waving, spin = false }) {
+function colorForMeshName(name, outfit) {
+  const n = String(name || "");
+  if (n.startsWith("Shirt")) return outfit.shirt;
+  if (n.startsWith("Pants")) return outfit.pants;
+  if (n.startsWith("Shoes")) return outfit.shoes;
+  if (n.startsWith("Hair")) return outfit.hair;
+  if (n.startsWith("Eye")) return outfit.eyes;
+  if (n.startsWith("Head") || n.startsWith("Arm") || n.startsWith("Skin")) {
+    return outfit.skin;
+  }
+  return null;
+}
+
+function applyOutfitColors(root, outfit) {
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.material) return;
+    const hex = colorForMeshName(obj.name, outfit);
+    if (!hex) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach((m, i) => {
+      if (!m?.color) return;
+      if (!m.userData?.ledgerCloned) {
+        const cloned = m.clone();
+        cloned.userData = { ...cloned.userData, ledgerCloned: true };
+        if (Array.isArray(obj.material)) obj.material[i] = cloned;
+        else obj.material = cloned;
+      }
+      const target = Array.isArray(obj.material) ? obj.material[i] : obj.material;
+      target.color.set(hex);
+    });
+  });
+}
+
+function findObjectByName(root, name) {
+  let found = null;
+  root.traverse((obj) => {
+    if (!found && obj.name === name) found = obj;
+  });
+  return found;
+}
+
+function BlenderAvatarModel({ outfit, waving, spin = false }) {
+  const group = useRef();
+  const armR = useRef();
+  const { scene } = useGLTF(BLENDER_CHARACTER_URL);
+  const cloned = useMemo(() => scene.clone(true), [scene]);
+
+  useLayoutEffect(() => {
+    applyOutfitColors(cloned, outfit);
+    armR.current = findObjectByName(cloned, "ArmR");
+  }, [cloned, outfit]);
+
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime();
+    if (group.current) {
+      group.current.rotation.y = spin ? t * 0.35 : Math.sin(t * 0.55) * 0.18;
+      group.current.position.y = AVATAR_BASE_Y + Math.sin(t * 1.4) * 0.025;
+    }
+    if (armR.current && waving) {
+      armR.current.rotation.z = -0.35 + Math.sin(t * 4.2) * 0.45;
+    }
+  });
+
+  return (
+    <group ref={group} position={[0, AVATAR_BASE_Y, 0]} scale={AVATAR_SCALE}>
+      <primitive object={cloned} />
+      <LuxuryProps outfit={outfit} />
+    </group>
+  );
+}
+
+function ProceduralAvatarModel({ outfit, waving, spin = false }) {
   const group = useRef();
   const armR = useRef();
 
@@ -313,6 +386,31 @@ function AvatarModel({ outfit, waving, spin = false }) {
   );
 }
 
+function useBlenderCharacterAvailable() {
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(BLENDER_CHARACTER_URL, { method: "HEAD" })
+      .then((res) => {
+        if (!cancelled) setAvailable(res.ok);
+      })
+      .catch(() => {
+        if (!cancelled) setAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return available;
+}
+
+function AvatarModel({ outfit, waving, spin = false, useBlender }) {
+  if (useBlender) {
+    return <BlenderAvatarModel outfit={outfit} waving={waving} spin={spin} />;
+  }
+  return <ProceduralAvatarModel outfit={outfit} waving={waving} spin={spin} />;
+}
+
 function CameraRig({ mode, hasCar }) {
   const { camera } = useThree();
   useLayoutEffect(() => {
@@ -328,7 +426,7 @@ function CameraRig({ mode, hasCar }) {
   return null;
 }
 
-function Scene({ outfit, mode = "thumb" }) {
+function Scene({ outfit, mode = "thumb", useBlender }) {
   const hasCar = Boolean(outfit.car);
   return (
     <>
@@ -347,7 +445,12 @@ function Scene({ outfit, mode = "thumb" }) {
         rotationIntensity={mode === "closet" ? 0.05 : 0.12}
         floatIntensity={mode === "closet" ? 0.12 : 0.18}
       >
-        <AvatarModel outfit={outfit} waving={mode !== "closet"} spin={mode === "closet"} />
+        <AvatarModel
+          outfit={outfit}
+          waving={mode !== "closet"}
+          spin={mode === "closet"}
+          useBlender={useBlender}
+        />
       </Float>
       <ContactShadows
         position={[0, -1.35, 0]}
@@ -361,6 +464,7 @@ function Scene({ outfit, mode = "thumb" }) {
 }
 
 function AvatarCanvas({ outfit, mode, className }) {
+  const useBlender = useBlenderCharacterAvailable();
   return (
     <div className={className}>
       <Canvas
@@ -374,7 +478,7 @@ function AvatarCanvas({ outfit, mode, className }) {
         gl={{ antialias: true, alpha: true }}
       >
         <Suspense fallback={null}>
-          <Scene outfit={outfit} mode={mode} />
+          <Scene outfit={outfit} mode={mode} useBlender={useBlender} />
         </Suspense>
       </Canvas>
     </div>

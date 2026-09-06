@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { signInTeacher, signUpTeacher } from "./teacherAuth";
+import { sendPasswordReset, signInAccount, signUpTeacher } from "./teacherAuth";
 
 function EyeIcon({ open }) {
   if (open) {
@@ -51,15 +51,15 @@ function PasswordField({ id, label, value, onChange, autoComplete }) {
 }
 
 /**
- * Teacher-only entry for the main site URL (not invite links).
- * Signup requires the school instructor code.
+ * Main-site auth: sign in for teachers and students; sign up is teachers only.
  */
 export default function TeacherGate({ onAuthenticated, setError, setBusy }) {
-  const [authMode, setAuthMode] = useState("signin");
+  const [authMode, setAuthMode] = useState("signin"); // signin | signup | reset
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [instructorCode, setInstructorCode] = useState("");
+  const [resetSent, setResetSent] = useState(false);
 
   async function handleSignUp(e) {
     e.preventDefault();
@@ -72,7 +72,7 @@ export default function TeacherGate({ onAuthenticated, setError, setBusy }) {
         password,
         instructorCode,
       });
-      onAuthenticated(teacher);
+      onAuthenticated({ role: "teacher", profile: teacher });
     } catch (err) {
       setError(err.message || "Could not create teacher account");
     } finally {
@@ -85,8 +85,8 @@ export default function TeacherGate({ onAuthenticated, setError, setBusy }) {
     setBusy(true);
     setError("");
     try {
-      const teacher = await signInTeacher({ email, password });
-      onAuthenticated(teacher);
+      const result = await signInAccount({ email, password });
+      onAuthenticated(result);
     } catch (err) {
       setError(err.message || "Could not sign in");
     } finally {
@@ -94,49 +94,78 @@ export default function TeacherGate({ onAuthenticated, setError, setBusy }) {
     }
   }
 
+  async function handleReset(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    setResetSent(false);
+    try {
+      await sendPasswordReset(email);
+      setResetSent(true);
+    } catch (err) {
+      setError(err.message || "Could not send reset email");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const heading =
+    authMode === "signup"
+      ? "Create teacher account"
+      : authMode === "reset"
+        ? "Reset password"
+        : "Sign in";
+
+  const subcopy =
+    authMode === "signup"
+      ? "Teacher registration only. You’ll need your school’s instructor code."
+      : authMode === "reset"
+        ? "Enter your account email and we’ll send a link to choose a new password."
+        : "Teachers and students can sign in here. We’ll open the right home for your account.";
+
   return (
     <section className="panel teacher-gate-panel">
       <header className="panel-header">
         <div>
-          <p className="join-kicker">Ledger Lab for Teachers</p>
-          <h2>{authMode === "signup" ? "Create teacher account" : "Teacher sign in"}</h2>
-          <p>
-            {authMode === "signup"
-              ? "Teachers only. You’ll need your school’s instructor code to register."
-              : "Sign in with the email you used to set up Ledger Lab for your classes."}
-          </p>
+          <p className="join-kicker">Ledger Lab</p>
+          <h2>{heading}</h2>
+          <p>{subcopy}</p>
         </div>
       </header>
 
       <div className="student-auth-portal teacher-gate-portal">
-        <div className="auth-mode-toggle" role="tablist" aria-label="Account">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={authMode === "signin"}
-            className={authMode === "signin" ? "active" : ""}
-            data-click="select"
-            onClick={() => {
-              setAuthMode("signin");
-              setError("");
-            }}
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={authMode === "signup"}
-            className={authMode === "signup" ? "active" : ""}
-            data-click="select"
-            onClick={() => {
-              setAuthMode("signup");
-              setError("");
-            }}
-          >
-            Sign up
-          </button>
-        </div>
+        {authMode !== "reset" && (
+          <div className="auth-mode-toggle" role="tablist" aria-label="Account">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={authMode === "signin"}
+              className={authMode === "signin" ? "active" : ""}
+              data-click="select"
+              onClick={() => {
+                setAuthMode("signin");
+                setResetSent(false);
+                setError("");
+              }}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={authMode === "signup"}
+              className={authMode === "signup" ? "active" : ""}
+              data-click="select"
+              onClick={() => {
+                setAuthMode("signup");
+                setResetSent(false);
+                setError("");
+              }}
+            >
+              Teacher sign up
+            </button>
+          </div>
+        )}
 
         {authMode === "signup" ? (
           <form className="join-auth-form" onSubmit={handleSignUp}>
@@ -184,18 +213,59 @@ export default function TeacherGate({ onAuthenticated, setError, setBusy }) {
               />
             </label>
             <p className="teacher-code-hint">
-              Students join with a class invite link — not this page.
+              Students join with a class invite link first, then sign in here.
             </p>
             <button type="submit" className="primary-btn" data-click="confirm">
               Create teacher account
             </button>
           </form>
-        ) : (
-          <form className="join-auth-form" onSubmit={handleSignIn}>
-            <label htmlFor="teacher-signin-email">
+        ) : authMode === "reset" ? (
+          <form className="join-auth-form" onSubmit={handleReset}>
+            <label htmlFor="reset-email">
               Email
               <input
-                id="teacher-signin-email"
+                id="reset-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@school.edu"
+                autoComplete="email"
+                autoFocus
+                required
+              />
+            </label>
+            {resetSent ? (
+              <p className="auth-success-hint">
+                If an account exists for that email, a reset link is on the way.
+                Check your inbox (and spam), then sign in with your new password.
+              </p>
+            ) : (
+              <p className="teacher-code-hint">
+                Use the same email you signed up with.
+              </p>
+            )}
+            <button type="submit" className="primary-btn" data-click="confirm">
+              {resetSent ? "Send again" : "Send reset link"}
+            </button>
+            <button
+              type="button"
+              className="ghost-btn auth-back-btn"
+              data-click="select"
+              onClick={() => {
+                setAuthMode("signin");
+                setResetSent(false);
+                setError("");
+              }}
+            >
+              Back to sign in
+            </button>
+          </form>
+        ) : (
+          <form className="join-auth-form" onSubmit={handleSignIn}>
+            <label htmlFor="account-signin-email">
+              Email
+              <input
+                id="account-signin-email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -206,12 +276,30 @@ export default function TeacherGate({ onAuthenticated, setError, setBusy }) {
               />
             </label>
             <PasswordField
-              id="teacher-signin-password"
+              id="account-signin-password"
               label="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
             />
+            <div className="auth-inline-actions">
+              <button
+                type="button"
+                className="text-link-btn"
+                data-click="select"
+                onClick={() => {
+                  setAuthMode("reset");
+                  setResetSent(false);
+                  setError("");
+                }}
+              >
+                Forgot password?
+              </button>
+            </div>
+            <p className="teacher-code-hint">
+              New student? Use the invite link from your teacher to create an
+              account.
+            </p>
             <button type="submit" className="primary-btn" data-click="confirm">
               Sign in
             </button>

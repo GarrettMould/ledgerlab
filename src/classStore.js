@@ -1,6 +1,7 @@
 import {
   addDoc,
   collection,
+  collectionGroup,
   deleteDoc,
   doc,
   getDoc,
@@ -10,6 +11,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -193,6 +195,19 @@ export async function addClassStudent(
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+  if (authUid) {
+    await setDoc(
+      doc(db, "users", authUid),
+      {
+        role: "student",
+        primaryClassId: classId,
+        email: email ? String(email).trim().toLowerCase() : null,
+        name: trimmed,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
   return ref.id;
 }
 
@@ -204,6 +219,84 @@ export async function findClassStudentByAuthUid(classId, authUid) {
   if (snap.empty) return null;
   const d = snap.docs[0];
   return { id: d.id, ...d.data() };
+}
+
+export async function linkUserToClass(authUid, classId, { name, email } = {}) {
+  if (!authUid || !classId) return;
+  await setDoc(
+    doc(db, "users", authUid),
+    {
+      role: "student",
+      primaryClassId: classId,
+      ...(name ? { name } : {}),
+      ...(email ? { email: String(email).trim().toLowerCase() } : {}),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Find a student's roster seat by Firebase auth uid.
+ * Prefers users/{uid}.primaryClassId, then collectionGroup scan.
+ */
+export async function findStudentMembershipByAuthUid(authUid) {
+  if (!authUid) return null;
+
+  const userSnap = await getDoc(doc(db, "users", authUid));
+  const primaryClassId = userSnap.exists() ? userSnap.data()?.primaryClassId : null;
+  if (primaryClassId) {
+    const seat = await findClassStudentByAuthUid(primaryClassId, authUid);
+    if (seat?.apiStudentId) {
+      return { classId: primaryClassId, ...seat };
+    }
+  }
+
+  try {
+    const snap = await getDocs(
+      query(
+        collectionGroup(db, "students"),
+        where("authUid", "==", authUid),
+        limit(5)
+      )
+    );
+    for (const d of snap.docs) {
+      const classId = d.ref.parent.parent?.id;
+      if (!classId || !d.data()?.apiStudentId) continue;
+      if (primaryClassId && classId !== primaryClassId) {
+        // Prefer the stored class when multiple seats exist.
+        continue;
+      }
+      return { classId, id: d.id, ...d.data() };
+    }
+    // If primary filter skipped everything, take first valid seat.
+    for (const d of snap.docs) {
+      const classId = d.ref.parent.parent?.id;
+      if (!classId || !d.data()?.apiStudentId) continue;
+      return { classId, id: d.id, ...d.data() };
+    }
+  } catch {
+    /* collection group may need an index — primaryClassId path still works */
+  }
+  return null;
+}
+
+export async function buildStudentSessionFromAuth(authUid, profile = {}) {
+  const membership = await findStudentMembershipByAuthUid(authUid);
+  if (!membership?.classId || !membership?.apiStudentId) return null;
+  const cls = await getClass(membership.classId);
+  return {
+    classId: membership.classId,
+    className: cls?.name || "",
+    inviteCode: cls?.inviteCode || "",
+    firestoreStudentId: membership.id,
+    apiStudentId: membership.apiStudentId,
+    name: membership.name || profile.name || "Student",
+    authUid,
+    email: membership.email || profile.email || null,
+    investmentGoal:
+      membership.investmentGoal || profile.investmentGoal || null,
+  };
 }
 
 export async function updateClassStudent(classId, studentId, patch) {

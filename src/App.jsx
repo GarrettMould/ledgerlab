@@ -21,7 +21,7 @@ import {
   setStudentSession,
 } from "./classStore";
 import { signOutStudentAuth } from "./studentAuth";
-import { signOutTeacherAuth, watchTeacherAuth } from "./teacherAuth";
+import { signOutTeacherAuth, watchAccountAuth } from "./teacherAuth";
 import { setClickMuted } from "./clickSounds";
 import FloridaRealEstateMap from "./FloridaRealEstateMap";
 import "./App.css";
@@ -2225,13 +2225,27 @@ export default function App() {
       return undefined;
     }
     let cancelled = false;
-    const unsub = watchTeacherAuth((profile) => {
+    const unsub = watchAccountAuth((account) => {
       if (cancelled) return;
-      setTeacher(profile);
       setTeacherReady(true);
-      if (profile) {
+      if (!account) {
+        setTeacher(null);
+        return;
+      }
+      if (account.type === "teacher") {
         clearStudentSession();
         setStudentSessionState(null);
+        setTeacher(account.profile);
+        return;
+      }
+      if (account.type === "student" && account.session) {
+        setTeacher(null);
+        setStudentSession(account.session);
+        setStudentSessionState(account.session);
+        if (account.session.classId) {
+          setActiveClassId(account.session.classId);
+          setActiveClassIdState(account.session.classId);
+        }
       }
     });
     const failsafe = window.setTimeout(() => {
@@ -2331,9 +2345,10 @@ export default function App() {
     setStudentSessionState(next);
   }, [studentSession, rosterGoal]);
 
-  const brandSub = joinCode || studentSession
-    ? "Classroom investing"
-    : "For teachers";
+  const brandSub =
+    teacher && !studentSession && !joinCode
+      ? "For teachers"
+      : "Classroom investing";
 
   let mainContent;
   if (joinCode) {
@@ -2389,11 +2404,23 @@ export default function App() {
   } else {
     mainContent = (
       <TeacherGate
-        onAuthenticated={(profile) => {
-          clearStudentSession();
-          setStudentSessionState(null);
-          setTeacher(profile);
+        onAuthenticated={(result) => {
           setError("");
+          if (result?.role === "teacher" && result.profile) {
+            clearStudentSession();
+            setStudentSessionState(null);
+            setTeacher(result.profile);
+            return;
+          }
+          if (result?.role === "student" && result.session) {
+            setTeacher(null);
+            setStudentSession(result.session);
+            setStudentSessionState(result.session);
+            if (result.session.classId) {
+              handleActiveClassChange(result.session.classId);
+            }
+            refreshApiStudents();
+          }
         }}
         setError={setError}
         setBusy={setBusy}

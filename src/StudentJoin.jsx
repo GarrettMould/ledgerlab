@@ -6,6 +6,7 @@ import {
   DEFAULT_MARKETS,
   findClassStudentByAuthUid,
   getClassByInviteCode,
+  linkUserToClass,
   setActiveClassId,
   setStudentSession,
   updateClassStudent,
@@ -20,6 +21,7 @@ import {
   signUpStudent,
   updateStudentUserProfile,
 } from "./studentAuth";
+import { sendPasswordReset } from "./teacherAuth";
 
 const INVESTMENT_GOALS = [
   {
@@ -149,7 +151,7 @@ export default function StudentJoin({
 }) {
   const [step, setStep] = useState("loading");
   // loading | auth | welcome | avatar | invalid
-  const [authMode, setAuthMode] = useState("signup"); // signup | signin
+  const [authMode, setAuthMode] = useState("signup"); // signup | signin | reset
   const [classInfo, setClassInfo] = useState(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -159,6 +161,7 @@ export default function StudentJoin({
   const [rosterId, setRosterId] = useState(null);
   const [apiStudentId, setApiStudentId] = useState(null);
   const [outfit, setOutfit] = useState(() => outfitForStudent(null, "new"));
+  const [resetSent, setResetSent] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -198,6 +201,10 @@ export default function StudentJoin({
       setName(existing.name || user.name);
       if (existing.investmentGoal) setGoalId(existing.investmentGoal);
       if (existing.outfit) setOutfit(existing.outfit);
+      await linkUserToClass(user.uid, classInfo.id, {
+        name: existing.name || user.name,
+        email: user.email,
+      });
       return existing;
     }
     if (!createIfMissing) return null;
@@ -314,6 +321,21 @@ export default function StudentJoin({
     }
   }
 
+  async function handleReset(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    setResetSent(false);
+    try {
+      await sendPasswordReset(email);
+      setResetSent(true);
+    } catch (err) {
+      setError(err.message || "Could not send reset email");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function continueFromWelcome(e) {
     e.preventDefault();
     if (!goalId) {
@@ -421,7 +443,9 @@ export default function StudentJoin({
             {step === "auth"
               ? authMode === "signup"
                 ? "Create your account"
-                : "Welcome back"
+                : authMode === "reset"
+                  ? "Reset password"
+                  : "Welcome back"
               : step === "welcome"
                 ? "Welcome to Ledger Lab"
                 : "Customize your avatar"}
@@ -430,7 +454,9 @@ export default function StudentJoin({
             {step === "auth"
               ? authMode === "signup"
                 ? `Sign up to join the roster. You'll start with ${money(classInfo?.startingCash)} to invest.`
-                : "Sign in with the email and password you used for this class."
+                : authMode === "reset"
+                  ? "Enter your account email and we’ll send a link to choose a new password."
+                  : "Sign in with the email and password you used for this class."
               : step === "welcome"
                 ? "Tell us what you’re aiming for, then take a quick tour of the markets."
                 : "Pick a look — you can change outfits anytime from your home page."}
@@ -449,34 +475,38 @@ export default function StudentJoin({
 
       {step === "auth" && (
         <div className="student-auth-portal">
-          <div className="auth-mode-toggle" role="tablist" aria-label="Account">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={authMode === "signup"}
-              className={authMode === "signup" ? "active" : ""}
-              data-click="select"
-              onClick={() => {
-                setAuthMode("signup");
-                setError("");
-              }}
-            >
-              Sign up
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={authMode === "signin"}
-              className={authMode === "signin" ? "active" : ""}
-              data-click="select"
-              onClick={() => {
-                setAuthMode("signin");
-                setError("");
-              }}
-            >
-              Sign in
-            </button>
-          </div>
+          {authMode !== "reset" && (
+            <div className="auth-mode-toggle" role="tablist" aria-label="Account">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={authMode === "signup"}
+                className={authMode === "signup" ? "active" : ""}
+                data-click="select"
+                onClick={() => {
+                  setAuthMode("signup");
+                  setResetSent(false);
+                  setError("");
+                }}
+              >
+                Sign up
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={authMode === "signin"}
+                className={authMode === "signin" ? "active" : ""}
+                data-click="select"
+                onClick={() => {
+                  setAuthMode("signin");
+                  setResetSent(false);
+                  setError("");
+                }}
+              >
+                Sign in
+              </button>
+            </div>
+          )}
 
           {authMode === "signup" ? (
             <form className="join-auth-form" onSubmit={handleSignUp}>
@@ -515,6 +545,47 @@ export default function StudentJoin({
                 Create account
               </button>
             </form>
+          ) : authMode === "reset" ? (
+            <form className="join-auth-form" onSubmit={handleReset}>
+              <label htmlFor="join-reset-email">
+                Email
+                <input
+                  id="join-reset-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@school.edu"
+                  autoComplete="email"
+                  autoFocus
+                  required
+                />
+              </label>
+              {resetSent ? (
+                <p className="auth-success-hint">
+                  If an account exists for that email, a reset link is on the way.
+                  Check your inbox (and spam), then sign in with your new password.
+                </p>
+              ) : (
+                <p className="teacher-code-hint">
+                  Use the same email you used for this class.
+                </p>
+              )}
+              <button type="submit" className="primary-btn" data-click="confirm">
+                {resetSent ? "Send again" : "Send reset link"}
+              </button>
+              <button
+                type="button"
+                className="ghost-btn auth-back-btn"
+                data-click="select"
+                onClick={() => {
+                  setAuthMode("signin");
+                  setResetSent(false);
+                  setError("");
+                }}
+              >
+                Back to sign in
+              </button>
+            </form>
           ) : (
             <form className="join-auth-form" onSubmit={handleSignIn}>
               <label htmlFor="signin-email">
@@ -537,6 +608,20 @@ export default function StudentJoin({
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="current-password"
               />
+              <div className="auth-inline-actions">
+                <button
+                  type="button"
+                  className="text-link-btn"
+                  data-click="select"
+                  onClick={() => {
+                    setAuthMode("reset");
+                    setResetSent(false);
+                    setError("");
+                  }}
+                >
+                  Forgot password?
+                </button>
+              </div>
               <button type="submit" className="primary-btn" data-click="confirm">
                 Sign in
               </button>

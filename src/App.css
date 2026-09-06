@@ -1465,6 +1465,42 @@ select:focus {
   line-height: 1.35;
 }
 
+.auth-inline-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: -0.35rem 0 0.15rem;
+}
+
+.text-link-btn {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--accent, #2f6b4f);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.text-link-btn:hover {
+  opacity: 0.85;
+}
+
+.auth-success-hint {
+  margin: 0 0 0.35rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+  color: var(--ink, #1a2e24);
+  line-height: 1.4;
+}
+
+.auth-back-btn {
+  width: 100%;
+  margin-top: 0.35rem;
+}
+
 /* Teacher → student cash transfer (PayPal-style accept) */
 .transfer-overlay {
   position: fixed;
