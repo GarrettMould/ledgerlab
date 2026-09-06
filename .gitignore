@@ -1,0 +1,37 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Python / backend
+backend/.venv/
+backend/classroom.db
+backend/quote_cache.json
+backend/chart_cache.json
+backend/news_cache.json
+backend/classroom_news_cache.json
+backend/treasury_yields_cache.json
+backend/.env
+.env
+__pycache__/
+*.pyc
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
