@@ -52,3 +52,19 @@ Open the Vite URL (usually http://localhost:5173). The UI proxies `/api` to Flas
 
 - Do not commit `.env`, `.env.local`, or `backend/.env` — they are gitignored.
 - Invite QR codes encode whatever host you’re on; use a real hostname for phones, not `localhost`.
+
+## Deploy on Vercel (Services)
+
+This repo uses `vercel.json` with a Vite frontend and Flask backend. On import, choose **Services** / the preset Vercel suggests, root `./`.
+
+Set environment variables in the Vercel project (Production + Preview):
+
+| Variable | Where used |
+| --- | --- |
+| `VITE_FIREBASE_*` (all keys from `.env.example`) | Frontend build |
+| `FINNHUB_API_KEY` | Backend |
+| `OPENAI_API_KEY` (optional) | Backend news rewrite |
+
+After deploy, add your `*.vercel.app` domain under Firebase Auth → **Authorized domains**.
+
+**Caveat:** trading/cash data uses SQLite under `/tmp` on Vercel, so it can reset when the function cold-starts. Fine for demos; for a real class you’ll want a hosted DB later.

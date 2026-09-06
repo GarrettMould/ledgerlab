@@ -24,12 +24,17 @@ except ImportError:
     pass
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "classroom.db"
-QUOTE_CACHE_PATH = BASE_DIR / "quote_cache.json"
-CHART_CACHE_PATH = BASE_DIR / "chart_cache.json"
-NEWS_CACHE_PATH = BASE_DIR / "news_cache.json"
-CLASSROOM_NEWS_CACHE_PATH = BASE_DIR / "classroom_news_cache.json"
-TREASURY_CACHE_PATH = BASE_DIR / "treasury_yields_cache.json"
+# Vercel Functions only allow writes under /tmp (local keeps files next to the app).
+_DATA_DIR = (
+    Path("/tmp/ledgerlab") if os.environ.get("VERCEL") else BASE_DIR
+)
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = _DATA_DIR / "classroom.db"
+QUOTE_CACHE_PATH = _DATA_DIR / "quote_cache.json"
+CHART_CACHE_PATH = _DATA_DIR / "chart_cache.json"
+NEWS_CACHE_PATH = _DATA_DIR / "news_cache.json"
+CLASSROOM_NEWS_CACHE_PATH = _DATA_DIR / "classroom_news_cache.json"
+TREASURY_CACHE_PATH = _DATA_DIR / "treasury_yields_cache.json"
 
 app = Flask(__name__)
 CORS(app)
