@@ -84,8 +84,8 @@ export default function FloridaRealEstateMap({
   return (
     <div className="florida-market">
       <p className="florida-map-hint">
-        Tap a city on the Florida map to inspect that market’s house, see what you pay
-        today, and buy with a classroom mortgage.
+        Tap a city to see rent and mortgage. Buying locks in those terms; each month
+        rent nets against the payment and the loan pays down.
       </p>
 
       <div className="florida-market-layout">
@@ -371,7 +371,7 @@ export default function FloridaRealEstateMap({
                   </li>
                   <li>
                     <span>
-                      Closing costs ({Number(active.item.closing_cost_pct || 2)}%)
+                      Closing costs ({Number(active.item.closing_cost_pct || 1)}%)
                     </span>
                     <strong>{moneyFormat(active.item.closing_costs)}</strong>
                   </li>
@@ -403,7 +403,29 @@ export default function FloridaRealEstateMap({
                   </dd>
                 </div>
                 <div>
-                  <dt>YoY price</dt>
+                  <dt>Monthly net</dt>
+                  <dd
+                    className={
+                      active.item.monthly_rent != null &&
+                      active.item.est_monthly_payment != null &&
+                      Number(active.item.monthly_rent) -
+                        Number(active.item.est_monthly_payment) >=
+                        0
+                        ? "up"
+                        : "down"
+                    }
+                  >
+                    {active.item.monthly_rent != null &&
+                    active.item.est_monthly_payment != null
+                      ? `${moneyFormat(
+                          Number(active.item.monthly_rent) -
+                            Number(active.item.est_monthly_payment)
+                        )}/mo`
+                      : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Price change</dt>
                   <dd
                     className={
                       Number(active.item.yoy_change_pct ?? active.item.change_pct) >=
@@ -416,9 +438,8 @@ export default function FloridaRealEstateMap({
                     active.item.change_pct == null
                       ? "—"
                       : `${
-                          Number(
-                            active.item.yoy_change_pct ?? active.item.change_pct
-                          ) >= 0
+                          Number(active.item.yoy_change_pct ?? active.item.change_pct) >=
+                          0
                             ? "+"
                             : ""
                         }${Number(
@@ -430,7 +451,10 @@ export default function FloridaRealEstateMap({
 
               <div className="florida-buy-actions">
                 {alreadyOwned ? (
-                  <p className="florida-owned-note">You already own this city’s home.</p>
+                  <p className="florida-owned-note">
+                    You already own this city’s home. Rent and mortgage settle each month
+                    when you open your portfolio.
+                  </p>
                 ) : (
                   <button
                     type="button"

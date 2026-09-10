@@ -16,6 +16,8 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 import firestore_ledger as fs_ledger
+import housing_index
+import housing_settlement
 from portfolio_service import (
     build_history_payload,
     compute_totals as portfolio_compute_totals,
@@ -1007,11 +1009,13 @@ MARKET_CATALOG = {
             "name": "Crude Oil",
             "kind": "Energy",
             "yahoo": "CL=F",
+            # USO is an oil ETF — its share price is NOT $/barrel. Do not use as a
+            # unit-price proxy (scale would need to be ≠ 1 to convert).
             "finnhub": "USO",
             "scale": 1,
             "unit_label": "barrel",
             "info": {
-                "summary": "Crude oil is refined into fuels and plastics. Price here tracks the crude oil market in dollars per barrel.",
+                "summary": "Crude oil is refined into fuels and plastics. Price here tracks WTI crude futures in dollars per barrel.",
             },
         },
         {
@@ -1353,6 +1357,20 @@ def commodity_price_scale(local_ticker: str) -> float:
     return scale if scale > 0 else 1.0
 
 
+def commodity_etf_proxy_ok(local_ticker: str) -> bool:
+    """
+    Finnhub free tier has no futures — we sometimes map to an ETF (GLD, USO, …).
+    Only treat that ETF as the classroom unit price when `scale` is an intentional
+    conversion (e.g. GLD × 10 ≈ $/oz). scale == 1 with a different feed ticker
+    means the ETF share price is NOT $/bbl, $/MMBtu, etc. (USO ≈ $155 ≠ WTI ≈ $100).
+    """
+    meta = COMMODITY_BY_TICKER.get(local_ticker) or {}
+    feed = meta.get("finnhub")
+    if not feed or str(feed).upper() == str(local_ticker).upper():
+        return False
+    return commodity_price_scale(local_ticker) != 1.0
+
+
 def commodity_yahoo_divisor(local_ticker: str) -> float:
     """Yahoo ag/softs futures are often quoted in cents — divide to dollars."""
     meta = COMMODITY_BY_TICKER.get(local_ticker) or {}
@@ -1681,7 +1699,9 @@ def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | No
         if prev_f is not None:
             prev_f = currency_usd_price(prev_f, cur_meta)
     elif local_symbol in COMMODITY_BY_TICKER:
-        # Finnhub uses ETF/proxy feeds; scale toward per-unit classroom prices.
+        # Finnhub uses ETF/proxy feeds; only scale when conversion is intentional.
+        if not commodity_etf_proxy_ok(local_symbol):
+            return local_symbol, None, None
         price, prev_f = _apply_commodity_scale(local_symbol, price, prev_f)
 
     change_pct = None
@@ -1695,43 +1715,83 @@ def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | No
     return local_symbol, price, change_pct
 
 
+def _yahoo_chart_quote(yahoo_symbol: str) -> tuple[float | None, float | None]:
+    """Lightweight Yahoo chart quote — more reliable than yfinance under rate limits."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
+    try:
+        res = requests.get(
+            url,
+            params={"range": "5d", "interval": "1d"},
+            headers=HTTP_HEADERS,
+            timeout=12,
+        )
+        if res.status_code != 200:
+            return None, None
+        payload = res.json()
+        result = (payload.get("chart") or {}).get("result") or []
+        if not result:
+            return None, None
+        meta = result[0].get("meta") or {}
+        price = meta.get("regularMarketPrice")
+        prev = meta.get("chartPreviousClose")
+        if prev is None:
+            prev = meta.get("previousClose")
+        price_f = float(price) if price not in (None, 0, 0.0) else None
+        prev_f = float(prev) if prev not in (None, 0, 0.0) else None
+        if price_f is None:
+            quotes = (result[0].get("indicators") or {}).get("quote") or []
+            closes = (quotes[0].get("close") if quotes else None) or []
+            closes = [float(v) for v in closes if v is not None]
+            if closes:
+                price_f = closes[-1]
+                if len(closes) >= 2:
+                    prev_f = closes[-2]
+        return price_f, prev_f
+    except Exception:
+        return None, None
+
+
 def _yfinance_quote_one(local_symbol: str) -> tuple[str, float | None, float | None]:
-    """Fallback live quote via Yahoo Finance (same source as classroom charts)."""
+    """Live quote via Yahoo Finance (chart API first, yfinance library fallback)."""
     global _last_quote_provider_error
     yahoo = yahoo_quote_symbol(local_symbol)
-    try:
-        import yfinance as yf
+    price = None
+    prev_f = None
 
-        ticker = yf.Ticker(yahoo)
-        price = None
-        prev_f = None
+    price, prev_f = _yahoo_chart_quote(yahoo)
+
+    if price is None:
         try:
-            fast = ticker.fast_info
-            last = getattr(fast, "last_price", None)
-            if last is None and isinstance(fast, dict):
-                last = fast.get("last_price") or fast.get("lastPrice")
-            prev = getattr(fast, "previous_close", None)
-            if prev is None and isinstance(fast, dict):
-                prev = fast.get("previous_close") or fast.get("previousClose")
-            if last not in (None, 0, 0.0):
-                price = float(last)
-            if prev not in (None, 0, 0.0):
-                prev_f = float(prev)
-        except Exception:
-            price = None
-            prev_f = None
+            import yfinance as yf
 
-        if price is None:
-            hist = ticker.history(period="5d", interval="1d", auto_adjust=True)
-            if hist is not None and not getattr(hist, "empty", True) and "Close" in hist.columns:
-                closes = [float(v) for v in hist["Close"].tolist() if v is not None]
-                if closes:
-                    price = closes[-1]
-                    if len(closes) >= 2:
-                        prev_f = closes[-2]
-    except Exception as exc:
-        _last_quote_provider_error = f"yfinance: {exc}"
-        return local_symbol, None, None
+            ticker = yf.Ticker(yahoo)
+            try:
+                fast = ticker.fast_info
+                last = getattr(fast, "last_price", None)
+                if last is None and isinstance(fast, dict):
+                    last = fast.get("last_price") or fast.get("lastPrice")
+                prev = getattr(fast, "previous_close", None)
+                if prev is None and isinstance(fast, dict):
+                    prev = fast.get("previous_close") or fast.get("previousClose")
+                if last not in (None, 0, 0.0):
+                    price = float(last)
+                if prev not in (None, 0, 0.0):
+                    prev_f = float(prev)
+            except Exception:
+                price = None
+                prev_f = None
+
+            if price is None:
+                hist = ticker.history(period="5d", interval="1d", auto_adjust=True)
+                if hist is not None and not getattr(hist, "empty", True) and "Close" in hist.columns:
+                    closes = [float(v) for v in hist["Close"].tolist() if v is not None]
+                    if closes:
+                        price = closes[-1]
+                        if len(closes) >= 2:
+                            prev_f = closes[-2]
+        except Exception as exc:
+            _last_quote_provider_error = f"yfinance: {exc}"
+            return local_symbol, None, None
 
     if price is None:
         return local_symbol, None, None
@@ -1776,9 +1836,9 @@ def _load_disk_quotes() -> None:
 def _commodity_quote_from_feed_cache(
     local: str, *, allow_stale: bool = False
 ) -> tuple[float | None, float | None]:
-    """Derive GOLD/OIL/… from cached Finnhub ETF feeds (GLD/USO/…)."""
+    """Derive GOLD/… from cached Finnhub ETF feeds when scale converts to unit price."""
     meta = COMMODITY_BY_TICKER.get(local)
-    if not meta:
+    if not meta or not commodity_etf_proxy_ok(local):
         return None, None
     feed = meta.get("finnhub")
     if not feed or feed == local:
@@ -1797,6 +1857,8 @@ def _seed_commodity_quotes_from_feeds() -> None:
     for local, meta in COMMODITY_BY_TICKER.items():
         if local in _quote_cache and _quote_cache[local][0] is not None:
             continue
+        if not commodity_etf_proxy_ok(local):
+            continue
         feed = meta.get("finnhub")
         if not feed or feed == local:
             continue
@@ -1805,6 +1867,23 @@ def _seed_commodity_quotes_from_feeds() -> None:
             continue
         scale = commodity_price_scale(local)
         _quote_cache[local] = (float(src[0]) * scale, src[1], src[2])
+
+
+def _scrub_bad_commodity_proxy_cache() -> None:
+    """Drop classroom commodity quotes that must not come from unscaled ETF shares."""
+    changed = False
+    for local, meta in COMMODITY_BY_TICKER.items():
+        if commodity_etf_proxy_ok(local):
+            continue
+        feed = meta.get("finnhub")
+        if not feed or feed == local:
+            continue
+        # OIL←USO etc.: never trust a cached "unit" price that tracks the ETF feed.
+        if local in _quote_cache:
+            del _quote_cache[local]
+            changed = True
+    if changed:
+        _save_disk_quotes()
 
 
 def _save_disk_quotes() -> None:
@@ -1823,6 +1902,7 @@ def _save_disk_quotes() -> None:
 
 
 _load_disk_quotes()
+_scrub_bad_commodity_proxy_cache()
 _seed_commodity_quotes_from_feeds()
 
 
@@ -1895,6 +1975,12 @@ def init_db() -> None:
             migrations.append(
                 "ALTER TABLE holdings ADD COLUMN closing_paid REAL NOT NULL DEFAULT 0"
             )
+        if "monthly_rent" not in cols:
+            migrations.append("ALTER TABLE holdings ADD COLUMN monthly_rent REAL")
+        if "monthly_payment" not in cols:
+            migrations.append("ALTER TABLE holdings ADD COLUMN monthly_payment REAL")
+        if "last_rent_settled" not in cols:
+            migrations.append("ALTER TABLE holdings ADD COLUMN last_rent_settled TEXT")
         for sql in migrations:
             conn.execute(sql)
         conn.execute(
@@ -1905,7 +1991,7 @@ def init_db() -> None:
         )
 
 
-HOME_CLOSING_COST_PCT = 2.0
+HOME_CLOSING_COST_PCT = 1.0
 
 
 def home_purchase_costs(home: dict) -> dict:
@@ -1969,11 +2055,102 @@ def _holding_select_sql() -> str:
         SELECT ticker, shares, avg_cost,
                COALESCE(mortgage_balance, 0) AS mortgage_balance,
                mortgage_rate_pct, loan_years,
-               COALESCE(closing_paid, 0) AS closing_paid
+               COALESCE(closing_paid, 0) AS closing_paid,
+               monthly_rent, monthly_payment, last_rent_settled
         FROM holdings
         WHERE student_id = ?
         ORDER BY ticker
     """
+
+
+def sync_realestate_prices_from_zhvi(*, force_refresh: bool = False) -> dict:
+    """Pull ZHVI into MARKET_CATALOG / REALESTATE_BY_TICKER. Safe no-op on failure."""
+    try:
+        if force_refresh:
+            housing_index.get_zhvi_bundle(force_refresh=True)
+        result = housing_index.refresh_realestate_catalog_prices(MARKET_CATALOG["realestate"])
+        for row in MARKET_CATALOG["realestate"]:
+            REALESTATE_BY_TICKER[row["ticker"]] = row
+        return result
+    except Exception:
+        return {"updated": 0, "source": None, "as_of": None}
+
+
+def holdings_from_sqlite_rows(rows) -> list[dict]:
+    out = []
+    for h in rows:
+        out.append(
+            {
+                "ticker": h["ticker"],
+                "shares": float(h["shares"]),
+                "avg_cost": float(h["avg_cost"]),
+                "mortgage_balance": float(h["mortgage_balance"] or 0),
+                "mortgage_rate_pct": h["mortgage_rate_pct"],
+                "loan_years": h["loan_years"],
+                "closing_paid": float(h["closing_paid"] or 0),
+                "monthly_rent": h["monthly_rent"],
+                "monthly_payment": h["monthly_payment"],
+                "last_rent_settled": h["last_rent_settled"],
+            }
+        )
+    return out
+
+
+def settle_housing_for_firestore_student(class_id: str, student_id: str, student: dict, holdings: list[dict]):
+    """Apply due months; persist cash + holdings. Returns (student, holdings)."""
+    sync_realestate_prices_from_zhvi()
+    new_cash, holdings, changed = housing_settlement.apply_housing_settlement_to_holdings(
+        holdings,
+        float(student["cash"]),
+        is_home=lambda t: t in REALESTATE_BY_TICKER,
+        catalog_home=lambda t: REALESTATE_BY_TICKER.get(t),
+    )
+    if not changed:
+        return student, holdings
+    for h in holdings:
+        if h.get("ticker") in REALESTATE_BY_TICKER:
+            fs_ledger.upsert_holding(class_id, student_id, h)
+    fs_ledger.set_cash(class_id, student_id, new_cash, holdings_count=len(holdings))
+    student["cash"] = new_cash
+    return student, holdings
+
+
+def settle_housing_for_sqlite_student(conn: sqlite3.Connection, student_id: int, row, holdings_rows):
+    sync_realestate_prices_from_zhvi()
+    holdings = holdings_from_sqlite_rows(holdings_rows)
+    new_cash, holdings, changed = housing_settlement.apply_housing_settlement_to_holdings(
+        holdings,
+        float(row["cash"]),
+        is_home=lambda t: t in REALESTATE_BY_TICKER,
+        catalog_home=lambda t: REALESTATE_BY_TICKER.get(t),
+    )
+    if not changed:
+        return row, holdings_rows
+    conn.execute("UPDATE students SET cash = ? WHERE id = ?", (new_cash, student_id))
+    for h in holdings:
+        if h.get("ticker") not in REALESTATE_BY_TICKER:
+            continue
+        conn.execute(
+            """
+            UPDATE holdings
+               SET mortgage_balance = ?,
+                   monthly_rent = ?,
+                   monthly_payment = ?,
+                   last_rent_settled = ?
+             WHERE student_id = ? AND ticker = ?
+            """,
+            (
+                float(h.get("mortgage_balance") or 0),
+                h.get("monthly_rent"),
+                h.get("monthly_payment"),
+                h.get("last_rent_settled"),
+                student_id,
+                h["ticker"],
+            ),
+        )
+    row = student_row(conn, student_id)
+    holdings_rows = conn.execute(_holding_select_sql(), (student_id,)).fetchall()
+    return row, holdings_rows
 
 
 def record_snapshot(
@@ -2189,6 +2366,99 @@ def fetch_quote_detail(ticker: str) -> tuple[float | None, float | None]:
     return fetch_quotes_batch([symbol]).get(symbol, (None, None))
 
 
+def catalog_snapshot(category: str) -> list[dict]:
+    """Fast market list without live quote providers — names/meta only."""
+    items = MARKET_CATALOG.get(category, [])
+    if category == "bonds":
+        final = []
+        for item in items:
+            final.append(
+                {
+                    "ticker": item["ticker"],
+                    "name": item["name"],
+                    "issuer": item.get("issuer"),
+                    "kind": item.get("kind"),
+                    "price": None,
+                    "face_value": item.get("face_value", 100),
+                    "yield_pct": item.get("yield_pct"),
+                    "coupon_pct": item.get("coupon_pct"),
+                    "maturity": item.get("maturity"),
+                    "as_of": item.get("as_of"),
+                    "note": item.get("note"),
+                    "live_yield": False,
+                    "change_pct": None,
+                    "asset_type": "bond",
+                    "info": item.get("info"),
+                }
+            )
+        return final
+
+    if category == "realestate":
+        sync_realestate_prices_from_zhvi()
+        items = MARKET_CATALOG.get("realestate", items)
+        final = []
+        for item in items:
+            price = float(item["price"])
+            rate = float(item.get("mortgage_rate_pct") or 0)
+            down_pct = float(item.get("down_payment_pct") or 20)
+            years = int(item.get("loan_years") or 30)
+            costs = home_purchase_costs(item)
+            yoy = item.get("yoy_change_pct")
+            rent = item.get("monthly_rent")
+            final.append(
+                {
+                    "ticker": item["ticker"],
+                    "name": item["name"],
+                    "region": item.get("region"),
+                    "price": round(price, 2),
+                    "mortgage_rate_pct": round(rate, 2),
+                    "yoy_change_pct": round(float(yoy), 2) if yoy is not None else None,
+                    "change_pct": round(float(yoy), 2) if yoy is not None else None,
+                    "down_payment_pct": down_pct,
+                    "down_payment": costs["down_payment"],
+                    "closing_cost_pct": costs["closing_cost_pct"],
+                    "closing_costs": costs["closing_costs"],
+                    "due_today": costs["due_today"],
+                    "loan_amount": costs["loan_amount"],
+                    "loan_years": years,
+                    "est_monthly_payment": costs["est_monthly_payment"],
+                    "monthly_rent": round(float(rent), 2) if rent is not None else None,
+                    "as_of": item.get("as_of"),
+                    "asset_type": "realestate",
+                    "info": item.get("info"),
+                }
+            )
+        return final
+
+    final = []
+    for item in items:
+        row = {
+            "ticker": item["ticker"],
+            "name": item["name"],
+            "price": None,
+            "change_pct": None,
+            "asset_type": (
+                "commodity"
+                if category == "commodities"
+                else "currency"
+                if category == "currencies"
+                else "equity"
+            ),
+        }
+        if item.get("kind"):
+            row["kind"] = item["kind"]
+        if item.get("industry"):
+            row["industry"] = item["industry"]
+        if item.get("info"):
+            row["info"] = item["info"]
+        if item.get("unit_label"):
+            row["unit_label"] = item["unit_label"]
+        if item.get("lot"):
+            row["lot"] = item["lot"]
+        final.append(row)
+    return final
+
+
 def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
     items = MARKET_CATALOG.get(category, [])
     now = datetime.now(timezone.utc).timestamp()
@@ -2250,8 +2520,10 @@ def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
         _category_cache[category] = (now, final)
         return final
 
-    # Real estate: classroom city indexes with mortgage terms (no Finnhub).
+    # Real estate: ZHVI city indexes + classroom mortgage terms.
     if category == "realestate":
+        sync_realestate_prices_from_zhvi()
+        items = MARKET_CATALOG.get("realestate", items)
         final = []
         for item in items:
             price = float(item["price"])
@@ -2400,6 +2672,15 @@ def serialize_student(conn: sqlite3.Connection, row: sqlite3.Row, with_portfolio
         }
         if is_home:
             home = REALESTATE_BY_TICKER.get(ticker) or {}
+            monthly_rent = h["monthly_rent"] if "monthly_rent" in h.keys() else None
+            monthly_payment = h["monthly_payment"] if "monthly_payment" in h.keys() else None
+            last_settled = h["last_rent_settled"] if "last_rent_settled" in h.keys() else None
+            rent_val = (
+                float(monthly_rent)
+                if monthly_rent is not None
+                else float(home.get("monthly_rent") or 0)
+            )
+            pay_val = float(monthly_payment) if monthly_payment is not None else None
             payload.update(
                 {
                     "name": home.get("name") or ticker,
@@ -2408,6 +2689,12 @@ def serialize_student(conn: sqlite3.Connection, row: sqlite3.Row, with_portfolio
                     "loan_years": h["loan_years"],
                     "closing_paid": round(float(h["closing_paid"] or 0), 2),
                     "equity": round(equity, 2) if equity is not None else None,
+                    "monthly_rent": round(rent_val, 2) if rent_val else None,
+                    "monthly_payment": round(pay_val, 2) if pay_val is not None else None,
+                    "last_rent_settled": last_settled,
+                    "monthly_net": (
+                        round(rent_val - pay_val, 2) if pay_val is not None else None
+                    ),
                 }
             )
         holding_payload.append(payload)
@@ -2586,6 +2873,9 @@ def get_student(student_id: str):
             return jsonify({"error": "Student not found"}), 404
         ensure_fs_starting_snapshot(class_id, student)
         holdings = fs_ledger.list_holdings(class_id, student_id)
+        student, holdings = settle_housing_for_firestore_student(
+            class_id, student_id, student, holdings
+        )
         payload = serialize_portfolio(
             student,
             holdings,
@@ -2623,6 +2913,10 @@ def get_student(student_id: str):
         if not row:
             return jsonify({"error": "Student not found"}), 404
         ensure_starting_snapshot(conn, row)
+        holdings_rows = conn.execute(_holding_select_sql(), (sid,)).fetchall()
+        row, holdings_rows = settle_housing_for_sqlite_student(
+            conn, sid, row, holdings_rows
+        )
         payload = serialize_student(conn, row, with_portfolio=True)
         record_snapshot(
             conn,
@@ -2722,11 +3016,32 @@ def market_category(category: str):
     if key not in MARKET_CATALOG:
         return jsonify({"error": "Unknown market category"}), 404
     force = request.args.get("refresh") == "1"
+    catalog_only = request.args.get("catalog") == "1"
+    if catalog_only:
+        items = catalog_snapshot(key)
+        # Real estate ships with classroom prices; other markets need live quotes.
+        needs_live = key in {"stocks", "etfs", "commodities", "currencies", "bonds"}
+        return jsonify(
+            {
+                "category": key,
+                "items": items,
+                "pricing": {
+                    "ok": True,
+                    "pending": needs_live,
+                    "priced": sum(1 for row in items if row.get("price") is not None),
+                    "total": len(items),
+                    "source": None,
+                    "error": None,
+                },
+            }
+        )
+
     items = enrich_catalog(key, force_refresh=force)
     priced = sum(1 for row in items if row.get("price") is not None)
     needs_live = key in {"stocks", "etfs", "commodities", "currencies"}
     pricing = {
         "ok": (priced > 0) if needs_live else True,
+        "pending": False,
         "priced": priced,
         "total": len(items),
         "source": _last_quote_source,
@@ -3050,6 +3365,9 @@ def buy_home(student_id: str):
             ), 400
         if fs_ledger.get_holding(class_id, student_id, ticker):
             return jsonify({"error": f"You already own a home in {home['name']}."}), 400
+        settled_month = housing_settlement.iso_month(
+            housing_settlement.month_start(datetime.now(timezone.utc).date())
+        )
         fs_ledger.upsert_holding(
             class_id,
             student_id,
@@ -3061,6 +3379,9 @@ def buy_home(student_id: str):
                 "mortgage_rate_pct": costs["mortgage_rate_pct"],
                 "loan_years": costs["loan_years"],
                 "closing_paid": costs["closing_costs"],
+                "monthly_rent": float(home.get("monthly_rent") or 0),
+                "monthly_payment": costs["est_monthly_payment"],
+                "last_rent_settled": settled_month,
             },
         )
         holdings = fs_ledger.list_holdings(class_id, student_id)
@@ -3115,8 +3436,9 @@ def buy_home(student_id: str):
             """
             INSERT INTO holdings (
                 student_id, ticker, shares, avg_cost,
-                mortgage_balance, mortgage_rate_pct, loan_years, closing_paid
-            ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+                mortgage_balance, mortgage_rate_pct, loan_years, closing_paid,
+                monthly_rent, monthly_payment, last_rent_settled
+            ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sid,
@@ -3126,6 +3448,11 @@ def buy_home(student_id: str):
                 costs["mortgage_rate_pct"],
                 costs["loan_years"],
                 costs["closing_costs"],
+                float(home.get("monthly_rent") or 0),
+                costs["est_monthly_payment"],
+                housing_settlement.iso_month(
+                    housing_settlement.month_start(datetime.now(timezone.utc).date())
+                ),
             ),
         )
         conn.execute(

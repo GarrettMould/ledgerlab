@@ -90,8 +90,12 @@ export function getQuote(ticker) {
   return request(`/quote/${encodeURIComponent(ticker)}`);
 }
 
-export function getMarket(category, refresh = false) {
-  return request(`/market/${encodeURIComponent(category)}${refresh ? "?refresh=1" : ""}`);
+export function getMarket(category, refresh = false, { catalog = false } = {}) {
+  const params = new URLSearchParams();
+  if (refresh) params.set("refresh", "1");
+  if (catalog) params.set("catalog", "1");
+  const q = params.toString() ? `?${params}` : "";
+  return request(`/market/${encodeURIComponent(category)}${q}`);
 }
 
 export function getChart(ticker, range = "1y") {

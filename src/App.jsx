@@ -31,6 +31,10 @@ import "./App.css";
 const StudentCharacter = lazy(() => import("./StudentCharacter"));
 const StudentJoin = lazy(() => import("./StudentJoin"));
 
+// Market price charts (stocks/ETFs/etc.) — hide until the /chart feed is reliable.
+// Flip to true to show the chart button + PriceChart row again.
+const SHOW_MARKET_PRICE_CHARTS = false;
+
 const CURRENCY_LOTS = {
   EUR: 1,
   GBP: 1,
@@ -183,12 +187,19 @@ function StudentPortfolio({
     return lockedStudentId ? String(lockedStudentId) : "";
   });
   const [portfolio, setPortfolio] = useState(null);
+  const [portfolioLoading, setPortfolioLoading] = useState(() => {
+    if (firestoreStudentId && (!lockedStudentId || /^\d+$/.test(String(lockedStudentId)))) {
+      return true;
+    }
+    return Boolean(lockedStudentId);
+  });
   const [category, setCategory] = useState(null);
   const [stockIndustry, setStockIndustry] = useState("All");
   const [showClass, setShowClass] = useState(false);
   const [showNews, setShowNews] = useState(false);
   const [marketItems, setMarketItems] = useState([]);
   const [marketLoading, setMarketLoading] = useState(false);
+  const [marketPricesPending, setMarketPricesPending] = useState(false);
   const [pricingStatus, setPricingStatus] = useState(null);
   const [selectedAsset, setSelectedAsset] = useState(null);
   const [chartTicker, setChartTicker] = useState(null);
@@ -244,6 +255,7 @@ function StudentPortfolio({
   useEffect(() => {
     if (!selectedId) {
       setPortfolio(null);
+      setPortfolioLoading(false);
       setCategory(null);
       setSelectedAsset(null);
       setChartTicker(null);
@@ -255,6 +267,8 @@ function StudentPortfolio({
     }
     let cancelled = false;
     (async () => {
+      setPortfolioLoading(true);
+      setPortfolio(null);
       setBusy(true);
       setError("");
       try {
@@ -296,7 +310,10 @@ function StudentPortfolio({
           setError(err.message);
         }
       } finally {
-        if (!cancelled) setBusy(false);
+        if (!cancelled) {
+          setBusy(false);
+          setPortfolioLoading(false);
+        }
       }
     })();
     return () => {
@@ -313,6 +330,7 @@ function StudentPortfolio({
     if (!category) {
       setMarketItems([]);
       setPricingStatus(null);
+      setMarketPricesPending(false);
       return;
     }
     setStockIndustry("All");
@@ -322,8 +340,25 @@ function StudentPortfolio({
     let cancelled = false;
     (async () => {
       setMarketLoading(true);
+      setMarketPricesPending(true);
       setError("");
       try {
+        // Instant name list, then hydrate live quotes (slow path on cold cache).
+        try {
+          const catalog = await getMarket(category, false, { catalog: true });
+          if (!cancelled) {
+            setMarketItems(catalog.items || []);
+            setMarketLoading(false);
+            setPricingStatus(catalog.pricing || null);
+            // Bonds/real estate often already have usable figures in the catalog.
+            if (!catalog.pricing?.pending) {
+              setMarketPricesPending(false);
+            }
+          }
+        } catch {
+          /* full fetch below still runs */
+        }
+
         const data = await getMarket(category);
         if (!cancelled) {
           setMarketItems(data.items || []);
@@ -341,7 +376,10 @@ function StudentPortfolio({
           setPricingStatus(null);
         }
       } finally {
-        if (!cancelled) setMarketLoading(false);
+        if (!cancelled) {
+          setMarketLoading(false);
+          setMarketPricesPending(false);
+        }
       }
     })();
     return () => {
@@ -356,6 +394,7 @@ function StudentPortfolio({
     try {
       await loadPortfolio(selectedId);
       if (category) {
+        setMarketPricesPending(true);
         const data = await getMarket(category, true);
         setMarketItems(data.items || []);
         setPricingStatus(data.pricing || null);
@@ -369,6 +408,7 @@ function StudentPortfolio({
     } catch (err) {
       setError(err.message);
     } finally {
+      setMarketPricesPending(false);
       setRefreshing(false);
     }
   }
@@ -384,7 +424,7 @@ function StudentPortfolio({
     setError("");
     try {
       const fn = action === "buy" ? buyShares : sellShares;
-      const data = await fn(Number(selectedId), selectedAsset.ticker, qty);
+      const data = await fn(selectedId, selectedAsset.ticker, qty);
       setPortfolio(data);
     } catch (err) {
       setError(err.message);
@@ -487,7 +527,7 @@ function StudentPortfolio({
     setError("");
     try {
       const fn = action === "buy" ? buyShares : sellShares;
-      const data = await fn(Number(selectedId), item.ticker, qty);
+      const data = await fn(selectedId, item.ticker, qty);
       setPortfolio(data);
       setTradeDraft(null);
       setSelectedAsset(null);
@@ -673,23 +713,52 @@ function StudentPortfolio({
       <header className="panel-header student-header">
         <div className="student-header-copy">
           <h2 className="student-dash-name">
-            {portfolio ? portfolio.name : "Student portfolio"}
+            {portfolioLoading
+              ? "Loading student data"
+              : portfolio
+                ? portfolio.name
+                : "Student portfolio"}
           </h2>
-          <p>Pick a market and put your classroom cash to work.</p>
+          <p>
+            {portfolioLoading
+              ? "Pulling your cash, holdings, and avatar…"
+              : "Pick a market and put your classroom cash to work."}
+          </p>
         </div>
         <div className="student-header-right">
-          <Suspense fallback={<div className="character-stage character-stage-fallback" />}>
-            <StudentCharacter
-              studentId={portfolio?.id}
-              name={portfolio?.name || "Student"}
-              cash={portfolio?.cash ?? 0}
-              classId={classId}
-              firestoreStudentId={firestoreStudentId}
-              onCashChange={() => {
-                if (selectedId) loadPortfolio(selectedId).catch(() => {});
-              }}
-            />
-          </Suspense>
+          {portfolioLoading ? (
+            <div
+              className="character-stage character-stage-loading"
+              role="status"
+              aria-live="polite"
+              aria-label="Loading avatar"
+            >
+              <span className="busy-spinner character-loading-spinner" aria-hidden="true" />
+            </div>
+          ) : (
+            <Suspense
+              fallback={
+                <div
+                  className="character-stage character-stage-loading"
+                  role="status"
+                  aria-label="Loading avatar"
+                >
+                  <span className="busy-spinner character-loading-spinner" aria-hidden="true" />
+                </div>
+              }
+            >
+              <StudentCharacter
+                studentId={portfolio?.id}
+                name={portfolio?.name || "Student"}
+                cash={portfolio?.cash ?? 0}
+                classId={classId}
+                firestoreStudentId={firestoreStudentId}
+                onCashChange={() => {
+                  if (selectedId) loadPortfolio(selectedId).catch(() => {});
+                }}
+              />
+            </Suspense>
+          )}
         </div>
       </header>
 
@@ -707,7 +776,15 @@ function StudentPortfolio({
         </label>
       )}
 
-      {portfolio && (
+      {portfolioLoading && (
+        <div className="student-dash" aria-busy="true">
+          <div className="student-dash-inner">
+            <p className="empty student-loading-note">Loading student data…</p>
+          </div>
+        </div>
+      )}
+
+      {!portfolioLoading && portfolio && (
         <>
           <div
             className={
@@ -903,21 +980,34 @@ function StudentPortfolio({
 
               {category === "realestate" && (
                 <p className="bond-note currency-explain">
-                  Explore Florida housing markets on the map. Upfront you pay the down
-                  payment plus closing costs — the rest is a classroom mortgage.
+                  Pay down payment and closing costs up front. Each month you collect rent,
+                  make the mortgage payment, and home values update with the market.
                 </p>
               )}
 
-              {marketLoading && <p className="empty">Loading live prices…</p>}
+              {(marketPricesPending || (marketLoading && marketItems.length === 0)) && (
+                <div className="market-pricing-banner" role="status" aria-live="polite">
+                  <span className="market-pricing-spinner" aria-hidden="true" />
+                  <span>
+                    {marketItems.length === 0
+                      ? "Loading market…"
+                      : "Fetching live prices…"}
+                  </span>
+                </div>
+              )}
 
-              {!marketLoading && pricingStatus && pricingStatus.ok === false && (
+              {!marketPricesPending && pricingStatus && pricingStatus.ok === false && (
                 <p className="bond-note currency-explain">
                   Prices aren’t loading ({pricingStatus.priced}/{pricingStatus.total} priced).
                   Buying is paused — try Refresh. {pricingStatus.error || ""}
                 </p>
               )}
 
-              {!marketLoading && category === "realestate" && (
+              {marketLoading && marketItems.length === 0 && (
+                <p className="empty">Loading market…</p>
+              )}
+
+              {category === "realestate" && marketItems.length > 0 && (
                 visibleMarketItems.length === 0 ? (
                   <p className="empty">No cities available yet.</p>
                 ) : (
@@ -932,7 +1022,7 @@ function StudentPortfolio({
                       setBusy(true);
                       setError("");
                       try {
-                        const data = await buyHome(Number(selectedId), item.ticker);
+                        const data = await buyHome(selectedId, item.ticker);
                         setPortfolio(data);
                         setTradePulse({ ticker: item.ticker, action: "buy" });
                         if (tradePulseTimer.current) clearTimeout(tradePulseTimer.current);
@@ -947,7 +1037,7 @@ function StudentPortfolio({
                 )
               )}
 
-              {!marketLoading && category !== "realestate" && (
+              {category !== "realestate" && marketItems.length > 0 && (
                 <div className="market-list">
                   {visibleMarketItems.length === 0 && (
                     <p className="empty">No stocks in this industry yet.</p>
@@ -1024,7 +1114,8 @@ function StudentPortfolio({
                           (!Number.isFinite(draftQty) ||
                             draftQty <= 0 ||
                             draftQty > heldShares + 0.0001)));
-                    const chartOpen = chartTicker === item.ticker;
+                    const chartOpen =
+                      SHOW_MARKET_PRICE_CHARTS && chartTicker === item.ticker;
                     const pulsing =
                       tradePulse && tradePulse.ticker === item.ticker;
                     return (
@@ -1074,7 +1165,7 @@ function StudentPortfolio({
                                 info={item.info}
                               />
                             )}
-                            {item.asset_type !== "bond" && (
+                            {SHOW_MARKET_PRICE_CHARTS && item.asset_type !== "bond" && (
                               <button
                                 type="button"
                                 className={
@@ -1722,16 +1813,28 @@ function StudentPortfolio({
                           )}
                           <div className="market-price">
                             {item.asset_type === "bond" ? (
+                              marketPricesPending && item.yield_pct == null ? (
+                                <>
+                                  <strong className="price-skeleton" aria-hidden="true" />
+                                  <span className="price-pending">loading</span>
+                                </>
+                              ) : (
                               <>
                                 <strong className="bond-yield">
                                   {item.yield_pct != null ? `${item.yield_pct.toFixed(2)}%` : "—"}
                                 </strong>
                                 <span>
-                                  {money(item.price)} face
+                                  {item.price != null ? `${money(item.price)} face` : "— face"}
                                   {item.coupon_pct != null && item.coupon_pct > 0
                                     ? ` · ${item.coupon_pct.toFixed(2)}% coupon`
                                     : " · discount bill"}
                                 </span>
+                              </>
+                              )
+                            ) : marketPricesPending && item.price == null ? (
+                              <>
+                                <strong className="price-skeleton" aria-hidden="true" />
+                                <span className="price-pending">loading</span>
                               </>
                             ) : (
                               <>
@@ -1754,7 +1857,7 @@ function StudentPortfolio({
                           </div>
                         </div>
                       </div>
-                      {chartOpen && (
+                      {SHOW_MARKET_PRICE_CHARTS && chartOpen && (
                         <div className="market-row-chart">
                           <PriceChart ticker={item.ticker} name={item.name} />
                         </div>
@@ -1828,8 +1931,18 @@ function StudentPortfolio({
             {portfolio.holdings?.length > 0 && (
               <div className="holdings-cols" aria-hidden="true">
                 <span>Holding</span>
-                <span>Cost basis</span>
-                <span>Value</span>
+                <span className="holding-col-tip">
+                  Cost basis
+                  <span className="holding-col-tip-bubble">
+                    What you paid when you bought this.
+                  </span>
+                </span>
+                <span className="holding-col-tip">
+                  Value
+                  <span className="holding-col-tip-bubble">
+                    What it’s worth now — what you’d get if you sold today.
+                  </span>
+                </span>
                 <span>Gain / loss</span>
                 <span />
               </div>
@@ -1923,7 +2036,12 @@ function StudentPortfolio({
                           : `${foreign.toFixed(2)} ${h.ticker}`;
                 qtyLabel = `${fx} · avg ${money(h.avg_cost)}`;
               } else if (item.asset_type === "realestate") {
-                qtyLabel = `${h.name || h.ticker} · loan ${money(h.mortgage_balance)}`;
+                const net = h.monthly_net;
+                const netLabel =
+                  net == null
+                    ? ""
+                    : ` · ${net >= 0 ? "+" : "−"}${money(Math.abs(net))}/mo`;
+                qtyLabel = `${h.name || h.ticker} · loan ${money(h.mortgage_balance)}${netLabel}`;
               } else {
                 qtyLabel = `${h.shares} shares · avg ${money(h.avg_cost)}`;
               }
@@ -1971,13 +2089,23 @@ function StudentPortfolio({
                 </div>
 
                 <div className="holding-stat">
-                  <span className="holding-stat-label">Cost basis</span>
+                  <span className="holding-stat-label holding-col-tip">
+                    Cost basis
+                    <span className="holding-col-tip-bubble">
+                      What you paid when you bought this.
+                    </span>
+                  </span>
                   <strong>{money(costBasis)}</strong>
                 </div>
 
                 <div className="holding-stat">
-                  <span className="holding-stat-label">
+                  <span className="holding-stat-label holding-col-tip">
                     {item.asset_type === "realestate" ? "Equity" : "Value"}
+                    <span className="holding-col-tip-bubble">
+                      {item.asset_type === "realestate"
+                        ? "Home value minus what you still owe on the loan."
+                        : "What it’s worth now — what you’d get if you sold today."}
+                    </span>
                   </span>
                   <strong>
                     {money(
@@ -1989,7 +2117,11 @@ function StudentPortfolio({
                   <span className="holding-stat-sub">
                     {item.asset_type === "realestate"
                       ? `${money(h.price)} home`
-                      : `${money(h.price)} now`}
+                      : item.asset_type === "bond"
+                        ? `${money(h.price)} per unit`
+                        : item.asset_type === "currency"
+                          ? `${money(h.price)} now`
+                          : `${money(h.price)} per share`}
                   </span>
                 </div>
 

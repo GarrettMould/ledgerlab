@@ -149,7 +149,7 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
           className="standings-back"
           data-click="select"
           onClick={onBack}
-          aria-label="Back to markets"
+          aria-label="Back"
         >
           <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
             <path

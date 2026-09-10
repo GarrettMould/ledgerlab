@@ -229,6 +229,9 @@ def list_holdings(class_id: str, student_id: str) -> list[dict]:
                 "mortgage_rate_pct": data.get("mortgageRatePct", data.get("mortgage_rate_pct")),
                 "loan_years": data.get("loanYears", data.get("loan_years")),
                 "closing_paid": float(data.get("closingPaid") or data.get("closing_paid") or 0),
+                "monthly_rent": data.get("monthlyRent", data.get("monthly_rent")),
+                "monthly_payment": data.get("monthlyPayment", data.get("monthly_payment")),
+                "last_rent_settled": data.get("lastRentSettled", data.get("last_rent_settled")),
             }
         )
     rows.sort(key=lambda h: h["ticker"])
@@ -248,6 +251,9 @@ def get_holding(class_id: str, student_id: str, ticker: str) -> dict | None:
         "mortgage_rate_pct": data.get("mortgageRatePct"),
         "loan_years": data.get("loanYears"),
         "closing_paid": float(data.get("closingPaid") or 0),
+        "monthly_rent": data.get("monthlyRent", data.get("monthly_rent")),
+        "monthly_payment": data.get("monthlyPayment", data.get("monthly_payment")),
+        "last_rent_settled": data.get("lastRentSettled", data.get("last_rent_settled")),
     }
 
 
@@ -261,6 +267,12 @@ def upsert_holding(class_id: str, student_id: str, holding: dict) -> None:
         "loanYears": holding.get("loan_years"),
         "closingPaid": float(holding.get("closing_paid") or 0),
     }
+    if holding.get("monthly_rent") is not None:
+        payload["monthlyRent"] = float(holding["monthly_rent"])
+    if holding.get("monthly_payment") is not None:
+        payload["monthlyPayment"] = float(holding["monthly_payment"])
+    if holding.get("last_rent_settled") is not None:
+        payload["lastRentSettled"] = holding["last_rent_settled"]
     holdings_col(class_id, student_id).document(ticker).set(payload, merge=True)
 
 

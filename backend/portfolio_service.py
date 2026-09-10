@@ -81,6 +81,28 @@ def serialize_portfolio(
                     "loan_years": h.get("loan_years"),
                     "closing_paid": round(float(h.get("closing_paid") or 0), 2),
                     "equity": round(equity, 2) if equity is not None else None,
+                    "monthly_rent": (
+                        round(float(h["monthly_rent"]), 2)
+                        if h.get("monthly_rent") is not None
+                        else home.get("monthly_rent")
+                    ),
+                    "monthly_payment": (
+                        round(float(h["monthly_payment"]), 2)
+                        if h.get("monthly_payment") is not None
+                        else None
+                    ),
+                    "last_rent_settled": h.get("last_rent_settled"),
+                    "monthly_net": (
+                        round(
+                            float(h.get("monthly_rent") or home.get("monthly_rent") or 0)
+                            - float(h.get("monthly_payment") or 0),
+                            2,
+                        )
+                        if h.get("monthly_payment") is not None
+                        or h.get("monthly_rent") is not None
+                        or home.get("monthly_rent") is not None
+                        else None
+                    ),
                 }
             )
         holding_payload.append(payload)

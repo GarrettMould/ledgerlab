@@ -374,6 +374,30 @@ button {
   background: #e8f6ec;
 }
 
+.character-stage-loading {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: clamp(180px, 24vw, 260px);
+  border-radius: 22px;
+  border: 1px solid var(--line-soft);
+  background:
+    radial-gradient(120% 80% at 50% 100%, rgba(159, 212, 168, 0.4), transparent 55%),
+    linear-gradient(180deg, #f4fcf7 0%, #dcefe3 55%, #cfe6d8 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.character-loading-spinner {
+  width: 1.85rem;
+  height: 1.85rem;
+  border-width: 2.5px;
+}
+
+.student-loading-note {
+  margin: 0.35rem 0 0.85rem;
+  text-align: center;
+}
+
 .character-stage canvas,
 .closet-stage canvas {
   width: 100% !important;
@@ -1095,9 +1119,23 @@ select:focus {
 }
 
 .class-standings-preview h3 {
-  margin: 0 0 0.55rem;
+  margin: 0;
   font-size: 1.05rem;
   font-weight: 800;
+}
+
+.class-standings-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.55rem;
+}
+
+.class-standings-open {
+  flex-shrink: 0;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.82rem;
 }
 
 .class-student-summary {
@@ -3732,6 +3770,74 @@ select:focus {
   margin-bottom: 0.85rem;
 }
 
+.market-pricing-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0 0 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  background:
+    linear-gradient(
+      110deg,
+      color-mix(in srgb, var(--accent) 8%, #fff) 0%,
+      #fff 55%,
+      color-mix(in srgb, var(--accent) 6%, #fff) 100%
+    );
+  color: #1f4a36;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.market-pricing-spinner {
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  animation: marketSpin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes marketSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.market-price .price-skeleton {
+  display: block;
+  width: 4.2rem;
+  height: 1.05rem;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    rgba(47, 107, 79, 0.08) 0%,
+    rgba(47, 107, 79, 0.18) 45%,
+    rgba(47, 107, 79, 0.08) 100%
+  );
+  background-size: 180% 100%;
+  animation: priceShimmer 1.1s ease-in-out infinite;
+}
+
+.market-price .price-pending {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+@keyframes priceShimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
 .market-row {
   width: 100%;
   display: flex;
@@ -4585,6 +4691,46 @@ select:focus {
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: #5f7468;
+}
+
+.holding-col-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  cursor: help;
+  border-bottom: 1px dotted rgba(95, 116, 104, 0.55);
+}
+
+.holding-col-tip-bubble {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.45rem);
+  z-index: 8;
+  width: max-content;
+  max-width: 14rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.45rem;
+  background: #1f2a24;
+  color: #f4f7f5;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.35;
+  box-shadow: 0 8px 20px rgba(20, 32, 26, 0.22);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(0.15rem);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+}
+
+.holding-col-tip:hover .holding-col-tip-bubble,
+.holding-col-tip:focus-visible .holding-col-tip-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
 }
 
 .holdings h3 {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { deleteStudent, getStudent } from "./api";
 import ClassAggregatePanel from "./ClassAggregatePanel";
 import ClassInviteCard from "./ClassInviteCard";
+import ClassView from "./ClassView";
 import {
   DEFAULT_MARKETS,
   createClass,
@@ -66,6 +67,7 @@ export default function TeacherDashboard({
   const [inviteCode, setInviteCode] = useState("");
   const [inviteCopied, setInviteCopied] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(null);
+  const [showStandings, setShowStandings] = useState(false);
 
   const activeClass = useMemo(
     () => classes.find((c) => c.id === activeClassId) || null,
@@ -203,6 +205,7 @@ export default function TeacherDashboard({
       setActiveClassId(id);
       onActiveClassChange(id);
       await refreshRoster(id);
+      setShowStandings(false);
       setView("class");
     } catch (err) {
       setError(err.message);
@@ -373,6 +376,10 @@ export default function TeacherDashboard({
   const showNewClass = view === "list";
 
   function goBackFromClassView() {
+    if (showStandings) {
+      setShowStandings(false);
+      return;
+    }
     if (view === "roster" || view === "settings") {
       setView("class");
       return;
@@ -557,6 +564,14 @@ export default function TeacherDashboard({
               type="button"
               className="primary-btn"
               data-click="select"
+              onClick={() => setShowStandings(true)}
+            >
+              Class standings
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              data-click="select"
               onClick={() => setView("roster")}
             >
               Manage students
@@ -572,7 +587,19 @@ export default function TeacherDashboard({
           </div>
 
           <div className="class-standings-preview">
-            <h3>Students</h3>
+            <div className="class-standings-preview-head">
+              <h3>Students</h3>
+              {roster.length > 0 && (
+                <button
+                  type="button"
+                  className="ghost-btn class-standings-open"
+                  data-click="select"
+                  onClick={() => setShowStandings(true)}
+                >
+                  View standings
+                </button>
+              )}
+            </div>
             {roster.length === 0 ? (
               <p className="empty">No one has joined yet. Share the invite link above.</p>
             ) : (
@@ -764,6 +791,14 @@ export default function TeacherDashboard({
           </div>
         </div>
       )}
+      {showStandings && activeClass && (
+        <ClassView
+          classId={activeClass.id}
+          currentStudentId={null}
+          onBack={() => setShowStandings(false)}
+        />
+      )}
+
       {pendingRemove && activeClass && (
         <div
           className="confirm-overlay"
