@@ -9,30 +9,24 @@ import {
 } from "recharts";
 import { getChart } from "./api";
 
-const RANGES = [
-  { id: "1mo", label: "1M" },
-  { id: "3mo", label: "3M" },
-  { id: "6mo", label: "6M" },
-  { id: "1y", label: "1Y" },
-  { id: "5y", label: "5Y" },
-];
+const CHART_RANGE = "1y";
 
 function money(n) {
   if (n == null || Number.isNaN(n)) return "—";
   return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
-function formatTick(dateStr, range) {
+function formatTick(dateStr) {
   if (!dateStr) return "";
   const d = new Date(`${dateStr}T00:00:00Z`);
-  if (range === "5y" || range === "1y") {
-    return d.toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
-  }
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    year: "2-digit",
+    timeZone: "UTC",
+  });
 }
 
 export default function PriceChart({ ticker, name }) {
-  const [range, setRange] = useState("1y");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -44,7 +38,7 @@ export default function PriceChart({ ticker, name }) {
       setLoading(true);
       setError("");
       try {
-        const chart = await getChart(ticker, range);
+        const chart = await getChart(ticker, CHART_RANGE);
         if (!cancelled) setData(chart);
       } catch (err) {
         if (!cancelled) {
@@ -58,7 +52,7 @@ export default function PriceChart({ ticker, name }) {
     return () => {
       cancelled = true;
     };
-  }, [ticker, range]);
+  }, [ticker]);
 
   const up = (data?.change_pct ?? 0) >= 0;
   const stroke = up ? "#2f6b4f" : "#c0453a";
@@ -68,7 +62,7 @@ export default function PriceChart({ ticker, name }) {
       <div className="price-chart-head">
         <div>
           <strong>
-            {ticker} chart
+            {ticker} · 1Y
             {name ? ` · ${name}` : ""}
           </strong>
           {data && (
@@ -78,19 +72,6 @@ export default function PriceChart({ ticker, name }) {
               {data.change_pct?.toFixed(2)}%)
             </p>
           )}
-        </div>
-        <div className="range-toggle" role="group" aria-label="Chart range">
-          {RANGES.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              className={range === r.id ? "active" : ""}
-              data-click="select"
-              onClick={() => setRange(r.id)}
-            >
-              {r.label}
-            </button>
-          ))}
         </div>
       </div>
 
@@ -115,7 +96,7 @@ export default function PriceChart({ ticker, name }) {
               </defs>
               <XAxis
                 dataKey="date"
-                tickFormatter={(v) => formatTick(v, range)}
+                tickFormatter={formatTick}
                 minTickGap={28}
                 tick={{ fill: "#5a6b78", fontSize: 11 }}
                 axisLine={false}

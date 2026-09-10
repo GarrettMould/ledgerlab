@@ -3,7 +3,6 @@ import { adjustCash, getStudent, sellShares } from "./api";
 import {
   markTransferAccepted,
   subscribePendingTransfers,
-  updateClassStudent,
 } from "./classStore";
 
 function money(n) {
@@ -47,7 +46,7 @@ function sharesToCover(h, need) {
 
 /**
  * PayPal-style cash alerts: teacher-queued credits/debits wait in Firestore
- * until the student accepts. Cash in SQLite only moves on accept.
+ * until the student accepts. Cash moves on accept via the ledger API.
  * Debits with a shortfall require liquidating a holding in this same modal.
  */
 export default function CashTransferAlert({
@@ -142,19 +141,11 @@ export default function CashTransferAlert({
       const afterSell = await sellShares(apiStudentId, selected.ticker, sellQty);
       setPortfolio(afterSell);
       setCashSafeSelection(afterSell);
-      await updateClassStudent(classId, firestoreStudentId, {
-        cash: afterSell.cash,
-        holdingsCount: afterSell.holdings_count || 0,
-      });
 
       const liveCash = Number(afterSell.cash) || 0;
       if (liveCash >= abs - 0.005) {
         const updated = await adjustCash(apiStudentId, current.amount);
         await markTransferAccepted(classId, firestoreStudentId, current.id);
-        await updateClassStudent(classId, firestoreStudentId, {
-          cash: updated.cash,
-          holdingsCount: updated.holdings_count || 0,
-        });
         setPortfolio((prev) =>
           prev ? { ...prev, ...updated, holdings: updated.holdings || prev.holdings } : updated
         );
@@ -188,10 +179,6 @@ export default function CashTransferAlert({
 
       const updated = await adjustCash(apiStudentId, current.amount);
       await markTransferAccepted(classId, firestoreStudentId, current.id);
-      await updateClassStudent(classId, firestoreStudentId, {
-        cash: updated.cash,
-        holdingsCount: updated.holdings_count || 0,
-      });
       setPortfolio((prev) =>
         prev ? { ...prev, ...updated, holdings: prev.holdings } : updated
       );

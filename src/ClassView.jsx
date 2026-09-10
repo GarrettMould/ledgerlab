@@ -1,6 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { listStudents } from "./api";
+import { getStudent } from "./api";
+import { listClassStudents } from "./classStore";
+import {
+  ClassWalkingStage,
+  loadSavedOutfit,
+  outfitForStudent,
+} from "./StudentCharacter";
 
 function money(n) {
   if (n == null || Number.isNaN(n)) return "—";
@@ -11,121 +17,42 @@ function money(n) {
   });
 }
 
-function initials(name) {
-  const parts = String(name || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+function outfitForSeat(seat, tradingId, name) {
+  if (seat?.outfit && typeof seat.outfit === "object") {
+    return { ...outfitForStudent(tradingId, name), ...seat.outfit };
+  }
+  return loadSavedOutfit(tradingId, name);
 }
 
-function colorForStudent(id, name) {
-  const seed = String(id ?? name ?? "x")
-    .split("")
-    .reduce((acc, ch) => acc + ch.charCodeAt(0) * 17, 0);
-  const hue = (seed * 47) % 360;
-  const sat = 48 + (seed % 16);
-  const lightTop = 52 + (seed % 10);
-  const lightBot = 32 + (seed % 8);
+function tradingIdForSeat(seat) {
+  return String(seat.apiStudentId || seat.id);
+}
+
+/** Build one standings row from a Firestore class seat + optional API portfolio. */
+function rowFromSeat(seat, portfolio) {
+  const id = tradingIdForSeat(seat);
+  const name = seat.name || portfolio?.name || "Student";
+  const cash = Number(portfolio?.cash ?? seat.cash) || 0;
+  const total =
+    portfolio?.total_value != null
+      ? Number(portfolio.total_value)
+      : cash;
   return {
-    background: `linear-gradient(165deg, hsl(${hue} ${sat}% ${lightTop}%), hsl(${(hue + 22) % 360} ${sat + 8}% ${lightBot}%))`,
+    id,
+    seatId: seat.id,
+    name,
+    cash,
+    portfolio_value: Number(portfolio?.portfolio_value) || 0,
+    total_value: total,
+    netWorth: total,
+    outfit: seat.outfit || null,
   };
 }
 
-/**
- * Pack circles by area ∝ wealth. Largest first near center; others nest around
- * without overlap (simple greedy pack).
- */
-function packBubbles(items, width, height) {
-  if (!items.length || width <= 0 || height <= 0) return [];
-
-  const maxWorth = Math.max(...items.map((i) => i.netWorth), 1);
-  const minR = Math.min(width, height) * 0.045;
-  const maxR = Math.min(width, height) * 0.22;
-
-  const nodes = items
-    .map((item) => {
-      // Area ∝ wealth → radius ∝ sqrt(wealth)
-      const t = Math.sqrt(Math.max(item.netWorth, 0) / maxWorth);
-      const r = minR + t * (maxR - minR);
-      return { ...item, r };
-    })
-    .sort((a, b) => b.r - a.r);
-
-  const placed = [];
-  const cx0 = width / 2;
-  const cy0 = height / 2;
-
-  function fits(x, y, r) {
-    if (x - r < 8 || y - r < 8 || x + r > width - 8 || y + r > height - 8) {
-      return false;
-    }
-    return placed.every((p) => {
-      const dx = p.x - x;
-      const dy = p.y - y;
-      const need = p.r + r + 6;
-      return dx * dx + dy * dy >= need * need;
-    });
-  }
-
-  for (let i = 0; i < nodes.length; i += 1) {
-    const node = nodes[i];
-    if (i === 0) {
-      placed.push({ ...node, x: cx0, y: cy0 });
-      continue;
-    }
-
-    let best = null;
-    let bestDist = Infinity;
-    for (const p of placed) {
-      for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 18) {
-        const dist = p.r + node.r + 6;
-        const x = p.x + Math.cos(angle) * dist;
-        const y = p.y + Math.sin(angle) * dist;
-        if (!fits(x, y, node.r)) continue;
-        const d = (x - cx0) ** 2 + (y - cy0) ** 2;
-        if (d < bestDist) {
-          bestDist = d;
-          best = { x, y };
-        }
-      }
-    }
-
-    if (!best) {
-      // Spiral fallback if packing gets tight.
-      for (let ring = 1; ring <= 40 && !best; ring += 1) {
-        const rad = ring * (node.r * 0.55);
-        const steps = Math.max(12, ring * 6);
-        for (let s = 0; s < steps; s += 1) {
-          const angle = (s / steps) * Math.PI * 2;
-          const x = cx0 + Math.cos(angle) * rad;
-          const y = cy0 + Math.sin(angle) * rad;
-          if (!fits(x, y, node.r)) continue;
-          best = { x, y };
-          break;
-        }
-      }
-    }
-
-    placed.push({
-      ...node,
-      x: best?.x ?? cx0 + i * 4,
-      y: best?.y ?? cy0 + i * 4,
-    });
-  }
-
-  return placed;
-}
-
-export default function ClassView({ currentStudentId, onBack }) {
+export default function ClassView({ currentStudentId, classId, onBack }) {
   const [roster, setRoster] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [hoverId, setHoverId] = useState(null);
-  const [boardSize, setBoardSize] = useState({ w: 0, h: 0 });
-  const boardRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,8 +60,30 @@ export default function ClassView({ currentStudentId, onBack }) {
       setLoading(true);
       setError("");
       try {
-        const data = await listStudents(true);
-        if (!cancelled) setRoster(Array.isArray(data) ? data : []);
+        if (!classId) {
+          throw new Error("Join a class to see standings for that roster.");
+        }
+        // Source of truth: Firestore seats for THIS class — not the global SQLite list.
+        const seats = await listClassStudents(classId);
+        const rows = await Promise.all(
+          (seats || []).map(async (seat) => {
+            const tradeId = tradingIdForSeat(seat);
+            let portfolio = null;
+            try {
+              portfolio = await getStudent(tradeId, classId);
+            } catch {
+              try {
+                if (String(seat.id) !== tradeId) {
+                  portfolio = await getStudent(seat.id, classId);
+                }
+              } catch {
+                portfolio = null;
+              }
+            }
+            return rowFromSeat(seat, portfolio);
+          })
+        );
+        if (!cancelled) setRoster(rows);
       } catch (err) {
         if (!cancelled) setError(err.message || "Could not load class standings");
       } finally {
@@ -144,7 +93,7 @@ export default function ClassView({ currentStudentId, onBack }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [classId]);
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -160,53 +109,37 @@ export default function ClassView({ currentStudentId, onBack }) {
   }, [onBack]);
 
   const ranked = useMemo(() => {
-    const rows = [...roster].map((s) => ({
-      ...s,
-      netWorth: Number(s.total_value) || 0,
-    }));
+    const rows = [...roster];
     rows.sort((a, b) => b.netWorth - a.netWorth || a.name.localeCompare(b.name));
-    return rows;
+    return rows.map((s, i) => ({ ...s, rank: i + 1 }));
   }, [roster]);
 
-  useLayoutEffect(() => {
-    const el = boardRef.current;
-    if (!el) return undefined;
-    function measure() {
-      const rect = el.getBoundingClientRect();
-      setBoardSize({ w: rect.width, h: rect.height });
-    }
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [loading, ranked.length]);
-
-  const bubbles = useMemo(
+  const walkers = useMemo(
     () =>
-      packBubbles(
-        ranked.map((s, i) => ({
-          id: s.id,
-          name: s.name,
-          netWorth: s.netWorth,
-          rank: i + 1,
-        })),
-        boardSize.w,
-        boardSize.h,
-      ),
-    [ranked, boardSize],
+      ranked.map((s) => ({
+        id: s.id,
+        name: s.name,
+        isYou: s.id === currentStudentId || s.seatId === currentStudentId,
+        outfit: outfitForSeat(
+          { id: s.seatId, outfit: s.outfit },
+          s.id,
+          s.name
+        ),
+      })),
+    [ranked, currentStudentId]
   );
 
   const classTotal = useMemo(
     () => ranked.reduce((s, r) => s + Math.max(0, r.netWorth), 0),
-    [ranked],
+    [ranked]
   );
 
   const youRank = useMemo(() => {
-    const idx = ranked.findIndex((s) => s.id === currentStudentId);
-    return idx >= 0 ? idx + 1 : null;
+    const row = ranked.find(
+      (s) => s.id === currentStudentId || s.seatId === currentStudentId
+    );
+    return row?.rank ?? null;
   }, [ranked, currentStudentId]);
-
-  const hover = bubbles.find((b) => b.id === hoverId) || null;
 
   const overlay = (
     <div className="standings-overlay" role="dialog" aria-modal="true" aria-label="Class standings">
@@ -232,7 +165,7 @@ export default function ClassView({ currentStudentId, onBack }) {
         <div className="standings-title">
           <p className="standings-kicker">Class standings</p>
           <h2>
-            Bigger circle = more wealth
+            Ranked by portfolio value
             {youRank != null ? ` · You’re #${youRank}` : ""}
           </h2>
         </div>
@@ -245,84 +178,70 @@ export default function ClassView({ currentStudentId, onBack }) {
       {loading && <p className="standings-empty">Loading the class…</p>}
       {error && <p className="standings-empty standings-error">{error}</p>}
       {!loading && !error && ranked.length === 0 && (
-        <p className="standings-empty">No students on the roster yet.</p>
+        <p className="standings-empty">No students in this class yet.</p>
       )}
 
-      {!loading && bubbles.length > 0 && (
-        <div
-          ref={boardRef}
-          className="standings-board"
-          role="list"
-          aria-label="Student wealth bubbles"
-          onMouseLeave={() => setHoverId(null)}
-        >
-          {bubbles.map((b, i) => {
-            const isYou = b.id === currentStudentId;
-            const colors = colorForStudent(b.id, b.name);
-            const showLabel = b.r >= 42;
-            const showWorth = b.r >= 56;
-            return (
-              <button
-                key={b.id}
-                type="button"
-                role="listitem"
-                className={[
-                  "standings-bubble",
-                  isYou ? "is-you" : "",
-                  hoverId === b.id ? "is-hover" : "",
-                  b.netWorth <= 0 ? "is-broke" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                style={{
-                  width: b.r * 2,
-                  height: b.r * 2,
-                  left: b.x - b.r,
-                  top: b.y - b.r,
-                  background: colors.background,
-                  animationDelay: `${i * 35}ms`,
-                  zIndex: hoverId === b.id ? 5 : isYou ? 3 : 1,
-                }}
-                data-click="select"
-                aria-label={`${b.name}, ${money(b.netWorth)}, rank ${b.rank}`}
-                onMouseEnter={() => setHoverId(b.id)}
-                onFocus={() => setHoverId(b.id)}
-              >
-                <span className="standings-bubble-rank">#{b.rank}</span>
-                {showLabel ? (
-                  <>
-                    <strong>{isYou ? "You" : b.name.split(" ")[0]}</strong>
-                    {showWorth && <span>{money(b.netWorth)}</span>}
-                  </>
-                ) : (
-                  <strong className="standings-bubble-initials">{initials(b.name)}</strong>
-                )}
-              </button>
-            );
-          })}
-
-          {hover && (
-            <div
-              className="standings-tip"
-              style={{
-                left: Math.min(boardSize.w - 200, Math.max(12, hover.x + hover.r + 10)),
-                top: Math.min(boardSize.h - 120, Math.max(72, hover.y - 24)),
-              }}
-              role="tooltip"
-            >
-              <p className="standings-tip-kicker">
-                #{hover.rank}
-                {hover.id === currentStudentId ? " · you" : ""}
-              </p>
-              <strong>{hover.name}</strong>
-              <span>{money(hover.netWorth)}</span>
-              {classTotal > 0 && (
-                <span className="standings-tip-share">
-                  {((Math.max(0, hover.netWorth) / classTotal) * 100).toFixed(1)}% of class
-                </span>
-              )}
+      {!loading && !error && ranked.length > 0 && (
+        <div className="standings-body">
+          {walkers.length > 0 && (
+            <div className="standings-walk-wrap" aria-label="Class walking stage">
+              <Suspense fallback={<div className="standings-walk-stage standings-walk-fallback" />}>
+                <ClassWalkingStage walkers={walkers} className="standings-walk-stage" />
+              </Suspense>
             </div>
           )}
+
+          <div className="standings-table-panel">
+            <div className="standings-table-scroll">
+              <table className="standings-table">
+                <caption className="sr-only">
+                  Class standings ranked by total portfolio value
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Student</th>
+                    <th scope="col" className="standings-col-value">
+                      Portfolio value
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ranked.map((s) => {
+                    const isYou =
+                      s.id === currentStudentId || s.seatId === currentStudentId;
+                    const share =
+                      classTotal > 0
+                        ? ((Math.max(0, s.netWorth) / classTotal) * 100).toFixed(1)
+                        : null;
+                    return (
+                      <tr
+                        key={s.seatId || s.id}
+                        className={[
+                          "standings-row",
+                          isYou ? "is-you" : "",
+                          s.rank <= 3 ? `is-top-${s.rank}` : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                      >
+                        <td className="standings-player">
+                          <span className="standings-rank">#{s.rank}</span>
+                          <strong className="standings-name">{s.name}</strong>
+                          {isYou ? <span className="standings-you-pill">You</span> : null}
+                        </td>
+                        <td className="standings-value">
+                          <strong>{money(s.netWorth)}</strong>
+                          {share != null && (
+                            <span className="standings-share">{share}% of class</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </div>

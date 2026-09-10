@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { buyHome, buyShares, getMarket, getStudent, listStudents, sellShares } from "./api";
 import PriceChart from "./PriceChart";
 import PortfolioHistoryChart from "./PortfolioHistoryChart";
@@ -24,6 +24,7 @@ import { signOutStudentAuth } from "./studentAuth";
 import { signOutTeacherAuth, watchAccountAuth } from "./teacherAuth";
 import { setClickMuted } from "./clickSounds";
 import FloridaRealEstateMap from "./FloridaRealEstateMap";
+import { groupHoldingsByCategory } from "./portfolioAllocation";
 import "./App.css";
 
 const StudentCharacter = lazy(() => import("./StudentCharacter"));
@@ -97,40 +98,156 @@ const CATEGORIES = [
   {
     id: "stocks",
     title: "Stocks",
-    blurb: "Companies you can own a piece of",
+    blurb: "Own a slice of real companies",
     mark: "01",
+    tag: "Equity",
   },
   {
     id: "etfs",
     title: "ETFs",
-    blurb: "One trade, many holdings",
+    blurb: "One trade that spreads your risk",
     mark: "02",
+    tag: "Basket",
   },
   {
     id: "bonds",
     title: "Bonds",
     blurb: "Steadier yield from loans",
     mark: "03",
+    tag: "Income",
   },
   {
     id: "commodities",
     title: "Commodities",
-    blurb: "Gold, oil, crops, metals",
+    blurb: "Raw prices for gold, oil, crops, metals",
     mark: "04",
+    tag: "Goods",
   },
   {
     id: "currencies",
     title: "Currencies",
-    blurb: "Trade dollars for other money",
+    blurb: "Swap dollars for other money",
     mark: "05",
+    tag: "FX",
   },
   {
     id: "realestate",
     title: "Real estate",
-    blurb: "Florida homes with a classroom mortgage",
+    blurb: "Florida homes + a classroom mortgage",
     mark: "06",
+    tag: "Property",
   },
 ];
+
+function MarketGlyph({ id }) {
+  const common = {
+    viewBox: "0 0 48 48",
+    fill: "none",
+    xmlns: "http://www.w3.org/2000/svg",
+    "aria-hidden": "true",
+    className: "market-lane-glyph",
+  };
+  switch (id) {
+    case "stocks":
+      return (
+        <svg {...common}>
+          <path
+            d="M8 34 L18 24 L26 30 L40 14"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M30 14 H40 V24"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    case "etfs":
+      return (
+        <svg {...common}>
+          <rect x="8" y="22" width="8" height="16" rx="2" fill="currentColor" opacity="0.35" />
+          <rect x="20" y="14" width="8" height="24" rx="2" fill="currentColor" opacity="0.55" />
+          <rect x="32" y="8" width="8" height="30" rx="2" fill="currentColor" />
+        </svg>
+      );
+    case "bonds":
+      return (
+        <svg {...common}>
+          <rect
+            x="10"
+            y="14"
+            width="28"
+            height="20"
+            rx="4"
+            stroke="currentColor"
+            strokeWidth="3"
+          />
+          <path
+            d="M16 24 H32"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+          />
+          <circle cx="18" cy="20" r="1.6" fill="currentColor" />
+          <circle cx="30" cy="28" r="1.6" fill="currentColor" />
+        </svg>
+      );
+    case "commodities":
+      return (
+        <svg {...common}>
+          <path
+            d="M24 8 L38 16 V32 L24 40 L10 32 V16 Z"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M24 8 V40 M10 16 L38 32 M38 16 L10 32"
+            stroke="currentColor"
+            strokeWidth="2"
+            opacity="0.45"
+          />
+        </svg>
+      );
+    case "currencies":
+      return (
+        <svg {...common}>
+          <circle cx="24" cy="24" r="14" stroke="currentColor" strokeWidth="3" />
+          <path
+            d="M28 17 C24 15 18 16 18 22 C18 28 30 24 30 30 C30 35 24 37 19 35"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+          />
+          <path d="M24 13 V35" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+      );
+    case "realestate":
+      return (
+        <svg {...common}>
+          <path
+            d="M8 24 L24 10 L40 24 V38 H8 Z"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M20 38 V28 H28 V38"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
 
 /** Home-grid order by signup goal — riskier / more relevant markets float first. */
 const CATEGORY_ORDER_BY_GOAL = {
@@ -161,6 +278,8 @@ function StudentPortfolio({
   enabledMarkets,
   lockedStudentId,
   investmentGoal,
+  classId = "",
+  firestoreStudentId = "",
   portfolioRefreshToken = 0,
   busy,
   setError,
@@ -176,6 +295,7 @@ function StudentPortfolio({
   const [showNews, setShowNews] = useState(false);
   const [marketItems, setMarketItems] = useState([]);
   const [marketLoading, setMarketLoading] = useState(false);
+  const [pricingStatus, setPricingStatus] = useState(null);
   const [selectedAsset, setSelectedAsset] = useState(null);
   const [chartTicker, setChartTicker] = useState(null);
   const [shares, setShares] = useState("1");
@@ -185,6 +305,10 @@ function StudentPortfolio({
   const [selectedHolding, setSelectedHolding] = useState(null);
   const [tradePulse, setTradePulse] = useState(null); // { ticker, action }
   const tradePulseTimer = useRef(null);
+  const holdingsByCategory = useMemo(
+    () => groupHoldingsByCategory(portfolio?.holdings),
+    [portfolio?.holdings]
+  );
 
   useEffect(() => {
     if (lockedStudentId) setSelectedId(String(lockedStudentId));
@@ -197,7 +321,7 @@ function StudentPortfolio({
   }, []);
 
   async function loadPortfolio(id) {
-    const data = await getStudent(Number(id));
+    const data = await getStudent(id);
     setPortfolio(data);
     return data;
   }
@@ -219,7 +343,7 @@ function StudentPortfolio({
       setBusy(true);
       setError("");
       try {
-        const data = await getStudent(Number(selectedId));
+        const data = await getStudent(selectedId);
         if (!cancelled) setPortfolio(data);
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -240,6 +364,7 @@ function StudentPortfolio({
   useEffect(() => {
     if (!category) {
       setMarketItems([]);
+      setPricingStatus(null);
       return;
     }
     setStockIndustry("All");
@@ -252,9 +377,21 @@ function StudentPortfolio({
       setError("");
       try {
         const data = await getMarket(category);
-        if (!cancelled) setMarketItems(data.items || []);
+        if (!cancelled) {
+          setMarketItems(data.items || []);
+          setPricingStatus(data.pricing || null);
+          if (data.pricing && data.pricing.ok === false) {
+            setError(
+              data.pricing.error ||
+                "Live prices are unavailable right now. Buying is paused until prices load."
+            );
+          }
+        }
       } catch (err) {
-        if (!cancelled) setError(err.message);
+        if (!cancelled) {
+          setError(err.message);
+          setPricingStatus(null);
+        }
       } finally {
         if (!cancelled) setMarketLoading(false);
       }
@@ -273,6 +410,13 @@ function StudentPortfolio({
       if (category) {
         const data = await getMarket(category, true);
         setMarketItems(data.items || []);
+        setPricingStatus(data.pricing || null);
+        if (data.pricing && data.pricing.ok === false) {
+          setError(
+            data.pricing.error ||
+              "Live prices are unavailable right now. Buying is paused until prices load."
+          );
+        }
       }
     } catch (err) {
       setError(err.message);
@@ -441,6 +585,10 @@ function StudentPortfolio({
   }
 
   function openTradeDraft(item, action) {
+    if (action === "buy" && item.asset_type !== "bond" && !(Number(item.price) > 0)) {
+      setError("Wait for a live price before buying.");
+      return;
+    }
     setSelectedAsset(item);
     if (item.asset_type === "currency") {
       setTradeDraft({
@@ -576,7 +724,9 @@ function StudentPortfolio({
     <section className="panel student-panel">
       <header className="panel-header student-header">
         <div className="student-header-copy">
-          <h2>{portfolio ? portfolio.name : "Student portfolio"}</h2>
+          <h2 className="student-dash-name">
+            {portfolio ? portfolio.name : "Student portfolio"}
+          </h2>
           <p>Pick a market and put your classroom cash to work.</p>
         </div>
         <div className="student-header-right">
@@ -585,6 +735,8 @@ function StudentPortfolio({
               studentId={portfolio?.id}
               name={portfolio?.name || "Student"}
               cash={portfolio?.cash ?? 0}
+              classId={classId}
+              firestoreStudentId={firestoreStudentId}
               onCashChange={() => {
                 if (selectedId) loadPortfolio(selectedId).catch(() => {});
               }}
@@ -645,6 +797,7 @@ function StudentPortfolio({
           {showClass && (
             <ClassView
               currentStudentId={portfolio.id}
+              classId={classId}
               onBack={() => setShowClass(false)}
             />
           )}
@@ -662,6 +815,7 @@ function StudentPortfolio({
                   type="button"
                   className="home-tool home-tool-standings"
                   data-click="select"
+                  title="Class standings"
                   onClick={() => {
                     setShowClass(true);
                     setShowNews(false);
@@ -696,10 +850,10 @@ function StudentPortfolio({
 
               <div className="market-menu">
                 <div className="market-menu-head">
-                  <p className="market-menu-kicker">Trade</p>
+                  <p className="market-menu-kicker">Trade floor</p>
                   <h3>Pick a market</h3>
                   <p className="market-menu-lead">
-                    Open a floor, browse prices, and put cash to work.
+                    Each floor has its own feel — browse prices, then put cash to work.
                   </p>
                 </div>
                 <div className="market-lanes" role="list">
@@ -710,22 +864,23 @@ function StudentPortfolio({
                       role="listitem"
                       className={`market-lane market-lane-${c.id}`}
                       data-click="select"
-                      style={{ animationDelay: `${i * 45}ms` }}
+                      style={{ animationDelay: `${i * 55}ms` }}
                       onClick={() => {
                         setCategory(c.id);
                         setSelectedAsset(null);
                         setChartTicker(null);
                       }}
                     >
-                      <span className="market-lane-mark" aria-hidden="true">
-                        {c.mark || String(i + 1).padStart(2, "0")}
+                      <span className="market-lane-visual" aria-hidden="true">
+                        <MarketGlyph id={c.id} />
                       </span>
                       <span className="market-lane-copy">
+                        <span className="market-lane-tag">{c.tag || c.mark}</span>
                         <strong>{c.title}</strong>
-                        <span>{c.blurb}</span>
+                        <span className="market-lane-blurb">{c.blurb}</span>
                       </span>
                       <span className="market-lane-go" aria-hidden="true">
-                        →
+                        Open
                       </span>
                     </button>
                   ))}
@@ -784,6 +939,13 @@ function StudentPortfolio({
                 </div>
               )}
 
+              {category === "commodities" && (
+                <p className="bond-note currency-explain">
+                  These are raw commodity futures prices (not ETFs) — gold per ounce, oil per
+                  barrel, corn per bushel, and so on. Buying 1 unit means 1 of that measure.
+                </p>
+              )}
+
               {category === "currencies" && (
                 <p className="bond-note currency-explain">
                   Cash stays in U.S. dollars. Tap Buy and type how many dollars you want to
@@ -799,6 +961,13 @@ function StudentPortfolio({
               )}
 
               {marketLoading && <p className="empty">Loading live prices…</p>}
+
+              {!marketLoading && pricingStatus && pricingStatus.ok === false && (
+                <p className="bond-note currency-explain">
+                  Prices aren’t loading ({pricingStatus.priced}/{pricingStatus.total} priced).
+                  Buying is paused — try Refresh. {pricingStatus.error || ""}
+                </p>
+              )}
 
               {!marketLoading && category === "realestate" && (
                 visibleMarketItems.length === 0 ? (
@@ -874,13 +1043,17 @@ function StudentPortfolio({
                         ? draftQty * Number(item.price)
                         : NaN;
                     const heldShares = Number(heldRow?.shares) || 0;
+                    const noPrice =
+                      item.asset_type !== "bond" &&
+                      !(Number(item.price) > 0);
                     const buyBlocked =
                       draftOpen &&
                       tradeDraft.action === "buy" &&
-                      ((item.asset_type === "currency" &&
-                        (!Number.isFinite(usdAmount) ||
-                          usdAmount <= 0 ||
-                          usdAmount > cashAvail + 0.0001)) ||
+                      (noPrice ||
+                        (item.asset_type === "currency" &&
+                          (!Number.isFinite(usdAmount) ||
+                            usdAmount <= 0 ||
+                            usdAmount > cashAvail + 0.0001)) ||
                         (item.asset_type === "bond" &&
                           (!Number.isFinite(bondFaceSnapped) ||
                             bondFaceSnapped > cashAvail + 0.0001)) ||
@@ -1019,8 +1192,12 @@ function StudentPortfolio({
                               {item.industry}
                             </span>
                           )}
-                          {item.asset_type === "commodity" && item.kind && (
-                            <span className="bond-meta commodity-meta">{item.kind}</span>
+                          {item.asset_type === "commodity" && (
+                            <span className="bond-meta commodity-meta">
+                              {[item.kind, item.unit_label ? `per ${item.unit_label}` : null]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </span>
                           )}
                           {item.asset_type === "currency" && (
                             <span className="bond-meta currency-meta">
@@ -1064,10 +1241,12 @@ function StudentPortfolio({
                                         : "confirm"
                                       : "select"
                                   }
-                                  disabled={Boolean(buyBlocked)}
-                                  aria-disabled={Boolean(buyBlocked)}
+                                  disabled={Boolean(buyBlocked) || noPrice}
+                                  aria-disabled={Boolean(buyBlocked) || noPrice}
                                   aria-label={
-                                    draftOpen && tradeDraft.action === "buy"
+                                    noPrice
+                                      ? "Price unavailable"
+                                      : draftOpen && tradeDraft.action === "buy"
                                       ? buyBlocked
                                         ? "Not enough cash"
                                         : "Confirm buy"
@@ -1075,6 +1254,10 @@ function StudentPortfolio({
                                   }
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    if (noPrice) {
+                                      setError("Wait for a live price before buying.");
+                                      return;
+                                    }
                                     if (draftOpen && tradeDraft.action === "buy") {
                                       if (buyBlocked) return;
                                       quickTrade(item, "buy", tradeDraft.qty);
@@ -1087,6 +1270,8 @@ function StudentPortfolio({
                                     <span className="check-mark" aria-hidden="true">
                                       ✓
                                     </span>
+                                  ) : noPrice ? (
+                                    "No price"
                                   ) : (
                                     "Buy"
                                   )}
@@ -1702,7 +1887,16 @@ function StudentPortfolio({
               </div>
             )}
             <div className="holdings-list">
-            {portfolio.holdings?.map((h) => {
+            {holdingsByCategory.map((group) => (
+              <div key={group.id} className={`holdings-group holdings-group-${group.id}`}>
+                <div className="holdings-category">
+                  <h4>{group.label}</h4>
+                  <span>
+                    {group.holdings.length}{" "}
+                    {group.holdings.length === 1 ? "position" : "positions"}
+                  </span>
+                </div>
+            {group.holdings.map((h) => {
               const isBond = isBondTicker(h.ticker);
               const isCurrency = h.ticker in CURRENCY_LOTS;
               const item = holdingAsTradeItem(h);
@@ -2157,6 +2351,8 @@ function StudentPortfolio({
               </div>
               );
             })}
+              </div>
+            ))}
             </div>
           </section>
           )}
@@ -2184,7 +2380,7 @@ export default function App() {
 
   async function refreshApiStudents() {
     try {
-      const data = await listStudents(false);
+      const data = await listStudents(false, activeClassId || undefined);
       setApiStudents(data);
       return data;
     } catch (err) {
@@ -2298,14 +2494,15 @@ export default function App() {
   }, [joinCode, teacher, studentSession, teacherReady]);
 
   const classStudents = (() => {
-    const byId = new Map(apiStudents.map((s) => [s.id, s]));
+    const byId = new Map(apiStudents.map((s) => [String(s.id), s]));
     return roster
       .map((r) => {
-        const live = r.apiStudentId != null ? byId.get(r.apiStudentId) : null;
+        const tradingId = r.apiStudentId || r.id;
+        const live = tradingId != null ? byId.get(String(tradingId)) : null;
         if (live) return live;
-        if (r.apiStudentId != null) {
+        if (tradingId != null) {
           return {
-            id: r.apiStudentId,
+            id: tradingId,
             name: r.name,
             cash: r.cash ?? 0,
             holdings_count: r.holdingsCount ?? 0,
@@ -2395,6 +2592,8 @@ export default function App() {
         lockedStudentId={studentSession.apiStudentId || null}
         enabledMarkets={enabledMarkets}
         investmentGoal={investmentGoal}
+        classId={studentSession.classId || ""}
+        firestoreStudentId={studentSession.firestoreStudentId || ""}
         portfolioRefreshToken={portfolioRefreshToken}
         busy={busy}
         setError={setError}

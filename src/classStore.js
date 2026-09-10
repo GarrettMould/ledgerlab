@@ -189,12 +189,16 @@ export async function addClassStudent(
     authUid: authUid || null,
     investmentGoal: investmentGoal || null,
     cash: Number(cash) || 0,
-    apiStudentId,
+    apiStudentId: apiStudentId || null,
     holdingsCount: 0,
     outfit: outfit || null,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+  // Trading id is the Firestore seat id (durable ledger key).
+  if (!apiStudentId) {
+    await updateDoc(ref, { apiStudentId: ref.id, updatedAt: serverTimestamp() });
+  }
   if (authUid) {
     await setDoc(
       doc(db, "users", authUid),
@@ -247,7 +251,7 @@ export async function findStudentMembershipByAuthUid(authUid) {
   const primaryClassId = userSnap.exists() ? userSnap.data()?.primaryClassId : null;
   if (primaryClassId) {
     const seat = await findClassStudentByAuthUid(primaryClassId, authUid);
-    if (seat?.apiStudentId) {
+    if (seat?.apiStudentId || seat?.id) {
       return { classId: primaryClassId, ...seat };
     }
   }
@@ -262,7 +266,7 @@ export async function findStudentMembershipByAuthUid(authUid) {
     );
     for (const d of snap.docs) {
       const classId = d.ref.parent.parent?.id;
-      if (!classId || !d.data()?.apiStudentId) continue;
+      if (!classId) continue;
       if (primaryClassId && classId !== primaryClassId) {
         // Prefer the stored class when multiple seats exist.
         continue;
@@ -272,7 +276,7 @@ export async function findStudentMembershipByAuthUid(authUid) {
     // If primary filter skipped everything, take first valid seat.
     for (const d of snap.docs) {
       const classId = d.ref.parent.parent?.id;
-      if (!classId || !d.data()?.apiStudentId) continue;
+      if (!classId) continue;
       return { classId, id: d.id, ...d.data() };
     }
   } catch {
@@ -283,14 +287,15 @@ export async function findStudentMembershipByAuthUid(authUid) {
 
 export async function buildStudentSessionFromAuth(authUid, profile = {}) {
   const membership = await findStudentMembershipByAuthUid(authUid);
-  if (!membership?.classId || !membership?.apiStudentId) return null;
+  if (!membership?.classId || !membership?.id) return null;
   const cls = await getClass(membership.classId);
+  const tradingId = membership.apiStudentId || membership.id;
   return {
     classId: membership.classId,
     className: cls?.name || "",
     inviteCode: cls?.inviteCode || "",
     firestoreStudentId: membership.id,
-    apiStudentId: membership.apiStudentId,
+    apiStudentId: tradingId,
     name: membership.name || profile.name || "Student",
     authUid,
     email: membership.email || profile.email || null,

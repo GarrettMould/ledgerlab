@@ -21,6 +21,8 @@ backend/news_cache.json
 backend/classroom_news_cache.json
 backend/treasury_yields_cache.json
 backend/.env
+backend/serviceAccount.json
+backend/serviceAccount.online.json
 .env
 __pycache__/
 *.pyc

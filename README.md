@@ -30,7 +30,7 @@ Set `FINNHUB_API_KEY` in `backend/.env`. Optionally set `OPENAI_API_KEY` for rew
 
 ### 3. Firebase
 
-In the Firebase console: enable **Email/Password** auth and create a Firestore database. Teachers sign up on the main site with instructor code `9759`. Students join only via class invite links (`/?join=CODE`).
+In the Firebase console: enable **Email/Password** and **Google** under Authentication → Sign-in method. Add your deploy domain under **Authorized domains**. Teachers sign up on the main site with instructor code `9759`. Students join only via class invite links (`/?join=CODE`).
 
 ## Run
 
@@ -67,4 +67,12 @@ Set environment variables in the Vercel project (Production + Preview):
 
 After deploy, add your `*.vercel.app` domain under Firebase Auth → **Authorized domains**.
 
-**Caveat:** trading/cash data uses SQLite under `/tmp` on Vercel, so it can reset when the function cold-starts. Fine for demos; for a real class you’ll want a hosted DB later.
+**Caveat (legacy):** without Firebase Admin credentials the API falls back to SQLite under `/tmp` on Vercel (ephemeral). For a real class, set `FIREBASE_SERVICE_ACCOUNT_JSON` (or `GOOGLE_APPLICATION_CREDENTIALS`) so cash/holdings/snapshots live in Firestore under each class student.
+
+### Firestore ledger setup
+
+1. Firebase console → Project settings → Service accounts → **Generate new private key**.
+2. Put the JSON in Vercel/backend env as `FIREBASE_SERVICE_ACCOUNT_JSON` (single-line JSON string).
+3. Set `FIREBASE_PROJECT_ID` to the same project as `VITE_FIREBASE_PROJECT_ID`.
+4. Deploy `firestore.rules` (cash + `holdings` / `snapshots` are Admin-only writes).
+5. Confirm `GET /api/health` returns `"ledger": "firestore"`.

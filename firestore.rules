@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow create, update: if isSelf(uid);
+      allow delete: if false;
+    }
+
+    match /classes/{classId} {
+      // Teachers manage classes from the client today; tighten later with custom claims.
+      allow read: if signedIn();
+      allow write: if signedIn();
+
+      match /students/{studentId} {
+        allow read: if signedIn();
+        // Cash + holdingsCount are written by the Admin SDK (Flask ledger) only.
+        allow create: if signedIn();
+        allow update: if signedIn()
+          && !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['cash', 'holdingsCount']);
+        allow delete: if signedIn();
+
+        match /holdings/{ticker} {
+          allow read: if signedIn();
+          allow write: if false;
+        }
+        match /snapshots/{snapId} {
+          allow read: if signedIn();
+          allow write: if false;
+        }
+
+        match /transfers/{transferId} {
+          allow read: if signedIn();
+          allow create, update: if signedIn();
+          allow delete: if false;
+        }
+      }
+    }
+  }
+}

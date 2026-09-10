@@ -92,7 +92,9 @@ export default function TeacherDashboard({
 
   async function loadClassAggregates(classId, rosterRows) {
     const rows = rosterRows || (classId ? await listClassStudents(classId) : []);
-    const ids = rows.map((s) => s.apiStudentId).filter((id) => id != null);
+    const ids = rows
+      .map((s) => s.apiStudentId || s.id)
+      .filter((id) => id != null && id !== "");
     if (!ids.length) {
       setClassPortfolios([]);
       return [];
@@ -100,7 +102,7 @@ export default function TeacherDashboard({
     const portfolios = await Promise.all(
       ids.map(async (id) => {
         try {
-          return await getStudent(id);
+          return await getStudent(id, classId);
         } catch {
           return null;
         }
@@ -297,9 +299,9 @@ export default function TeacherDashboard({
     setBusy(true);
     setError("");
     try {
-      if (student.apiStudentId) {
+      if (student.apiStudentId || student.id) {
         try {
-          await deleteStudent(student.apiStudentId);
+          await deleteStudent(student.apiStudentId || student.id, activeClass.id);
         } catch {
           // Local API student may already be gone.
         }
@@ -326,9 +328,9 @@ export default function TeacherDashboard({
     setError("");
     try {
       for (const s of roster) {
-        if (s.apiStudentId) {
+        if (s.apiStudentId || s.id) {
           try {
-            await deleteStudent(s.apiStudentId);
+            await deleteStudent(s.apiStudentId || s.id, activeClass.id);
           } catch {
             /* ignore */
           }

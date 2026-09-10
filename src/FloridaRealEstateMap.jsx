@@ -1,17 +1,16 @@
 import { Suspense, useMemo, useState } from "react";
 import HouseCharacter, { houseStyleForCity } from "./HouseCharacter";
-
-/** Marker positions calibrated to the detailed Florida outline. */
-const CITY_POINTS = {
-  "FL-PNS": { x: 42, y: 72, labelSide: "bottom" },
-  "FL-TLH": { x: 128, y: 68, labelSide: "bottom" },
-  "FL-JAX": { x: 248, y: 78, labelSide: "left" },
-  "FL-ORL": { x: 222, y: 188, labelSide: "right" },
-  "FL-TPA": { x: 158, y: 218, labelSide: "left" },
-  "FL-NAP": { x: 178, y: 302, labelSide: "left" },
-  "FL-FLL": { x: 262, y: 318, labelSide: "left" },
-  "FL-MIA": { x: 248, y: 358, labelSide: "left" },
-};
+import {
+  CITY_POINTS,
+  EVERGLADES_PATH,
+  HIGHLIGHT_STATE,
+  LAKE_OKEECHOBEE,
+  MAP_VIEW,
+  NEIGHBOR_STATES,
+  STATE_LABELS,
+  STATE_PATHS,
+  WATER_LABELS,
+} from "./data/southeastMap";
 
 function money(n) {
   if (n == null || Number.isNaN(Number(n))) return "—";
@@ -79,20 +78,23 @@ export default function FloridaRealEstateMap({
     setConfirmBuy(false);
   }
 
+  const minY = MAP_VIEW.minY ?? 0;
+  const viewH = MAP_VIEW.height - minY;
+
   return (
     <div className="florida-market">
       <p className="florida-map-hint">
-        Tap a city to inspect that market’s house, see what you pay today, and buy with a
-        classroom mortgage.
+        Tap a city on the Florida map to inspect that market’s house, see what you pay
+        today, and buy with a classroom mortgage.
       </p>
 
       <div className="florida-market-layout">
         <div className="florida-map-stage">
           <svg
             className="florida-map-svg"
-            viewBox="0 -52 320 492"
+            viewBox={`0 ${minY} ${MAP_VIEW.width} ${viewH}`}
             role="img"
-            aria-label="Interactive map of Florida real estate markets"
+            aria-label="Interactive map of Florida and the Southeast"
           >
             <defs>
               <linearGradient id="flOcean" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -106,9 +108,9 @@ export default function FloridaRealEstateMap({
                 <stop offset="100%" stopColor="#bfd9a4" />
               </linearGradient>
               <linearGradient id="flMainland" x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" stopColor="#dfe9cf" />
-                <stop offset="55%" stopColor="#d3e6bc" />
-                <stop offset="100%" stopColor="#c8dcad" />
+                <stop offset="0%" stopColor="#d9e4cc" />
+                <stop offset="55%" stopColor="#cdddb8" />
+                <stop offset="100%" stopColor="#c0d4a8" />
               </linearGradient>
               <linearGradient id="flWetland" x1="0%" y1="0%" x2="0%" y2="100%">
                 <stop offset="0%" stopColor="#9fc48a" stopOpacity="0.35" />
@@ -136,128 +138,113 @@ export default function FloridaRealEstateMap({
                   floodOpacity="0.18"
                 />
               </filter>
+              <clipPath id="flFrame">
+                <rect
+                  x="0"
+                  y={minY}
+                  width={MAP_VIEW.width}
+                  height={viewH}
+                  rx="28"
+                />
+              </clipPath>
             </defs>
 
-            <rect x="0" y="-52" width="320" height="492" rx="28" fill="url(#flOcean)" />
-            <rect x="0" y="-52" width="320" height="492" rx="28" fill="url(#flRipple)" />
-
-            {/* Gulf & Atlantic labels */}
-            <text className="florida-water-label" x="28" y="250" transform="rotate(-78 28 250)">
-              Gulf of Mexico
-            </text>
-            <text className="florida-water-label" x="292" y="210" transform="rotate(78 292 210)">
-              Atlantic
-            </text>
-
-            {/* Southern Georgia / Alabama — Florida is not an island */}
-            <path
-              fill="url(#flMainland)"
-              stroke="#4f7348"
-              strokeWidth="2"
-              strokeLinejoin="round"
-              d="
-                M -8 -56
-                L 328 -56
-                L 328 8
-                C 318 18, 308 28, 300 38
-                C 288 52, 276 58, 262 56
-                C 248 54, 236 48, 220 50
-                C 200 52, 178 58, 156 56
-                C 132 54, 110 50, 88 48
-                C 64 46, 42 50, 28 62
-                C 18 70, 10 78, 4 86
-                L -8 92
-                Z
-              "
+            <rect
+              x="0"
+              y={minY}
+              width={MAP_VIEW.width}
+              height={viewH}
+              rx="28"
+              fill="url(#flOcean)"
             />
-            <text className="florida-state-label" x="96" y="-8" textAnchor="middle">
-              Georgia
-            </text>
-            <text className="florida-state-label" x="36" y="28" textAnchor="middle">
-              Ala.
-            </text>
-
-            {/* Detailed Florida silhouette (joins mainland along the northern border) */}
-            <path
-              fill="url(#flLand)"
-              stroke="#4f7348"
-              strokeWidth="2.4"
-              strokeLinejoin="round"
-              d="
-                M 14 78
-                C 22 54, 48 46, 72 50
-                L 108 54
-                C 138 56, 168 48, 198 52
-                C 222 55, 242 50, 258 58
-                C 272 64, 278 78, 274 94
-                C 268 122, 264 146, 260 168
-                C 256 196, 258 222, 264 248
-                C 270 274, 278 298, 282 322
-                C 286 344, 284 364, 272 384
-                C 258 408, 236 424, 210 430
-                C 190 434, 172 426, 162 408
-                C 154 392, 156 372, 160 354
-                C 164 330, 160 308, 150 290
-                C 138 268, 118 252, 98 238
-                C 78 224, 62 204, 52 182
-                C 42 160, 34 138, 26 118
-                C 18 98, 12 86, 14 78
-                Z
-              "
+            <rect
+              x="0"
+              y={minY}
+              width={MAP_VIEW.width}
+              height={viewH}
+              rx="28"
+              fill="url(#flRipple)"
             />
 
-            {/* Soft join so the state line doesn’t read as a coastline */}
-            <path
-              fill="url(#flLand)"
-              stroke="none"
-              d="
-                M 16 76
-                C 24 54, 48 48, 72 51
-                L 108 54
-                C 138 56, 168 49, 198 52
-                C 222 55, 242 51, 256 57
-                L 256 64
-                C 240 56, 220 58, 198 56
-                C 168 52, 138 60, 108 58
-                L 72 54
-                C 48 52, 28 60, 18 78
-                Z
-              "
-            />
-            {/* Lake Okeechobee */}
-            <ellipse
-              cx="228"
-              cy="268"
-              rx="18"
-              ry="14"
-              fill="#9ec9d6"
-              stroke="#6f9eab"
-              strokeWidth="1.2"
-              opacity="0.9"
-            />
-            <text className="florida-lake-label" x="228" y="272" textAnchor="middle">
-              Okeechobee
-            </text>
+            <g clipPath="url(#flFrame)" filter="url(#flSoft)">
+              {NEIGHBOR_STATES.map((name) => {
+                const d = STATE_PATHS[name];
+                if (!d) return null;
+                return (
+                  <path
+                    key={name}
+                    className="florida-neighbor-state"
+                    d={d}
+                    fill="url(#flMainland)"
+                    stroke="#4f7348"
+                    strokeWidth="1.4"
+                    strokeLinejoin="round"
+                  />
+                );
+              })}
 
-            {/* Everglades wash */}
-            <path
-              d="M 170 300 C 190 292, 220 300, 250 330 C 240 360, 210 390, 180 392 C 168 360, 160 328, 170 300 Z"
-              fill="url(#flWetland)"
-            />
+              <path
+                className="florida-state"
+                d={STATE_PATHS[HIGHLIGHT_STATE]}
+                fill="url(#flLand)"
+                stroke="#3f6a3c"
+                strokeWidth="2.4"
+                strokeLinejoin="round"
+              />
 
-            {/* Highway cues */}
-            <path
-              className="florida-hwy"
-              d="M 48 76 L 250 82"
-            />
-            <path
-              className="florida-hwy"
-              d="M 250 82 L 250 350"
-            />
-            <path
-              className="florida-hwy"
-              d="M 140 70 L 168 220 L 190 300 L 220 360"
-            />
+              <path d={EVERGLADES_PATH} fill="url(#flWetland)" />
+
+              <ellipse
+                cx={LAKE_OKEECHOBEE.cx}
+                cy={LAKE_OKEECHOBEE.cy}
+                rx={LAKE_OKEECHOBEE.rx}
+                ry={LAKE_OKEECHOBEE.ry}
+                fill="#9ec9d6"
+                stroke="#6f9eab"
+                strokeWidth="1.2"
+                opacity="0.92"
+              />
+              <text
+                className="florida-lake-label"
+                x={LAKE_OKEECHOBEE.cx}
+                y={LAKE_OKEECHOBEE.cy + 3}
+                textAnchor="middle"
+              >
+                Okeechobee
+              </text>
+            </g>
+
+            {Object.entries(WATER_LABELS).map(([key, label]) => (
+              <text
+                key={key}
+                className="florida-water-label"
+                x={label.x}
+                y={label.y}
+                transform={`rotate(${label.rotate} ${label.x} ${label.y})`}
+              >
+                {label.text}
+              </text>
+            ))}
+
+            {Object.entries(STATE_LABELS).map(([name, pt]) => {
+              if (pt.x < 8 || pt.x > MAP_VIEW.width - 8) return null;
+              if (pt.y < minY + 10 || pt.y > MAP_VIEW.height - 10) return null;
+              return (
+                <text
+                  key={name}
+                  className={
+                    name === HIGHLIGHT_STATE
+                      ? "florida-state-label florida-state-label-main"
+                      : "florida-state-label"
+                  }
+                  x={pt.x}
+                  y={pt.y}
+                  textAnchor="middle"
+                >
+                  {name === "South Carolina" ? "S. Carolina" : name}
+                </text>
+              );
+            })}
 
             {markers.map(({ ticker, point, item }) => {
               const isActive = activeTicker === ticker;

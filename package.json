@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:api": "cd backend && .venv/bin/python app.py",
+    "dev:all": "npm run dev:api & npm run dev",
     "build": "vite build",
     "lint": "oxlint",
     "preview": "vite preview"

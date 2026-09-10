@@ -15,6 +15,16 @@ import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+import firestore_ledger as fs_ledger
+from portfolio_service import (
+    build_history_payload,
+    compute_totals as portfolio_compute_totals,
+    ensure_fs_starting_snapshot,
+    record_fs_snapshot,
+    serialize_portfolio,
+    using_firestore,
+)
+
 try:
     from dotenv import load_dotenv
 
@@ -43,7 +53,8 @@ CORS(app)
 _quote_cache: dict[str, tuple[float, float, float | None]] = {}
 _category_cache: dict[str, tuple[float, list[dict]]] = {}
 CACHE_TTL_SECONDS = 120
-STALE_OK_SECONDS = 60 * 60 * 24
+# Keep showing last-known prices for a week if live providers fail (classroom continuity).
+STALE_OK_SECONDS = 60 * 60 * 24 * 7
 
 FINNHUB_API_KEY = (os.environ.get("FINNHUB_API_KEY") or "").strip()
 FINNHUB_BASE = "https://finnhub.io/api/v1"
@@ -56,6 +67,8 @@ HTTP_HEADERS = {
 # Free tier is ~60 calls/min — pause briefly if we get throttled.
 _finnhub_cooldown_until = 0.0
 FINNHUB_COOLDOWN_SECONDS = 65
+_last_quote_provider_error: str | None = None
+_last_quote_source: str | None = None
 
 
 def _finnhub_on_cooldown() -> bool:
@@ -596,87 +609,146 @@ MARKET_CATALOG = {
             "note": "Coupon from JPMorgan senior notes issued 2023; sold at $100 face in class",
         },
     ],
-    # Commodity exposure via liquid ETFs that track physical/futures markets.
-    # Live Finnhub prices (same path as stocks/ETFs).
+    # Commodity markets by raw good. Prefer Yahoo futures (GC=F, CL=F, …).
+    # Finnhub free tier lacks those futures, so each item also maps to a
+    # Finnhub-traded feed (usually a commodity ETF) + optional scale so the
+    # classroom price still approximates per-unit commodity quotes.
     "commodities": [
         {
-            "ticker": "GLD",
+            "ticker": "GOLD",
             "name": "Gold",
             "kind": "Precious metal",
+            "yahoo": "GC=F",
+            "finnhub": "GLD",
+            "scale": 10,
+            "unit_label": "troy oz",
             "info": {
-                "summary": "Gold is a rare yellow precious metal that resists rust and corrosion. It is used in jewelry, electronics, and as a store of value by investors and central banks. Most newly mined gold comes from China, Australia, Russia, Canada, and the United States.",
+                "summary": "Gold is a rare yellow precious metal used in jewelry, electronics, and as a store of value. The classroom price is dollars per troy ounce.",
             },
         },
         {
-            "ticker": "SLV",
+            "ticker": "SILVER",
             "name": "Silver",
             "kind": "Precious metal",
+            "yahoo": "SI=F",
+            "finnhub": "SLV",
+            "scale": 1,
+            "unit_label": "troy oz",
             "info": {
-                "summary": "Silver is a soft white precious metal and an excellent conductor of electricity. It is used in jewelry, electronics, and solar panels. Top mine producers include Mexico, China, and Peru, often as a byproduct of other metal ores.",
+                "summary": "Silver is used in jewelry, electronics, and solar panels. Price here is dollars per troy ounce.",
             },
         },
         {
-            "ticker": "PPLT",
+            "ticker": "PLAT",
             "name": "Platinum",
             "kind": "Precious metal",
+            "yahoo": "PL=F",
+            "finnhub": "PPLT",
+            "scale": 10,
+            "unit_label": "troy oz",
             "info": {
-                "summary": "Platinum is a rare silvery-white precious metal. It is mainly used in car catalytic converters, jewelry, and industrial catalysts. Most of the world’s supply is mined in South Africa, with more from Russia and Zimbabwe.",
+                "summary": "Platinum is used in catalytic converters, jewelry, and industry. Price here is dollars per troy ounce.",
             },
         },
         {
-            "ticker": "USO",
+            "ticker": "OIL",
             "name": "Crude Oil",
             "kind": "Energy",
+            "yahoo": "CL=F",
+            "finnhub": "USO",
+            "scale": 1,
+            "unit_label": "barrel",
             "info": {
-                "summary": "Crude oil is a liquid fossil fuel found in underground rock reservoirs. It is refined into gasoline, diesel, jet fuel, and materials for plastics. Major producers include the United States, Saudi Arabia, Russia, and Canada.",
+                "summary": "Crude oil is refined into fuels and plastics. Price here tracks the crude oil market in dollars per barrel.",
             },
         },
         {
-            "ticker": "UNG",
+            "ticker": "NATGAS",
             "name": "Natural Gas",
             "kind": "Energy",
+            "yahoo": "NG=F",
+            "finnhub": "UNG",
+            "scale": 1,
+            "unit_label": "MMBtu",
             "info": {
-                "summary": "Natural gas is mostly methane and is often found with oil or in separate gas fields. It powers electricity plants, heats buildings, and feeds fertilizer and chemical industries. Leading producers include the United States, Russia, Iran, and Qatar.",
+                "summary": "Natural gas powers electricity and heat. Price here tracks the natural gas market in dollars per MMBtu.",
             },
         },
         {
-            "ticker": "CPER",
+            "ticker": "COPPER",
             "name": "Copper",
             "kind": "Industrial metal",
+            "yahoo": "HG=F",
+            "finnhub": "CPER",
+            "scale": 1,
+            "unit_label": "lb",
             "info": {
-                "summary": "Copper is a reddish industrial metal prized for carrying electricity well. It is used in wiring, electronics, construction, and electric vehicles. Chile is the top mine producer, followed by Peru, the DRC, China, and the United States.",
-            },
-        },
-        {
-            "ticker": "DBA",
-            "name": "Agriculture Basket",
-            "kind": "Agriculture",
-            "info": {
-                "summary": "This is not one crop — it tracks a mix of farm commodities such as grains and softs. Those goods feed people and livestock around the world. Major farm exporters include the United States, Brazil, Argentina, and India.",
+                "summary": "Copper is used in wiring, construction, and EVs. Price here tracks the copper market in dollars per pound.",
             },
         },
         {
             "ticker": "CORN",
             "name": "Corn",
             "kind": "Agriculture",
+            "yahoo": "ZC=F",
+            "finnhub": "CORN",
+            "scale": 1,
+            "divisor": 100,
+            "unit_label": "bushel",
             "info": {
-                "summary": "Corn (maize) is a cereal grain grown widely for food and feed. It is also used for ethanol fuel and sweeteners. Top producers include the United States, China, Brazil, and Argentina.",
+                "summary": "Corn is used for food, feed, and ethanol. Price here tracks the corn market in dollars per bushel.",
             },
         },
         {
-            "ticker": "WEAT",
+            "ticker": "WHEAT",
             "name": "Wheat",
             "kind": "Agriculture",
+            "yahoo": "ZW=F",
+            "finnhub": "WEAT",
+            "scale": 1,
+            "divisor": 100,
+            "unit_label": "bushel",
             "info": {
-                "summary": "Wheat is a staple cereal grain used to make bread, pasta, and flour. It grows best in temperate grasslands. Major producers include China, India, Russia, the United States, and Canada.",
+                "summary": "Wheat is used for bread, pasta, and flour. Price here tracks the wheat market in dollars per bushel.",
             },
         },
         {
-            "ticker": "CANE",
+            "ticker": "SOY",
+            "name": "Soybeans",
+            "kind": "Agriculture",
+            "yahoo": "ZS=F",
+            "finnhub": "SOYB",
+            "scale": 1,
+            "divisor": 100,
+            "unit_label": "bushel",
+            "info": {
+                "summary": "Soybeans are used for oil and animal feed. Price here tracks the soybean market in dollars per bushel.",
+            },
+        },
+        {
+            "ticker": "SUGAR",
             "name": "Sugar",
             "kind": "Agriculture",
+            "yahoo": "SB=F",
+            "finnhub": "CANE",
+            "scale": 1,
+            "divisor": 100,
+            "unit_label": "lb",
             "info": {
-                "summary": "Sugar comes mainly from tropical sugarcane and cooler-climate sugar beets. It sweetens food and drinks, and in Brazil cane is also made into ethanol. Brazil, India, and Thailand lead cane production.",
+                "summary": "Sugar comes from cane and beets. Price here tracks the sugar market in dollars per pound.",
+            },
+        },
+        {
+            "ticker": "COFFEE",
+            "name": "Coffee",
+            "kind": "Agriculture",
+            "yahoo": "KC=F",
+            "finnhub": "JO",
+            "scale": 1,
+            "divisor": 100,
+            "unit_label": "lb",
+            "info": {
+                "summary": "Coffee is grown in tropical regions worldwide. Price here tracks the coffee market in dollars per pound.",
             },
         },
     ],
@@ -896,7 +968,67 @@ MARKET_CATALOG = {
 
 BOND_BY_TICKER = {b["ticker"]: b for b in MARKET_CATALOG["bonds"]}
 CURRENCY_BY_TICKER = {c["ticker"]: c for c in MARKET_CATALOG["currencies"]}
+COMMODITY_BY_TICKER = {c["ticker"]: c for c in MARKET_CATALOG["commodities"]}
 REALESTATE_BY_TICKER = {h["ticker"]: h for h in MARKET_CATALOG["realestate"]}
+
+_CURRENCY_YAHOO = {
+    "EUR": "EURUSD=X",
+    "GBP": "GBPUSD=X",
+    "JPY": "USDJPY=X",
+    "CAD": "USDCAD=X",
+    "AUD": "AUDUSD=X",
+    "CHF": "USDCHF=X",
+    "MXN": "USDMXN=X",
+    "NZD": "NZDUSD=X",
+}
+
+
+def yahoo_quote_symbol(local_ticker: str) -> str:
+    if local_ticker in _CURRENCY_YAHOO:
+        return _CURRENCY_YAHOO[local_ticker]
+    commodity = COMMODITY_BY_TICKER.get(local_ticker)
+    if commodity and commodity.get("yahoo"):
+        return commodity["yahoo"]
+    return local_ticker
+
+
+def commodity_price_scale(local_ticker: str) -> float:
+    meta = COMMODITY_BY_TICKER.get(local_ticker) or {}
+    try:
+        scale = float(meta.get("scale") or 1)
+    except (TypeError, ValueError):
+        return 1.0
+    return scale if scale > 0 else 1.0
+
+
+def commodity_yahoo_divisor(local_ticker: str) -> float:
+    """Yahoo ag/softs futures are often quoted in cents — divide to dollars."""
+    meta = COMMODITY_BY_TICKER.get(local_ticker) or {}
+    try:
+        div = float(meta.get("divisor") or 1)
+    except (TypeError, ValueError):
+        return 1.0
+    return div if div > 0 else 1.0
+
+
+def finnhub_symbol_for(local_ticker: str) -> tuple[str, bool]:
+    """Return (provider_symbol, is_forex)."""
+    cur = CURRENCY_BY_TICKER.get(local_ticker)
+    if cur:
+        return cur["finnhub"], True
+    commodity = COMMODITY_BY_TICKER.get(local_ticker)
+    if commodity and commodity.get("finnhub"):
+        return commodity["finnhub"], False
+    return local_ticker, False
+
+
+def _apply_commodity_scale(
+    local_symbol: str, price: float | None, prev: float | None
+) -> tuple[float | None, float | None]:
+    scale = commodity_price_scale(local_symbol)
+    if scale == 1 or price is None:
+        return price, prev
+    return price * scale, (prev * scale if prev is not None else None)
 
 
 def estimate_mortgage_payment(
@@ -1143,14 +1275,6 @@ def currency_usd_price(raw: float, meta: dict) -> float:
     return price * lot
 
 
-def finnhub_symbol_for(local_ticker: str) -> tuple[str, bool]:
-    """Return (provider_symbol, is_forex)."""
-    cur = CURRENCY_BY_TICKER.get(local_ticker)
-    if cur:
-        return cur["finnhub"], True
-    return local_ticker, False
-
-
 def _finnhub_get(path: str, params: dict | None = None) -> tuple[dict | list | None, str | None]:
     if not FINNHUB_API_KEY:
         return None, "FINNHUB_API_KEY is not set"
@@ -1181,6 +1305,9 @@ def _finnhub_get(path: str, params: dict | None = None) -> tuple[dict | list | N
 def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | None]:
     provider, _is_fx = finnhub_symbol_for(local_symbol)
     payload, err = _finnhub_get("/quote", {"symbol": provider})
+    if err:
+        global _last_quote_provider_error
+        _last_quote_provider_error = err
     if not isinstance(payload, dict):
         return local_symbol, None, None
     current = payload.get("c")
@@ -1201,6 +1328,9 @@ def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | No
         price = currency_usd_price(price, cur_meta)
         if prev_f is not None:
             prev_f = currency_usd_price(prev_f, cur_meta)
+    elif local_symbol in COMMODITY_BY_TICKER:
+        # Finnhub uses ETF/proxy feeds; scale toward per-unit classroom prices.
+        price, prev_f = _apply_commodity_scale(local_symbol, price, prev_f)
 
     change_pct = None
     if pct is not None and not cur_meta:
@@ -1209,6 +1339,65 @@ def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | No
         except (TypeError, ValueError):
             change_pct = None
     if change_pct is None and prev_f:
+        change_pct = ((price - prev_f) / prev_f) * 100
+    return local_symbol, price, change_pct
+
+
+def _yfinance_quote_one(local_symbol: str) -> tuple[str, float | None, float | None]:
+    """Fallback live quote via Yahoo Finance (same source as classroom charts)."""
+    global _last_quote_provider_error
+    yahoo = yahoo_quote_symbol(local_symbol)
+    try:
+        import yfinance as yf
+
+        ticker = yf.Ticker(yahoo)
+        price = None
+        prev_f = None
+        try:
+            fast = ticker.fast_info
+            last = getattr(fast, "last_price", None)
+            if last is None and isinstance(fast, dict):
+                last = fast.get("last_price") or fast.get("lastPrice")
+            prev = getattr(fast, "previous_close", None)
+            if prev is None and isinstance(fast, dict):
+                prev = fast.get("previous_close") or fast.get("previousClose")
+            if last not in (None, 0, 0.0):
+                price = float(last)
+            if prev not in (None, 0, 0.0):
+                prev_f = float(prev)
+        except Exception:
+            price = None
+            prev_f = None
+
+        if price is None:
+            hist = ticker.history(period="5d", interval="1d", auto_adjust=True)
+            if hist is not None and not getattr(hist, "empty", True) and "Close" in hist.columns:
+                closes = [float(v) for v in hist["Close"].tolist() if v is not None]
+                if closes:
+                    price = closes[-1]
+                    if len(closes) >= 2:
+                        prev_f = closes[-2]
+    except Exception as exc:
+        _last_quote_provider_error = f"yfinance: {exc}"
+        return local_symbol, None, None
+
+    if price is None:
+        return local_symbol, None, None
+
+    cur_meta = CURRENCY_BY_TICKER.get(local_symbol)
+    if cur_meta:
+        price = currency_usd_price(price, cur_meta)
+        if prev_f is not None:
+            prev_f = currency_usd_price(prev_f, cur_meta)
+    elif local_symbol in COMMODITY_BY_TICKER:
+        div = commodity_yahoo_divisor(local_symbol)
+        if div != 1:
+            price = price / div
+            if prev_f is not None:
+                prev_f = prev_f / div
+
+    change_pct = None
+    if prev_f:
         change_pct = ((price - prev_f) / prev_f) * 100
     return local_symbol, price, change_pct
 
@@ -1232,6 +1421,40 @@ def _load_disk_quotes() -> None:
         pass
 
 
+def _commodity_quote_from_feed_cache(
+    local: str, *, allow_stale: bool = False
+) -> tuple[float | None, float | None]:
+    """Derive GOLD/OIL/… from cached Finnhub ETF feeds (GLD/USO/…)."""
+    meta = COMMODITY_BY_TICKER.get(local)
+    if not meta:
+        return None, None
+    feed = meta.get("finnhub")
+    if not feed or feed == local:
+        return None, None
+    price, change_pct = _cache_get(feed, allow_stale=allow_stale)
+    if price is None:
+        return None, None
+    scaled = float(price) * commodity_price_scale(local)
+    src = _quote_cache.get(feed)
+    if src:
+        _quote_cache[local] = (scaled, src[1], change_pct)
+    return scaled, change_pct
+
+
+def _seed_commodity_quotes_from_feeds() -> None:
+    for local, meta in COMMODITY_BY_TICKER.items():
+        if local in _quote_cache and _quote_cache[local][0] is not None:
+            continue
+        feed = meta.get("finnhub")
+        if not feed or feed == local:
+            continue
+        src = _quote_cache.get(feed)
+        if not src or src[0] is None:
+            continue
+        scale = commodity_price_scale(local)
+        _quote_cache[local] = (float(src[0]) * scale, src[1], src[2])
+
+
 def _save_disk_quotes() -> None:
     payload = {
         ticker: {
@@ -1248,6 +1471,7 @@ def _save_disk_quotes() -> None:
 
 
 _load_disk_quotes()
+_seed_commodity_quotes_from_feeds()
 
 
 @contextmanager
@@ -1476,51 +1700,105 @@ def _cache_get(symbol: str, *, allow_stale: bool = False) -> tuple[float | None,
 def fetch_quotes_batch(
     tickers: list[str], *, force_refresh: bool = False
 ) -> dict[str, tuple[float | None, float | None]]:
-    """Fetch live quotes from Finnhub (with disk/memory cache)."""
+    """Fetch live quotes (Finnhub first, yfinance fallback, then stale cache)."""
+    global _last_quote_source, _last_quote_provider_error
+
     symbols = [t.strip().upper() for t in tickers if t and t.strip()]
     out: dict[str, tuple[float | None, float | None]] = {s: (None, None) for s in symbols}
     if not symbols:
         return out
 
+    sources_used: set[str] = set()
+    _last_quote_provider_error = None
     need: list[str] = []
     for symbol in symbols:
         bond = BOND_BY_TICKER.get(symbol)
         if bond:
             out[symbol] = (float(bond["price"]), None)
+            sources_used.add("catalog")
             continue
         home = REALESTATE_BY_TICKER.get(symbol)
         if home:
             out[symbol] = (float(home["price"]), home.get("yoy_change_pct"))
+            sources_used.add("catalog")
             continue
         hit = _cache_get(symbol)
+        if hit[0] is None:
+            derived = _commodity_quote_from_feed_cache(symbol)
+            if derived[0] is not None:
+                hit = derived
+                sources_used.add("derived")
         if hit[0] is not None and not force_refresh:
             out[symbol] = hit
+            sources_used.add("cache")
         else:
             need.append(symbol)
 
     if not need:
-        return out
-
-    if not finnhub_configured() or _finnhub_on_cooldown():
-        for symbol in need:
-            stale = _cache_get(symbol, allow_stale=True)
-            if stale[0] is not None:
-                out[symbol] = stale
+        _last_quote_source = "+".join(sorted(sources_used)) or "cache"
         return out
 
     now = datetime.now(timezone.utc).timestamp()
-    workers = min(8, len(need))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_finnhub_quote_one, symbol) for symbol in need]
-        for fut in as_completed(futures):
-            try:
-                local, price, change_pct = fut.result()
-            except Exception:
-                continue
-            if price is None:
-                continue
-            out[local] = (price, change_pct)
-            _quote_cache[local] = (price, now, change_pct)
+
+    # Commodities: prefer Yahoo futures (true $/oz, $/bbl, …) when reachable.
+    commodity_need = [s for s in need if s in COMMODITY_BY_TICKER]
+    if commodity_need:
+        workers = min(4, len(commodity_need))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_yfinance_quote_one, symbol) for symbol in commodity_need]
+            for fut in as_completed(futures):
+                try:
+                    local, price, change_pct = fut.result()
+                except Exception as exc:
+                    _last_quote_provider_error = f"yfinance: {exc}"
+                    continue
+                if price is None:
+                    continue
+                out[local] = (price, change_pct)
+                _quote_cache[local] = (price, now, change_pct)
+                sources_used.add("yfinance")
+
+    # Finnhub for stocks/FX and commodity ETF proxies when futures missed.
+    finnhub_need = [
+        s
+        for s in need
+        if out[s][0] is None
+        and not (
+            s in COMMODITY_BY_TICKER and not COMMODITY_BY_TICKER[s].get("finnhub")
+        )
+    ]
+    if finnhub_configured() and not _finnhub_on_cooldown() and finnhub_need:
+        workers = min(4, len(finnhub_need))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_finnhub_quote_one, symbol) for symbol in finnhub_need]
+            for fut in as_completed(futures):
+                try:
+                    local, price, change_pct = fut.result()
+                except Exception as exc:
+                    _last_quote_provider_error = str(exc)
+                    continue
+                if price is None:
+                    continue
+                out[local] = (price, change_pct)
+                _quote_cache[local] = (price, now, change_pct)
+                sources_used.add("finnhub")
+
+    still_need = [s for s in need if out[s][0] is None and s not in COMMODITY_BY_TICKER]
+    if still_need:
+        workers = min(4, len(still_need))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_yfinance_quote_one, symbol) for symbol in still_need]
+            for fut in as_completed(futures):
+                try:
+                    local, price, change_pct = fut.result()
+                except Exception as exc:
+                    _last_quote_provider_error = f"yfinance: {exc}"
+                    continue
+                if price is None:
+                    continue
+                out[local] = (price, change_pct)
+                _quote_cache[local] = (price, now, change_pct)
+                sources_used.add("yfinance")
 
     if any(out[s][0] is not None for s in need):
         _save_disk_quotes()
@@ -1529,9 +1807,26 @@ def fetch_quotes_batch(
         if out[symbol][0] is not None:
             continue
         stale = _cache_get(symbol, allow_stale=True)
+        if stale[0] is None:
+            stale = _commodity_quote_from_feed_cache(symbol, allow_stale=True)
+            if stale[0] is not None:
+                sources_used.add("derived")
         if stale[0] is not None:
             out[symbol] = stale
+            sources_used.add("stale")
 
+    missing = [s for s in need if out[s][0] is None]
+    if missing and not _last_quote_provider_error:
+        if not finnhub_configured():
+            _last_quote_provider_error = "FINNHUB_API_KEY is not set and yfinance fallback failed"
+        elif _finnhub_on_cooldown():
+            _last_quote_provider_error = "Finnhub rate limited; yfinance fallback also missed some quotes"
+        else:
+            _last_quote_provider_error = f"No live price for {', '.join(missing[:6])}"
+            if len(missing) > 6:
+                _last_quote_provider_error += f" (+{len(missing) - 6} more)"
+
+    _last_quote_source = "+".join(sorted(sources_used)) or "none"
     return out
 
 
@@ -1654,6 +1949,7 @@ def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
         return cached_cat[1]
 
     _load_disk_quotes()
+    _seed_commodity_quotes_from_feeds()
     tickers = [item["ticker"] for item in items]
     quotes = fetch_quotes_batch(tickers, force_refresh=force_refresh)
     final = []
@@ -1782,14 +2078,70 @@ def serialize_student(conn: sqlite3.Connection, row: sqlite3.Row, with_portfolio
     }
 
 
+
+def request_class_id() -> str:
+    body = request.get_json(silent=True) or {}
+    return (
+        (request.headers.get("X-Class-Id") or "")
+        or (request.args.get("classId") or "")
+        or str(body.get("classId") or "")
+    ).strip()
+
+
+def require_firestore_class_id():
+    """Return (class_id, error_response). error_response is a Flask (body, status) or None."""
+    if not using_firestore():
+        return "", None
+    class_id = request_class_id()
+    if not class_id:
+        return "", (
+            jsonify({"error": "X-Class-Id header (or classId) is required for the Firestore ledger"}),
+            400,
+        )
+    return class_id, None
+
+
 @app.get("/api/health")
 def health():
-    return jsonify({"ok": True})
+    return jsonify({
+        "ok": True,
+        "ledger": "firestore" if using_firestore() else "sqlite",
+        "firestore_error": None if using_firestore() else fs_ledger.config_error(),
+    })
 
 
 @app.get("/api/students")
 def list_students():
     refresh = request.args.get("refresh") == "1"
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if using_firestore():
+        rows = []
+        for student in fs_ledger.list_students(class_id):
+            holdings = fs_ledger.list_holdings(class_id, student["id"]) if refresh else []
+            if refresh:
+                rows.append(
+                    serialize_portfolio(
+                        student,
+                        holdings,
+                        with_portfolio=True,
+                        realestate_by_ticker=REALESTATE_BY_TICKER,
+                        fetch_quotes_batch=fetch_quotes_batch,
+                    )
+                )
+            else:
+                rows.append(
+                    serialize_portfolio(
+                        student,
+                        fs_ledger.list_holdings(class_id, student["id"]),
+                        with_portfolio=False,
+                        realestate_by_ticker=REALESTATE_BY_TICKER,
+                        fetch_quotes_batch=fetch_quotes_batch,
+                    )
+                )
+        return jsonify(rows)
+
     with get_db() as conn:
         rows = conn.execute("SELECT * FROM students ORDER BY name COLLATE NOCASE").fetchall()
         return jsonify([serialize_student(conn, r, with_portfolio=refresh) for r in rows])
@@ -1804,6 +2156,30 @@ def create_student():
         return jsonify({"error": "Name is required"}), 400
     if starting_cash < 0:
         return jsonify({"error": "Starting cash cannot be negative"}), 400
+
+    if using_firestore():
+        class_id = (data.get("classId") or request_class_id()).strip()
+        student_id = (data.get("studentId") or "").strip()
+        if not class_id or not student_id:
+            return jsonify({"error": "classId and studentId are required for Firestore ledger"}), 400
+        student = fs_ledger.ensure_student(
+            class_id,
+            student_id,
+            name=name,
+            cash=starting_cash,
+            auth_uid=(data.get("authUid") or None),
+        )
+        ensure_fs_starting_snapshot(class_id, student)
+        holdings = fs_ledger.list_holdings(class_id, student_id)
+        return jsonify(
+            serialize_portfolio(
+                student,
+                holdings,
+                with_portfolio=False,
+                realestate_by_ticker=REALESTATE_BY_TICKER,
+                fetch_quotes_batch=fetch_quotes_batch,
+            )
+        ), 201
 
     with get_db() as conn:
         created = utc_now()
@@ -1824,27 +2200,72 @@ def create_student():
         return jsonify(serialize_student(conn, row, with_portfolio=False)), 201
 
 
-@app.delete("/api/students/<int:student_id>")
-def delete_student(student_id: int):
+@app.delete("/api/students/<student_id>")
+def delete_student(student_id: str):
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if using_firestore():
+        ok = fs_ledger.delete_student(class_id, student_id)
+        if not ok:
+            return jsonify({"error": "Student not found"}), 404
+        return jsonify({"ok": True})
+
+    try:
+        sid = int(student_id)
+    except ValueError:
+        return jsonify({"error": "Student not found"}), 404
     with get_db() as conn:
-        existing = student_row(conn, student_id)
+        existing = student_row(conn, sid)
         if not existing:
             return jsonify({"error": "Student not found"}), 404
-        conn.execute("DELETE FROM students WHERE id = ?", (student_id,))
+        conn.execute("DELETE FROM students WHERE id = ?", (sid,))
         return jsonify({"ok": True})
 
 
-@app.get("/api/students/<int:student_id>")
-def get_student(student_id: int):
+@app.get("/api/students/<student_id>")
+def get_student(student_id: str):
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if using_firestore():
+        student = fs_ledger.get_student(class_id, student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        ensure_fs_starting_snapshot(class_id, student)
+        holdings = fs_ledger.list_holdings(class_id, student_id)
+        payload = serialize_portfolio(
+            student,
+            holdings,
+            with_portfolio=True,
+            realestate_by_ticker=REALESTATE_BY_TICKER,
+            fetch_quotes_batch=fetch_quotes_batch,
+        )
+        record_fs_snapshot(
+            class_id,
+            student_id,
+            student,
+            holdings,
+            fetch_quotes_batch,
+            cash=payload["cash"],
+            portfolio_value=payload["portfolio_value"] or 0,
+            total_value=payload["total_value"],
+        )
+        return jsonify(payload)
+
+    try:
+        sid = int(student_id)
+    except ValueError:
+        return jsonify({"error": "Student not found"}), 404
     with get_db() as conn:
-        row = student_row(conn, student_id)
+        row = student_row(conn, sid)
         if not row:
             return jsonify({"error": "Student not found"}), 404
         ensure_starting_snapshot(conn, row)
         payload = serialize_student(conn, row, with_portfolio=True)
         record_snapshot(
             conn,
-            student_id,
+            sid,
             cash=payload["cash"],
             portfolio_value=payload["portfolio_value"] or 0,
             total_value=payload["total_value"],
@@ -1852,31 +2273,71 @@ def get_student(student_id: int):
         return jsonify(payload)
 
 
-@app.post("/api/students/<int:student_id>/adjust")
-def adjust_cash(student_id: int):
+@app.post("/api/students/<student_id>/adjust")
+def adjust_cash(student_id: str):
     data = request.get_json(silent=True) or {}
     try:
         amount = float(data.get("amount"))
     except (TypeError, ValueError):
         return jsonify({"error": "Valid amount is required"}), 400
 
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if using_firestore():
+        student = fs_ledger.get_student(class_id, student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        new_cash = float(student["cash"]) + amount
+        if new_cash < 0:
+            return jsonify({"error": "Balance cannot go below $0"}), 400
+        holdings = fs_ledger.list_holdings(class_id, student_id)
+        fs_ledger.set_cash(class_id, student_id, new_cash, holdings_count=len(holdings))
+        student["cash"] = new_cash
+        cash, portfolio_value, total_value = portfolio_compute_totals(
+            student, holdings, fetch_quotes_batch
+        )
+        record_fs_snapshot(
+            class_id,
+            student_id,
+            student,
+            holdings,
+            fetch_quotes_batch,
+            cash=cash,
+            portfolio_value=portfolio_value,
+            total_value=total_value,
+        )
+        return jsonify(
+            serialize_portfolio(
+                student,
+                holdings,
+                with_portfolio=False,
+                realestate_by_ticker=REALESTATE_BY_TICKER,
+                fetch_quotes_batch=fetch_quotes_batch,
+            )
+        )
+
+    try:
+        sid = int(student_id)
+    except ValueError:
+        return jsonify({"error": "Student not found"}), 404
     with get_db() as conn:
-        row = student_row(conn, student_id)
+        row = student_row(conn, sid)
         if not row:
             return jsonify({"error": "Student not found"}), 404
         new_cash = float(row["cash"]) + amount
         if new_cash < 0:
             return jsonify({"error": "Balance cannot go below $0"}), 400
-        conn.execute("UPDATE students SET cash = ? WHERE id = ?", (new_cash, student_id))
-        cash, portfolio_value, total_value = compute_student_totals(conn, student_id)
+        conn.execute("UPDATE students SET cash = ? WHERE id = ?", (new_cash, sid))
+        cash, portfolio_value, total_value = compute_student_totals(conn, sid)
         record_snapshot(
             conn,
-            student_id,
+            sid,
             cash=cash,
             portfolio_value=portfolio_value,
             total_value=total_value,
         )
-        updated = student_row(conn, student_id)
+        updated = student_row(conn, sid)
         return jsonify(serialize_student(conn, updated, with_portfolio=False))
 
 
@@ -1900,19 +2361,62 @@ def market_category(category: str):
     if key not in MARKET_CATALOG:
         return jsonify({"error": "Unknown market category"}), 404
     force = request.args.get("refresh") == "1"
+    items = enrich_catalog(key, force_refresh=force)
+    priced = sum(1 for row in items if row.get("price") is not None)
+    needs_live = key in {"stocks", "etfs", "commodities", "currencies"}
+    pricing = {
+        "ok": (priced > 0) if needs_live else True,
+        "priced": priced,
+        "total": len(items),
+        "source": _last_quote_source,
+        "error": _last_quote_provider_error if needs_live and priced == 0 else None,
+    }
     return jsonify(
         {
             "category": key,
-            "items": enrich_catalog(key, force_refresh=force),
+            "items": items,
+            "pricing": pricing,
         }
     )
 
 
-@app.get("/api/students/<int:student_id>/history")
-def student_history(student_id: int):
+@app.get("/api/students/<student_id>/history")
+def student_history(student_id: str):
     """Portfolio value over time. Today sits at the chart midpoint; right half is future."""
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if using_firestore():
+        student = fs_ledger.get_student(class_id, student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        ensure_fs_starting_snapshot(class_id, student)
+        holdings = fs_ledger.list_holdings(class_id, student_id)
+        cash, portfolio_value, total_value = portfolio_compute_totals(
+            student, holdings, fetch_quotes_batch
+        )
+        record_fs_snapshot(
+            class_id,
+            student_id,
+            student,
+            holdings,
+            fetch_quotes_batch,
+            cash=cash,
+            portfolio_value=portfolio_value,
+            total_value=total_value,
+            recorded_at=utc_now(),
+        )
+        snaps = fs_ledger.list_snapshots(class_id, student_id)
+        return jsonify(
+            build_history_payload(student_id, snaps, baseline=STARTING_BALANCE, utc_now_fn=utc_now)
+        )
+
+    try:
+        sid = int(student_id)
+    except ValueError:
+        return jsonify({"error": "Student not found"}), 404
     with get_db() as conn:
-        row = student_row(conn, student_id)
+        row = student_row(conn, sid)
         if not row:
             return jsonify({"error": "Student not found"}), 404
         ensure_starting_snapshot(conn, row)
@@ -1924,15 +2428,14 @@ def student_history(student_id: int):
             WHERE student_id = ?
             ORDER BY recorded_at ASC
             """,
-            (student_id,),
+            (sid,),
         ).fetchall()
 
-        # Always include a fresh "now" point.
-        cash, portfolio_value, total_value = compute_student_totals(conn, student_id)
+        cash, portfolio_value, total_value = compute_student_totals(conn, sid)
         now_iso = utc_now()
         record_snapshot(
             conn,
-            student_id,
+            sid,
             cash=cash,
             portfolio_value=portfolio_value,
             total_value=total_value,
@@ -1945,94 +2448,20 @@ def student_history(student_id: int):
             WHERE student_id = ?
             ORDER BY recorded_at ASC
             """,
-            (student_id,),
+            (sid,),
         ).fetchall()
 
-    def parse_ts(value: str) -> datetime:
-        try:
-            return datetime.fromisoformat(value)
-        except Exception:
-            return datetime.now(timezone.utc)
-
-    points = []
-    for s in snaps:
-        ts = parse_ts(s["recorded_at"])
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        points.append(
-            {
-                "t": int(ts.timestamp()),
-                "date": ts.strftime("%Y-%m-%d"),
-                "label": ts.strftime("%b %d"),
-                "value": round(float(s["total_value"]), 2),
-                "cash": round(float(s["cash"]), 2),
-                "portfolio_value": round(float(s["portfolio_value"]), 2),
-                "future": False,
-            }
-        )
-
-    if not points:
-        now = datetime.now(timezone.utc)
-        points = [
-            {
-                "t": int(now.timestamp()),
-                "date": now.strftime("%Y-%m-%d"),
-                "label": now.strftime("%b %d"),
-                "value": STARTING_BALANCE,
-                "cash": STARTING_BALANCE,
-                "portfolio_value": 0,
-                "future": False,
-            }
-        ]
-
-    start_ts = points[0]["t"]
-    present_ts = points[-1]["t"]
-    # Keep a minimum span so a brand-new account still shows "today" at mid chart.
-    min_half = 7 * 24 * 3600
-    half = max(present_ts - start_ts, min_half)
-    domain_start = present_ts - half
-    domain_end = present_ts + half
-
-    # Anchor left edge so the drawn history begins near the left half.
-    if points[0]["t"] > domain_start:
-        points.insert(
-            0,
-            {
-                "t": domain_start,
-                "date": datetime.fromtimestamp(domain_start, timezone.utc).strftime("%Y-%m-%d"),
-                "label": "Start",
-                "value": STARTING_BALANCE,
-                "cash": STARTING_BALANCE,
-                "portfolio_value": 0,
-                "future": False,
-            },
-        )
-
-    # Invisible future anchor so the x-axis extends past today (~halfway).
-    points.append(
+    snap_dicts = [
         {
-            "t": domain_end,
-            "date": datetime.fromtimestamp(domain_end, timezone.utc).strftime("%Y-%m-%d"),
-            "label": "Future",
-            "value": None,
-            "cash": None,
-            "portfolio_value": None,
-            "future": True,
+            "recorded_at": s["recorded_at"],
+            "total_value": s["total_value"],
+            "cash": s["cash"],
+            "portfolio_value": s["portfolio_value"],
         }
-    )
-
-    current = next((p["value"] for p in reversed(points) if p["value"] is not None), STARTING_BALANCE)
-
+        for s in snaps
+    ]
     return jsonify(
-        {
-            "student_id": student_id,
-            "baseline": STARTING_BALANCE,
-            "current": current,
-            "present_t": present_ts,
-            "domain_start": domain_start,
-            "domain_end": domain_end,
-            "points": points,
-        }
+        build_history_payload(sid, snap_dicts, baseline=STARTING_BALANCE, utc_now_fn=utc_now)
     )
 
 
@@ -2043,17 +2472,6 @@ CHART_RANGES = {
     "6mo": {"period": "6mo", "interval": "1d"},
     "1y": {"period": "1y", "interval": "1d"},
     "5y": {"period": "5y", "interval": "1wk"},
-}
-
-_CURRENCY_YAHOO = {
-    "EUR": "EURUSD=X",
-    "GBP": "GBPUSD=X",
-    "JPY": "USDJPY=X",
-    "CAD": "USDCAD=X",
-    "AUD": "AUDUSD=X",
-    "CHF": "USDCHF=X",
-    "MXN": "USDMXN=X",
-    "NZD": "NZDUSD=X",
 }
 
 _chart_cache: dict[str, tuple[float, dict]] = {}
@@ -2084,7 +2502,7 @@ _load_disk_charts()
 
 
 def yahoo_chart_symbol(local_ticker: str) -> str:
-    return _CURRENCY_YAHOO.get(local_ticker, local_ticker)
+    return yahoo_quote_symbol(local_ticker)
 
 
 def _fetch_chart_body(symbol: str, span: str) -> tuple[dict | None, str | None]:
@@ -2222,11 +2640,13 @@ def chart(ticker: str):
         return stale
 
     friendly = err or f"Could not load chart for {symbol}"
-    if err and "Rate limited" in err:
+    if err and ("Rate limited" in err or "Too Many" in err):
         friendly = "Chart provider is busy — try again in a minute, or open a ticker you viewed earlier."
-    elif err and ("403" in err or "access" in err.lower()):
-        friendly = "Historical charts aren't on the free Finnhub plan; using backup source failed."
-    return jsonify({"error": friendly}), 502
+    elif err and ("403" in err or "Tunnel" in err or "ProxyError" in err or "access" in err.lower()):
+        friendly = "Couldn’t reach the chart data provider right now. Try again in a moment."
+    elif err and ("delisted" in err.lower() or "No chart data" in err or "No price points" in err):
+        friendly = f"No historical chart data available for {symbol} right now."
+    return jsonify({"error": friendly}), 503
 
 
 @app.post("/api/charts/warm")
@@ -2236,8 +2656,8 @@ def warm_charts():
     return jsonify(result)
 
 
-@app.post("/api/students/<int:student_id>/buy-home")
-def buy_home(student_id: int):
+@app.post("/api/students/<student_id>/buy-home")
+def buy_home(student_id: str):
     """Purchase one Florida classroom home: pay down payment + closing; carry a mortgage."""
     data = request.get_json(silent=True) or {}
     ticker = (data.get("ticker") or "").strip().upper()
@@ -2250,8 +2670,66 @@ def buy_home(student_id: int):
     costs = home_purchase_costs(home)
     due_today = costs["due_today"]
 
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if using_firestore():
+        student = fs_ledger.get_student(class_id, student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        cash = float(student["cash"])
+        if due_today > cash + 1e-9:
+            return jsonify(
+                {
+                    "error": (
+                        f"Not enough cash for the upfront cost. "
+                        f"Need ${due_today:,.2f} today, have ${cash:,.2f}."
+                    )
+                }
+            ), 400
+        if fs_ledger.get_holding(class_id, student_id, ticker):
+            return jsonify({"error": f"You already own a home in {home['name']}."}), 400
+        fs_ledger.upsert_holding(
+            class_id,
+            student_id,
+            {
+                "ticker": ticker,
+                "shares": 1,
+                "avg_cost": costs["price"],
+                "mortgage_balance": costs["loan_amount"],
+                "mortgage_rate_pct": costs["mortgage_rate_pct"],
+                "loan_years": costs["loan_years"],
+                "closing_paid": costs["closing_costs"],
+            },
+        )
+        holdings = fs_ledger.list_holdings(class_id, student_id)
+        fs_ledger.set_cash(class_id, student_id, cash - due_today, holdings_count=len(holdings))
+        student["cash"] = cash - due_today
+        payload = serialize_portfolio(
+            student,
+            holdings,
+            with_portfolio=True,
+            realestate_by_ticker=REALESTATE_BY_TICKER,
+            fetch_quotes_batch=fetch_quotes_batch,
+        )
+        record_fs_snapshot(
+            class_id,
+            student_id,
+            student,
+            holdings,
+            fetch_quotes_batch,
+            cash=payload["cash"],
+            portfolio_value=payload["portfolio_value"] or 0,
+            total_value=payload["total_value"],
+        )
+        return jsonify(payload)
+
+    try:
+        sid = int(student_id)
+    except ValueError:
+        return jsonify({"error": "Student not found"}), 404
     with get_db() as conn:
-        row = student_row(conn, student_id)
+        row = student_row(conn, sid)
         if not row:
             return jsonify({"error": "Student not found"}), 404
         cash = float(row["cash"])
@@ -2267,7 +2745,7 @@ def buy_home(student_id: int):
 
         existing = conn.execute(
             "SELECT id FROM holdings WHERE student_id = ? AND ticker = ?",
-            (student_id, ticker),
+            (sid, ticker),
         ).fetchone()
         if existing:
             return jsonify({"error": f"You already own a home in {home['name']}."}), 400
@@ -2280,7 +2758,7 @@ def buy_home(student_id: int):
             ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)
             """,
             (
-                student_id,
+                sid,
                 ticker,
                 costs["price"],
                 costs["loan_amount"],
@@ -2291,13 +2769,13 @@ def buy_home(student_id: int):
         )
         conn.execute(
             "UPDATE students SET cash = ? WHERE id = ?",
-            (cash - due_today, student_id),
+            (cash - due_today, sid),
         )
-        updated = student_row(conn, student_id)
+        updated = student_row(conn, sid)
         payload = serialize_student(conn, updated, with_portfolio=True)
         record_snapshot(
             conn,
-            student_id,
+            sid,
             cash=payload["cash"],
             portfolio_value=payload["portfolio_value"] or 0,
             total_value=payload["total_value"],
@@ -2305,12 +2783,11 @@ def buy_home(student_id: int):
         return jsonify(payload)
 
 
-@app.post("/api/students/<int:student_id>/buy")
-def buy_shares(student_id: int):
+@app.post("/api/students/<student_id>/buy")
+def buy_shares(student_id: str):
     data = request.get_json(silent=True) or {}
     ticker = (data.get("ticker") or "").strip().upper()
     if ticker in REALESTATE_BY_TICKER:
-        # Homes use the dedicated mortgage purchase path.
         return buy_home(student_id)
     try:
         shares = float(data.get("shares") or 0)
@@ -2322,14 +2799,93 @@ def buy_shares(student_id: int):
     if shares <= 0:
         return jsonify({"error": "Shares must be greater than 0"}), 400
 
+    allowed = {
+        item["ticker"]
+        for cat, rows in MARKET_CATALOG.items()
+        if cat not in {"bonds", "realestate"}
+        for item in rows
+    }
+    if ticker not in allowed and ticker not in BOND_BY_TICKER:
+        return jsonify({"error": f"{ticker} is not on the classroom market list"}), 400
+
     price = fetch_quote(ticker)
     if price is None:
         return jsonify({"error": f"Could not find a live price for {ticker}"}), 404
+    if price <= 0:
+        return jsonify({"error": f"Invalid price for {ticker}"}), 400
 
     cost = price * shares
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if using_firestore():
+        student = fs_ledger.get_student(class_id, student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        cash = float(student["cash"])
+        if cost > cash:
+            return jsonify({"error": f"Not enough cash. Need ${cost:.2f}, have ${cash:.2f}"}), 400
+        existing = fs_ledger.get_holding(class_id, student_id, ticker)
+        if existing:
+            old_shares = float(existing["shares"])
+            old_cost = float(existing["avg_cost"])
+            new_shares = old_shares + shares
+            new_avg = ((old_shares * old_cost) + cost) / new_shares
+            fs_ledger.upsert_holding(
+                class_id,
+                student_id,
+                {
+                    "ticker": ticker,
+                    "shares": new_shares,
+                    "avg_cost": new_avg,
+                    "mortgage_balance": existing.get("mortgage_balance") or 0,
+                    "mortgage_rate_pct": existing.get("mortgage_rate_pct"),
+                    "loan_years": existing.get("loan_years"),
+                    "closing_paid": existing.get("closing_paid") or 0,
+                },
+            )
+        else:
+            fs_ledger.upsert_holding(
+                class_id,
+                student_id,
+                {
+                    "ticker": ticker,
+                    "shares": shares,
+                    "avg_cost": price,
+                    "mortgage_balance": 0,
+                    "mortgage_rate_pct": None,
+                    "loan_years": None,
+                    "closing_paid": 0,
+                },
+            )
+        holdings = fs_ledger.list_holdings(class_id, student_id)
+        fs_ledger.set_cash(class_id, student_id, cash - cost, holdings_count=len(holdings))
+        student["cash"] = cash - cost
+        payload = serialize_portfolio(
+            student,
+            holdings,
+            with_portfolio=True,
+            realestate_by_ticker=REALESTATE_BY_TICKER,
+            fetch_quotes_batch=fetch_quotes_batch,
+        )
+        record_fs_snapshot(
+            class_id,
+            student_id,
+            student,
+            holdings,
+            fetch_quotes_batch,
+            cash=payload["cash"],
+            portfolio_value=payload["portfolio_value"] or 0,
+            total_value=payload["total_value"],
+        )
+        return jsonify(payload)
 
+    try:
+        sid = int(student_id)
+    except ValueError:
+        return jsonify({"error": "Student not found"}), 404
     with get_db() as conn:
-        row = student_row(conn, student_id)
+        row = student_row(conn, sid)
         if not row:
             return jsonify({"error": "Student not found"}), 404
         cash = float(row["cash"])
@@ -2338,7 +2894,7 @@ def buy_shares(student_id: int):
 
         existing = conn.execute(
             "SELECT shares, avg_cost FROM holdings WHERE student_id = ? AND ticker = ?",
-            (student_id, ticker),
+            (sid, ticker),
         ).fetchone()
 
         if existing:
@@ -2348,20 +2904,20 @@ def buy_shares(student_id: int):
             new_avg = ((old_shares * old_cost) + cost) / new_shares
             conn.execute(
                 "UPDATE holdings SET shares = ?, avg_cost = ? WHERE student_id = ? AND ticker = ?",
-                (new_shares, new_avg, student_id, ticker),
+                (new_shares, new_avg, sid, ticker),
             )
         else:
             conn.execute(
                 "INSERT INTO holdings (student_id, ticker, shares, avg_cost) VALUES (?, ?, ?, ?)",
-                (student_id, ticker, shares, price),
+                (sid, ticker, shares, price),
             )
 
-        conn.execute("UPDATE students SET cash = ? WHERE id = ?", (cash - cost, student_id))
-        updated = student_row(conn, student_id)
+        conn.execute("UPDATE students SET cash = ? WHERE id = ?", (cash - cost, sid))
+        updated = student_row(conn, sid)
         payload = serialize_student(conn, updated, with_portfolio=True)
         record_snapshot(
             conn,
-            student_id,
+            sid,
             cash=payload["cash"],
             portfolio_value=payload["portfolio_value"] or 0,
             total_value=payload["total_value"],
@@ -2369,8 +2925,8 @@ def buy_shares(student_id: int):
         return jsonify(payload)
 
 
-@app.post("/api/students/<int:student_id>/sell")
-def sell_shares(student_id: int):
+@app.post("/api/students/<student_id>/sell")
+def sell_shares(student_id: str):
     data = request.get_json(silent=True) or {}
     ticker = (data.get("ticker") or "").strip().upper()
     try:
@@ -2387,8 +2943,73 @@ def sell_shares(student_id: int):
     if price is None:
         return jsonify({"error": f"Could not find a live price for {ticker}"}), 404
 
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if using_firestore():
+        student = fs_ledger.get_student(class_id, student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        existing = fs_ledger.get_holding(class_id, student_id, ticker)
+        if not existing:
+            return jsonify({"error": f"No {ticker} shares to sell"}), 400
+        owned = float(existing["shares"])
+        mortgage_balance = float(existing.get("mortgage_balance") or 0)
+        is_home = ticker in REALESTATE_BY_TICKER
+        if is_home:
+            if abs(shares - owned) > 1e-9 and shares < owned - 1e-9:
+                return jsonify({"error": "Sell the whole home (use Sell all)."}), 400
+            shares = owned
+            proceeds = price * shares - mortgage_balance
+            if proceeds < 0:
+                return jsonify(
+                    {"error": "Home value is below the mortgage — cannot sell for cash yet."}
+                ), 400
+        else:
+            proceeds = price * shares
+            if shares > owned + 1e-9:
+                return jsonify({"error": f"Only own {owned:.4f} shares of {ticker}"}), 400
+        remaining = owned - shares
+        if remaining < 1e-9:
+            fs_ledger.delete_holding(class_id, student_id, ticker)
+        else:
+            fs_ledger.upsert_holding(
+                class_id,
+                student_id,
+                {
+                    **existing,
+                    "shares": remaining,
+                },
+            )
+        holdings = fs_ledger.list_holdings(class_id, student_id)
+        new_cash = float(student["cash"]) + proceeds
+        fs_ledger.set_cash(class_id, student_id, new_cash, holdings_count=len(holdings))
+        student["cash"] = new_cash
+        payload = serialize_portfolio(
+            student,
+            holdings,
+            with_portfolio=True,
+            realestate_by_ticker=REALESTATE_BY_TICKER,
+            fetch_quotes_batch=fetch_quotes_batch,
+        )
+        record_fs_snapshot(
+            class_id,
+            student_id,
+            student,
+            holdings,
+            fetch_quotes_batch,
+            cash=payload["cash"],
+            portfolio_value=payload["portfolio_value"] or 0,
+            total_value=payload["total_value"],
+        )
+        return jsonify(payload)
+
+    try:
+        sid = int(student_id)
+    except ValueError:
+        return jsonify({"error": "Student not found"}), 404
     with get_db() as conn:
-        row = student_row(conn, student_id)
+        row = student_row(conn, sid)
         if not row:
             return jsonify({"error": "Student not found"}), 404
 
@@ -2397,7 +3018,7 @@ def sell_shares(student_id: int):
             SELECT shares, COALESCE(mortgage_balance, 0) AS mortgage_balance
             FROM holdings WHERE student_id = ? AND ticker = ?
             """,
-            (student_id, ticker),
+            (sid, ticker),
         ).fetchone()
         if not existing:
             return jsonify({"error": f"No {ticker} shares to sell"}), 400
@@ -2410,7 +3031,6 @@ def sell_shares(student_id: int):
             if abs(shares - owned) > 1e-9 and shares < owned - 1e-9:
                 return jsonify({"error": "Sell the whole home (use Sell all)."}), 400
             shares = owned
-            # Sale pays off the mortgage; cash received is seller equity.
             proceeds = price * shares - mortgage_balance
             if proceeds < 0:
                 return jsonify(
@@ -2425,21 +3045,21 @@ def sell_shares(student_id: int):
         if remaining < 1e-9:
             conn.execute(
                 "DELETE FROM holdings WHERE student_id = ? AND ticker = ?",
-                (student_id, ticker),
+                (sid, ticker),
             )
         else:
             conn.execute(
                 "UPDATE holdings SET shares = ? WHERE student_id = ? AND ticker = ?",
-                (remaining, student_id, ticker),
+                (remaining, sid, ticker),
             )
 
         cash = float(row["cash"]) + proceeds
-        conn.execute("UPDATE students SET cash = ? WHERE id = ?", (cash, student_id))
-        updated = student_row(conn, student_id)
+        conn.execute("UPDATE students SET cash = ? WHERE id = ?", (cash, sid))
+        updated = student_row(conn, sid)
         payload = serialize_student(conn, updated, with_portfolio=True)
         record_snapshot(
             conn,
-            student_id,
+            sid,
             cash=payload["cash"],
             portfolio_value=payload["portfolio_value"] or 0,
             total_value=payload["total_value"],
@@ -2606,7 +3226,7 @@ def market_news():
             "count": len(stories),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "mode": "classroom",
-            "disclaimer": "Written for Ledger Lab from public market headlines. No outbound links.",
+            "disclaimer": "Written for Ledger Lab from public market headlines.",
         }
     )
 

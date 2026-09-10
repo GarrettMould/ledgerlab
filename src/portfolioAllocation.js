@@ -55,6 +55,7 @@ export const TICKER_CATEGORY = {
   "AAPL-31": "bonds",
   "MSFT-33": "bonds",
   "JPM-32": "bonds",
+  // Legacy ETF proxies (kept so old holdings still classify).
   GLD: "commodities",
   SLV: "commodities",
   PPLT: "commodities",
@@ -62,9 +63,20 @@ export const TICKER_CATEGORY = {
   UNG: "commodities",
   CPER: "commodities",
   DBA: "commodities",
-  CORN: "commodities",
   WEAT: "commodities",
   CANE: "commodities",
+  // Raw commodity futures tickers
+  GOLD: "commodities",
+  SILVER: "commodities",
+  PLAT: "commodities",
+  OIL: "commodities",
+  NATGAS: "commodities",
+  COPPER: "commodities",
+  CORN: "commodities",
+  WHEAT: "commodities",
+  SOY: "commodities",
+  SUGAR: "commodities",
+  COFFEE: "commodities",
   EUR: "currencies",
   GBP: "currencies",
   JPY: "currencies",
@@ -91,7 +103,7 @@ function holdingValue(h) {
   return (Number(h.price) || Number(h.avg_cost) || 0) * (Number(h.shares) || 0);
 }
 
-function categoryForTicker(ticker) {
+export function categoryForTicker(ticker) {
   return (
     TICKER_CATEGORY[ticker] ||
     (String(ticker).startsWith("UST-")
@@ -100,6 +112,33 @@ function categoryForTicker(ticker) {
         ? "realestate"
         : "stocks")
   );
+}
+
+/** Display order + labels for holdings list sections (no cash bucket). */
+export const HOLDING_CATEGORY_ORDER = [
+  { id: "stocks", label: "Stocks" },
+  { id: "etfs", label: "ETFs" },
+  { id: "bonds", label: "Bonds" },
+  { id: "commodities", label: "Commodities" },
+  { id: "currencies", label: "Currencies" },
+  { id: "realestate", label: "Real estate" },
+];
+
+/** Group holdings into category sections; empty categories omitted. */
+export function groupHoldingsByCategory(holdings) {
+  const buckets = Object.fromEntries(
+    HOLDING_CATEGORY_ORDER.map((c) => [c.id, []])
+  );
+  for (const h of holdings || []) {
+    const cat = categoryForTicker(h.ticker);
+    if (!buckets[cat]) buckets[cat] = [];
+    buckets[cat].push(h);
+  }
+  return HOLDING_CATEGORY_ORDER.map((c) => ({
+    id: c.id,
+    label: c.label,
+    holdings: buckets[c.id] || [],
+  })).filter((g) => g.holdings.length > 0);
 }
 
 /** Build allocation rows from one or more student portfolio payloads. */
