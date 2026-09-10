@@ -120,7 +120,15 @@ async function resolveAccountFromUser(user) {
   if (!session) {
     const local = getStudentSession();
     if (local?.authUid === user.uid || (emailOut && local?.email === emailOut)) {
-      session = { ...local, authUid: user.uid, email: emailOut };
+      // Prefer seat id as trading id when we have it (Firestore ledger).
+      const seatId = local.firestoreStudentId || local.apiStudentId;
+      session = {
+        ...local,
+        authUid: user.uid,
+        email: emailOut,
+        apiStudentId: seatId,
+        firestoreStudentId: local.firestoreStudentId || seatId,
+      };
     }
   }
   if (!session) {

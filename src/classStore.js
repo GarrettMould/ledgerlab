@@ -289,7 +289,39 @@ export async function buildStudentSessionFromAuth(authUid, profile = {}) {
   const membership = await findStudentMembershipByAuthUid(authUid);
   if (!membership?.classId || !membership?.id) return null;
   const cls = await getClass(membership.classId);
-  const tradingId = membership.apiStudentId || membership.id;
+
+  // On Firestore ledger, the trading id MUST be the seat document id.
+  // Older seats may still point at a leftover SQLite numeric apiStudentId —
+  // that 404s as "Student not found" while the teacher roster still shows them.
+  let tradingId = membership.apiStudentId || membership.id;
+  try {
+    const { getHealth, createStudent } = await import("./api");
+    const health = await getHealth();
+    if (health?.ledger === "firestore") {
+      tradingId = membership.id;
+      if (membership.apiStudentId !== membership.id) {
+        try {
+          await updateClassStudent(membership.classId, membership.id, {
+            apiStudentId: membership.id,
+          });
+        } catch {
+          /* non-fatal */
+        }
+      }
+      try {
+        await createStudent(membership.name || profile.name || "Student", Number(membership.cash) || 0, {
+          classId: membership.classId,
+          studentId: membership.id,
+          authUid,
+        });
+      } catch {
+        /* ledger ensure is best-effort */
+      }
+    }
+  } catch {
+    /* health/api unavailable — keep tradingId as stored */
+  }
+
   return {
     classId: membership.classId,
     className: cls?.name || "",
