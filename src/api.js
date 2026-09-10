@@ -2,6 +2,25 @@ import { getActiveClassId, getStudentSession } from "./classStore";
 
 const API = "/api";
 
+function isLocalDevHost() {
+  if (typeof window === "undefined") return Boolean(import.meta.env.DEV);
+  const host = window.location.hostname;
+  return host === "localhost" || host === "127.0.0.1";
+}
+
+function apiUnreachableMessage(kind = "down") {
+  if (isLocalDevHost() || import.meta.env.DEV) {
+    if (kind === "timeout") {
+      return "API request timed out. Check that npm run dev:api is running.";
+    }
+    return "API is not running. In another terminal run: npm run dev:api";
+  }
+  if (kind === "timeout") {
+    return "The server took too long to respond. Try again in a moment.";
+  }
+  return "Couldn’t reach the classroom API. Try again, or ask your teacher if the site is having issues.";
+}
+
 function ledgerHeaders(extra = {}) {
   const classId =
     extra.classId || getStudentSession()?.classId || getActiveClassId() || "";
@@ -23,9 +42,9 @@ async function request(path, options = {}) {
     });
   } catch (err) {
     if (err?.name === "AbortError") {
-      throw new Error("API request timed out. Check that npm run dev:api is running.");
+      throw new Error(apiUnreachableMessage("timeout"));
     }
-    throw new Error("Cannot reach the API. Start it with: npm run dev:api");
+    throw new Error(apiUnreachableMessage("down"));
   } finally {
     clearTimeout(timer);
   }
@@ -34,16 +53,15 @@ async function request(path, options = {}) {
     if (data.error) {
       throw new Error(data.error);
     }
-    // Vite's /api proxy returns a bare 500 when nothing is listening on the API port.
+    // Local Vite proxy returns a bare 500 when nothing is listening on the API port.
+    // On the live site the same statuses usually mean the hosted backend crashed or timed out.
     if (
       res.status === 500 ||
       res.status === 502 ||
       res.status === 503 ||
       res.status === 504
     ) {
-      throw new Error(
-        "API is not running. In another terminal run: npm run dev:api"
-      );
+      throw new Error(apiUnreachableMessage("down"));
     }
     throw new Error(`Request failed (${res.status})`);
   }

@@ -31,8 +31,6 @@ def _init_app():
     global _db, _init_error
     if _db is not None:
         return _db
-    if _init_error:
-        return None
     try:
         import firebase_admin
         from firebase_admin import credentials, firestore
@@ -40,35 +38,58 @@ def _init_app():
         _init_error = f"firebase-admin not installed: {exc}"
         return None
 
+    # If a previous request already initialized the default app (common under
+    # concurrent Vercel workers), just attach to it — don't treat it as fatal.
+    if firebase_admin._apps:
+        try:
+            _db = firestore.client()
+            _init_error = None
+            return _db
+        except Exception as exc:
+            _init_error = str(exc)
+            _db = None
+            return None
+
     try:
-        if not firebase_admin._apps:
-            cred = None
-            raw = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
-            path = (
-                os.environ.get("FIREBASE_SERVICE_ACCOUNT_PATH")
-                or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-                or ""
-            ).strip()
-            if raw:
-                info = json.loads(raw)
-                cred = credentials.Certificate(info)
-            elif path and os.path.isfile(path):
-                cred = credentials.Certificate(path)
-            if cred is None:
-                _init_error = (
-                    "Firestore ledger needs FIREBASE_SERVICE_ACCOUNT_JSON "
-                    "or GOOGLE_APPLICATION_CREDENTIALS"
-                )
-                return None
-            opts = {}
-            pid = _project_id()
-            if pid:
-                opts["projectId"] = pid
-            firebase_admin.initialize_app(cred, opts or None)
+        cred = None
+        raw = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+        path = (
+            os.environ.get("FIREBASE_SERVICE_ACCOUNT_PATH")
+            or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            or ""
+        ).strip()
+        if raw:
+            info = json.loads(raw)
+            cred = credentials.Certificate(info)
+        elif path and os.path.isfile(path):
+            cred = credentials.Certificate(path)
+        if cred is None:
+            _init_error = (
+                "Firestore ledger needs FIREBASE_SERVICE_ACCOUNT_JSON "
+                "or GOOGLE_APPLICATION_CREDENTIALS"
+            )
+            return None
+        opts = {}
+        pid = _project_id()
+        if pid:
+            opts["projectId"] = pid
+        firebase_admin.initialize_app(cred, opts or None)
         _db = firestore.client()
+        _init_error = None
         return _db
     except Exception as exc:
-        _init_error = str(exc)
+        msg = str(exc)
+        # Race: another worker initialized between our _apps check and initialize_app.
+        if firebase_admin._apps and "already exists" in msg.lower():
+            try:
+                _db = firestore.client()
+                _init_error = None
+                return _db
+            except Exception as inner:
+                _init_error = str(inner)
+                _db = None
+                return None
+        _init_error = msg
         _db = None
         return None
 
