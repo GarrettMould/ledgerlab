@@ -153,6 +153,22 @@ MARKET_CATALOG = {
                 "summary": "Salesforce makes cloud software that helps sales teams track customers and deals. Many companies use it as their main customer relationship system.",
             },
         },
+        {
+            "ticker": "INTC",
+            "name": "Intel",
+            "industry": "Technology",
+            "info": {
+                "summary": "Intel designs and manufactures computer chips used in many PCs and servers. It is one of the best-known semiconductor companies in the world.",
+            },
+        },
+        {
+            "ticker": "AVGO",
+            "name": "Broadcom",
+            "industry": "Technology",
+            "info": {
+                "summary": "Broadcom makes chips and software that power networking, phones, data centers, and other electronics. Its products help devices connect and process data.",
+            },
+        },
         # Consumer
         {
             "ticker": "AMZN",
@@ -202,6 +218,38 @@ MARKET_CATALOG = {
                 "summary": "Starbucks operates coffee shops worldwide and sells drinks, food, and packaged coffee products.",
             },
         },
+        {
+            "ticker": "TGT",
+            "name": "Target",
+            "industry": "Consumer",
+            "info": {
+                "summary": "Target is a U.S. retail chain selling clothing, groceries, home goods, and electronics in stores and online.",
+            },
+        },
+        {
+            "ticker": "HD",
+            "name": "Home Depot",
+            "industry": "Consumer",
+            "info": {
+                "summary": "Home Depot sells tools, lumber, appliances, and home-improvement supplies to do-it-yourself shoppers and professional contractors.",
+            },
+        },
+        {
+            "ticker": "KO",
+            "name": "Coca-Cola",
+            "industry": "Consumer",
+            "info": {
+                "summary": "Coca-Cola makes soft drinks and other beverages sold in stores and restaurants almost everywhere in the world.",
+            },
+        },
+        {
+            "ticker": "PEP",
+            "name": "PepsiCo",
+            "industry": "Consumer",
+            "info": {
+                "summary": "PepsiCo sells drinks like Pepsi and snacks like Lay’s and Doritos. It earns money from both beverages and packaged foods.",
+            },
+        },
         # Finance
         {
             "ticker": "JPM",
@@ -241,6 +289,46 @@ MARKET_CATALOG = {
             "industry": "Finance",
             "info": {
                 "summary": "Goldman Sachs is an investment bank that helps companies raise money, advises on mergers, and manages investments for institutions and wealthy clients.",
+            },
+        },
+        {
+            "ticker": "WFC",
+            "name": "Wells Fargo",
+            "industry": "Finance",
+            "info": {
+                "summary": "Wells Fargo is a major U.S. bank that provides checking accounts, mortgages, credit cards, and business lending.",
+            },
+        },
+        {
+            "ticker": "C",
+            "name": "Citigroup",
+            "industry": "Finance",
+            "info": {
+                "summary": "Citigroup is a global bank that serves consumers and companies with banking, credit cards, and investment services in many countries.",
+            },
+        },
+        {
+            "ticker": "AXP",
+            "name": "American Express",
+            "industry": "Finance",
+            "info": {
+                "summary": "American Express issues credit and charge cards and provides payment and travel services to consumers and businesses.",
+            },
+        },
+        {
+            "ticker": "BLK",
+            "name": "BlackRock",
+            "industry": "Finance",
+            "info": {
+                "summary": "BlackRock is one of the world’s largest asset managers. It invests money for clients through mutual funds, ETFs, and other products.",
+            },
+        },
+        {
+            "ticker": "SCHW",
+            "name": "Charles Schwab",
+            "industry": "Finance",
+            "info": {
+                "summary": "Charles Schwab helps people invest and trade stocks, ETFs, and other assets through brokerage accounts and banking services.",
             },
         },
         # Healthcare
@@ -284,6 +372,46 @@ MARKET_CATALOG = {
                 "summary": "AbbVie is a biopharmaceutical company known for specialty medicines that treat immune disorders, cancer, and other diseases.",
             },
         },
+        {
+            "ticker": "MRK",
+            "name": "Merck",
+            "industry": "Healthcare",
+            "info": {
+                "summary": "Merck develops prescription medicines and vaccines for people and animals, including treatments for cancer and infectious disease.",
+            },
+        },
+        {
+            "ticker": "AMGN",
+            "name": "Amgen",
+            "industry": "Healthcare",
+            "info": {
+                "summary": "Amgen is a biotechnology company that creates biologic medicines used to treat cancer, immune diseases, and other serious conditions.",
+            },
+        },
+        {
+            "ticker": "TMO",
+            "name": "Thermo Fisher",
+            "industry": "Healthcare",
+            "info": {
+                "summary": "Thermo Fisher Scientific sells lab equipment, chemicals, and services that scientists and drug makers use for research and manufacturing.",
+            },
+        },
+        {
+            "ticker": "CVS",
+            "name": "CVS Health",
+            "industry": "Healthcare",
+            "info": {
+                "summary": "CVS Health runs pharmacies, clinics, and a large pharmacy-benefit business that helps people get and pay for medicines.",
+            },
+        },
+        {
+            "ticker": "MDT",
+            "name": "Medtronic",
+            "industry": "Healthcare",
+            "info": {
+                "summary": "Medtronic makes medical devices such as pacemakers, insulin pumps, and surgical tools used by doctors and hospitals.",
+            },
+        },
         # Energy
         {
             "ticker": "XOM",
@@ -307,6 +435,62 @@ MARKET_CATALOG = {
             "industry": "Energy",
             "info": {
                 "summary": "ConocoPhillips focuses on exploring for and producing oil and natural gas around the world.",
+            },
+        },
+        {
+            "ticker": "SLB",
+            "name": "Schlumberger",
+            "industry": "Energy",
+            "info": {
+                "summary": "Schlumberger (SLB) provides technology and services that help oil and gas companies find and produce energy underground.",
+            },
+        },
+        {
+            "ticker": "EOG",
+            "name": "EOG Resources",
+            "industry": "Energy",
+            "info": {
+                "summary": "EOG Resources explores for and produces oil and natural gas, especially from shale formations in the United States.",
+            },
+        },
+        {
+            "ticker": "MPC",
+            "name": "Marathon Petroleum",
+            "industry": "Energy",
+            "info": {
+                "summary": "Marathon Petroleum refines crude oil into gasoline, diesel, and other fuels and sells them through retail and wholesale channels.",
+            },
+        },
+        {
+            "ticker": "OXY",
+            "name": "Occidental",
+            "industry": "Energy",
+            "info": {
+                "summary": "Occidental Petroleum produces oil and gas and also works on carbon-management projects related to climate goals.",
+            },
+        },
+        {
+            "ticker": "PSX",
+            "name": "Phillips 66",
+            "industry": "Energy",
+            "info": {
+                "summary": "Phillips 66 refines oil, markets fuels, and operates pipelines and chemical businesses connected to energy products.",
+            },
+        },
+        {
+            "ticker": "VLO",
+            "name": "Valero",
+            "industry": "Energy",
+            "info": {
+                "summary": "Valero Energy is one of the largest independent oil refiners in the world, turning crude oil into transportation fuels.",
+            },
+        },
+        {
+            "ticker": "WMB",
+            "name": "Williams",
+            "industry": "Energy",
+            "info": {
+                "summary": "Williams Companies operates natural-gas pipelines and processing systems that move energy from production areas to customers.",
             },
         },
         # Entertainment
@@ -334,6 +518,62 @@ MARKET_CATALOG = {
                 "summary": "Comcast provides cable TV and internet service and also owns media businesses including NBCUniversal.",
             },
         },
+        {
+            "ticker": "SPOT",
+            "name": "Spotify",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Spotify is a music and podcast streaming app. Listeners pay with subscriptions or hear ads in the free version.",
+            },
+        },
+        {
+            "ticker": "WBD",
+            "name": "Warner Bros. Discovery",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Warner Bros. Discovery owns movie studios, TV networks, and streaming services with brands like HBO, CNN, and DC.",
+            },
+        },
+        {
+            "ticker": "EA",
+            "name": "Electronic Arts",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Electronic Arts makes popular video games such as sports titles and other franchises sold on consoles, PCs, and phones.",
+            },
+        },
+        {
+            "ticker": "TTWO",
+            "name": "Take-Two",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Take-Two Interactive publishes video games including Grand Theft Auto and other major entertainment franchises.",
+            },
+        },
+        {
+            "ticker": "LYV",
+            "name": "Live Nation",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Live Nation promotes concerts and live events and also owns Ticketmaster, a major ticketing platform.",
+            },
+        },
+        {
+            "ticker": "ROKU",
+            "name": "Roku",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Roku makes streaming devices and a TV platform that lets people watch apps like Netflix and YouTube on their screens.",
+            },
+        },
+        {
+            "ticker": "SONY",
+            "name": "Sony",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Sony makes PlayStation consoles, entertainment content, cameras, and electronics used for games, music, and movies.",
+            },
+        },
         # Autos
         {
             "ticker": "TSLA",
@@ -359,6 +599,62 @@ MARKET_CATALOG = {
                 "summary": "General Motors makes vehicles under brands like Chevrolet, GMC, Cadillac, and Buick, and is investing in electric and autonomous cars.",
             },
         },
+        {
+            "ticker": "TM",
+            "name": "Toyota",
+            "industry": "Autos",
+            "info": {
+                "summary": "Toyota is one of the world’s largest automakers, known for reliable cars and hybrids like the Prius, Corolla, and Camry.",
+            },
+        },
+        {
+            "ticker": "HMC",
+            "name": "Honda",
+            "industry": "Autos",
+            "info": {
+                "summary": "Honda builds cars, motorcycles, and power equipment. Its vehicles are popular for everyday commuting and reliability.",
+            },
+        },
+        {
+            "ticker": "STLA",
+            "name": "Stellantis",
+            "industry": "Autos",
+            "info": {
+                "summary": "Stellantis owns many car brands including Jeep, Ram, Dodge, Chrysler, Peugeot, and Fiat.",
+            },
+        },
+        {
+            "ticker": "RIVN",
+            "name": "Rivian",
+            "industry": "Autos",
+            "info": {
+                "summary": "Rivian builds electric trucks and SUVs and also makes delivery vans for companies that want electric fleets.",
+            },
+        },
+        {
+            "ticker": "UBER",
+            "name": "Uber",
+            "industry": "Autos",
+            "info": {
+                "summary": "Uber runs a ride-hailing and delivery platform that connects drivers with riders and food-delivery customers through an app.",
+            },
+        },
+        {
+            "ticker": "APTV",
+            "name": "Aptiv",
+            "industry": "Autos",
+            "info": {
+                "summary": "Aptiv makes electrical systems and technology that help cars become safer, smarter, and more connected.",
+            },
+        },
+        {
+            "ticker": "BWA",
+            "name": "BorgWarner",
+            "industry": "Autos",
+            "info": {
+                "summary": "BorgWarner supplies auto parts and systems for traditional and electric vehicles, including powertrain components.",
+            },
+        },
         # Industrials
         {
             "ticker": "BA",
@@ -382,6 +678,62 @@ MARKET_CATALOG = {
             "industry": "Industrials",
             "info": {
                 "summary": "GE Aerospace designs jet engines and related systems for commercial and military aircraft.",
+            },
+        },
+        {
+            "ticker": "HON",
+            "name": "Honeywell",
+            "industry": "Industrials",
+            "info": {
+                "summary": "Honeywell makes aerospace systems, building controls, and industrial technology used in planes, factories, and homes.",
+            },
+        },
+        {
+            "ticker": "UPS",
+            "name": "UPS",
+            "industry": "Industrials",
+            "info": {
+                "summary": "UPS delivers packages for people and businesses around the world using trucks, planes, and logistics software.",
+            },
+        },
+        {
+            "ticker": "UNP",
+            "name": "Union Pacific",
+            "industry": "Industrials",
+            "info": {
+                "summary": "Union Pacific operates freight railroads that move goods like cars, grain, and chemicals across the western United States.",
+            },
+        },
+        {
+            "ticker": "LMT",
+            "name": "Lockheed Martin",
+            "industry": "Industrials",
+            "info": {
+                "summary": "Lockheed Martin builds advanced defense and aerospace systems, including fighter jets and space technology.",
+            },
+        },
+        {
+            "ticker": "RTX",
+            "name": "RTX",
+            "industry": "Industrials",
+            "info": {
+                "summary": "RTX (Raytheon Technologies) makes jet engines, avionics, and defense systems for commercial and military customers.",
+            },
+        },
+        {
+            "ticker": "DE",
+            "name": "Deere",
+            "industry": "Industrials",
+            "info": {
+                "summary": "Deere & Company builds farm and construction equipment such as tractors and combines used in agriculture worldwide.",
+            },
+        },
+        {
+            "ticker": "MMM",
+            "name": "3M",
+            "industry": "Industrials",
+            "info": {
+                "summary": "3M invents and sells thousands of products, from adhesives and safety gear to industrial and consumer materials.",
             },
         },
     ],
@@ -2256,7 +2608,16 @@ def get_student(student_id: str):
     try:
         sid = int(student_id)
     except ValueError:
-        return jsonify({"error": "Student not found"}), 404
+        return jsonify(
+            {
+                "error": (
+                    "Student not found. This student id is not in the local ledger. "
+                    "If you're on the live site, set FIREBASE_SERVICE_ACCOUNT_JSON "
+                    "so the API uses Firestore (GET /api/health should say "
+                    "\"ledger\": \"firestore\")."
+                )
+            }
+        ), 404
     with get_db() as conn:
         row = student_row(conn, sid)
         if not row:

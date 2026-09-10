@@ -695,6 +695,7 @@ button {
 }
 
 .closet-color-swatch {
+  position: relative;
   aspect-ratio: 1;
   width: 100%;
   min-height: 2.4rem;
@@ -703,7 +704,7 @@ button {
   padding: 0;
   cursor: pointer;
   box-shadow: inset 0 0 0 1px rgba(20, 53, 40, 0.1);
-  transition: box-shadow 0.12s ease, filter 0.12s ease;
+  transition: outline-color 0.12s ease, filter 0.12s ease;
 }
 
 .closet-color-swatch:hover {
@@ -712,10 +713,10 @@ button {
 }
 
 .closet-color-swatch.selected {
-  box-shadow:
-    inset 0 0 0 2px #fff,
-    inset 0 0 0 4px var(--accent);
-  z-index: 2;
+  z-index: 3;
+  box-shadow: none;
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
 }
 
 .closet-hair-grid {
@@ -1336,11 +1337,11 @@ select:focus {
 
 .join-welcome {
   display: grid;
-  gap: 1.35rem;
+  gap: 1.5rem;
 }
 
 .welcome-block h3 {
-  margin: 0 0 0.25rem;
+  margin: 0 0 0.65rem;
   font-size: 1.1rem;
   font-weight: 800;
   color: #1f4a36;
@@ -1354,79 +1355,85 @@ select:focus {
   line-height: 1.4;
 }
 
-.goal-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.65rem;
-}
-
-.goal-card {
-  text-align: left;
-  display: grid;
-  gap: 0.3rem;
-  padding: 0.85rem 0.9rem;
-  border-radius: 14px;
-  border: 1px solid var(--line-soft);
-  background: #fff;
-  color: var(--ink);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
-}
-
-.goal-card strong {
-  font-size: 0.95rem;
-  font-weight: 800;
-}
-
-.goal-card span {
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--muted);
-  line-height: 1.35;
-}
-
-.goal-card:hover {
-  border-color: rgba(47, 107, 79, 0.35);
-  background: #f7fbf8;
-}
-
-.goal-card.selected {
-  border-color: rgba(47, 107, 79, 0.5);
-  background: #f3faf5;
-  box-shadow: 0 0 0 1px rgba(47, 107, 79, 0.18);
-}
-
-.market-guide-list {
+.welcome-steps {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
   gap: 0.55rem;
+  counter-reset: welcome-step;
 }
 
-.market-guide-list li {
+.welcome-steps li {
+  counter-increment: welcome-step;
   display: grid;
-  gap: 0.15rem;
-  padding: 0.75rem 0.85rem;
-  border-radius: 12px;
+  grid-template-columns: 2rem 1fr;
+  gap: 0.15rem 0.75rem;
+  align-items: start;
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
   border: 1px solid var(--line-soft);
   background: #fff;
 }
 
-.market-guide-list strong {
+.welcome-steps li::before {
+  content: counter(welcome-step);
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  margin-top: 0.1rem;
+  border-radius: 10px;
+  background: rgba(47, 107, 79, 0.1);
+  color: #1f4a36;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.welcome-steps strong {
   font-size: 0.95rem;
   font-weight: 800;
   color: var(--ink);
 }
 
-.market-guide-list span {
+.welcome-steps span {
   font-size: 0.84rem;
   font-weight: 600;
   color: var(--muted);
-  line-height: 1.35;
+  line-height: 1.4;
+}
+
+.welcome-markets .market-menu-head {
+  margin-bottom: 0.85rem;
+}
+
+.welcome-markets .market-menu-head h3 {
+  margin: 0.15rem 0 0.35rem;
+}
+
+.join-market-lanes {
+  margin: 0;
+}
+
+.market-lane-static {
+  cursor: default;
+  pointer-events: none;
+}
+
+.market-lane-static:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: color-mix(in srgb, var(--lane-accent) 22%, transparent);
+}
+
+.market-lane-static:hover::after,
+.market-lane-static:hover .market-lane-visual {
+  transform: none;
 }
 
 @media (max-width: 640px) {
-  .goal-grid {
+  .join-market-lanes {
     grid-template-columns: 1fr;
   }
 }

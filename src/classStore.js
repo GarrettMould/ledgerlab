@@ -165,8 +165,38 @@ export async function deleteClass(classId) {
 }
 
 export async function listClassStudents(classId) {
-  const snap = await getDocs(query(studentsCol(classId), orderBy("createdAt", "asc")));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  // Avoid orderBy as the primary path — missing createdAt / indexes can stall joins.
+  const snap = await getDocs(studentsCol(classId));
+  const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  rows.sort((a, b) => {
+    const ta =
+      a.createdAt?.toMillis?.() ?? (Date.parse(a.createdAt || "") || 0);
+    const tb =
+      b.createdAt?.toMillis?.() ?? (Date.parse(b.createdAt || "") || 0);
+    return ta - tb;
+  });
+  return rows;
+}
+
+/** True when an id looks like a leftover local SQLite row id (not a Firestore doc id). */
+export function isLegacySqliteStudentId(id) {
+  return id != null && /^\d+$/.test(String(id));
+}
+
+/**
+ * Trading id for the Flask ledger.
+ * On Firestore ledger the seat document id is the only durable key — never a
+ * leftover numeric apiStudentId from an older SQLite deploy.
+ */
+export function tradingStudentId(seat, ledger = "firestore") {
+  if (!seat) return null;
+  const seatId = seat.id || seat.firestoreStudentId || null;
+  const stored = seat.apiStudentId || null;
+  if (ledger === "firestore") return seatId || stored;
+  if (isLegacySqliteStudentId(stored) && seatId && !isLegacySqliteStudentId(seatId)) {
+    return seatId;
+  }
+  return stored || seatId;
 }
 
 export async function addClassStudent(
@@ -217,12 +247,55 @@ export async function addClassStudent(
 
 export async function findClassStudentByAuthUid(classId, authUid) {
   if (!classId || !authUid) return null;
-  const snap = await getDocs(
-    query(studentsCol(classId), where("authUid", "==", authUid), limit(1))
-  );
-  if (snap.empty) return null;
-  const d = snap.docs[0];
-  return { id: d.id, ...d.data() };
+  try {
+    const snap = await getDocs(
+      query(studentsCol(classId), where("authUid", "==", authUid), limit(1))
+    );
+    if (!snap.empty) {
+      const d = snap.docs[0];
+      return { id: d.id, ...d.data() };
+    }
+  } catch {
+    /* fall through to roster scan */
+  }
+  return null;
+}
+
+/** Resolve a roster seat by auth uid and/or email (scans class — fine for classroom size). */
+export async function findClassStudent(classId, { authUid = null, email = null } = {}) {
+  if (!classId) return null;
+  if (authUid) {
+    const byAuth = await findClassStudentByAuthUid(classId, authUid);
+    if (byAuth) return byAuth;
+  }
+  const normalized = email ? String(email).trim().toLowerCase() : "";
+  if (normalized) {
+    try {
+      const snap = await getDocs(
+        query(studentsCol(classId), where("email", "==", normalized), limit(1))
+      );
+      if (!snap.empty) {
+        const d = snap.docs[0];
+        return { id: d.id, ...d.data() };
+      }
+    } catch {
+      /* fall through to roster scan */
+    }
+  }
+  // Last resort: small classroom roster scan (no orderBy).
+  if (!authUid && !normalized) return null;
+  const roster = await listClassStudents(classId);
+  if (authUid) {
+    const match = roster.find((s) => s.authUid === authUid);
+    if (match) return match;
+  }
+  if (normalized) {
+    const match = roster.find(
+      (s) => String(s.email || "").trim().toLowerCase() === normalized
+    );
+    if (match) return match;
+  }
+  return null;
 }
 
 export async function linkUserToClass(authUid, classId, { name, email } = {}) {
@@ -244,14 +317,20 @@ export async function linkUserToClass(authUid, classId, { name, email } = {}) {
  * Find a student's roster seat by Firebase auth uid.
  * Prefers users/{uid}.primaryClassId, then collectionGroup scan.
  */
-export async function findStudentMembershipByAuthUid(authUid) {
+export async function findStudentMembershipByAuthUid(authUid, email = null) {
   if (!authUid) return null;
 
   const userSnap = await getDoc(doc(db, "users", authUid));
-  const primaryClassId = userSnap.exists() ? userSnap.data()?.primaryClassId : null;
+  const profile = userSnap.exists() ? userSnap.data() : {};
+  const primaryClassId = profile.primaryClassId || null;
+  const profileEmail = email || profile.email || null;
+
   if (primaryClassId) {
-    const seat = await findClassStudentByAuthUid(primaryClassId, authUid);
-    if (seat?.apiStudentId || seat?.id) {
+    const seat = await findClassStudent(primaryClassId, {
+      authUid,
+      email: profileEmail,
+    });
+    if (seat?.id) {
       return { classId: primaryClassId, ...seat };
     }
   }
@@ -268,12 +347,10 @@ export async function findStudentMembershipByAuthUid(authUid) {
       const classId = d.ref.parent.parent?.id;
       if (!classId) continue;
       if (primaryClassId && classId !== primaryClassId) {
-        // Prefer the stored class when multiple seats exist.
         continue;
       }
       return { classId, id: d.id, ...d.data() };
     }
-    // If primary filter skipped everything, take first valid seat.
     for (const d of snap.docs) {
       const classId = d.ref.parent.parent?.id;
       if (!classId) continue;
@@ -286,41 +363,60 @@ export async function findStudentMembershipByAuthUid(authUid) {
 }
 
 export async function buildStudentSessionFromAuth(authUid, profile = {}) {
-  const membership = await findStudentMembershipByAuthUid(authUid);
+  const membership = await findStudentMembershipByAuthUid(
+    authUid,
+    profile.email || null
+  );
   if (!membership?.classId || !membership?.id) return null;
   const cls = await getClass(membership.classId);
 
   // On Firestore ledger, the trading id MUST be the seat document id.
   // Older seats may still point at a leftover SQLite numeric apiStudentId —
   // that 404s as "Student not found" while the teacher roster still shows them.
-  let tradingId = membership.apiStudentId || membership.id;
+  let tradingId = tradingStudentId(membership, "firestore");
   try {
     const { getHealth, createStudent } = await import("./api");
     const health = await getHealth();
-    if (health?.ledger === "firestore") {
-      tradingId = membership.id;
+    const ledger = health?.ledger === "firestore" ? "firestore" : "sqlite";
+    tradingId = tradingStudentId(membership, ledger);
+    if (ledger === "firestore") {
+      const patch = {};
       if (membership.apiStudentId !== membership.id) {
+        patch.apiStudentId = membership.id;
+      }
+      if (!membership.authUid && authUid) {
+        patch.authUid = authUid;
+      }
+      if (Object.keys(patch).length) {
         try {
-          await updateClassStudent(membership.classId, membership.id, {
-            apiStudentId: membership.id,
-          });
+          await updateClassStudent(membership.classId, membership.id, patch);
         } catch {
           /* non-fatal */
         }
       }
       try {
-        await createStudent(membership.name || profile.name || "Student", Number(membership.cash) || 0, {
-          classId: membership.classId,
-          studentId: membership.id,
-          authUid,
-        });
+        await createStudent(
+          membership.name || profile.name || "Student",
+          Number(membership.cash) || 0,
+          {
+            classId: membership.classId,
+            studentId: membership.id,
+            authUid,
+          }
+        );
       } catch {
         /* ledger ensure is best-effort */
       }
     }
   } catch {
-    /* health/api unavailable — keep tradingId as stored */
+    /* health/api unavailable — keep tradingId as seat id */
+    tradingId = membership.id;
   }
+
+  await linkUserToClass(authUid, membership.classId, {
+    name: membership.name || profile.name,
+    email: membership.email || profile.email,
+  });
 
   return {
     classId: membership.classId,

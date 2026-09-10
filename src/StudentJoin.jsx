@@ -4,11 +4,12 @@ import {
   addClassStudent,
   clearJoinFromUrl,
   DEFAULT_MARKETS,
-  findClassStudentByAuthUid,
+  findClassStudent,
   getClassByInviteCode,
   linkUserToClass,
   setActiveClassId,
   setStudentSession,
+  tradingStudentId,
   updateClassStudent,
 } from "./classStore";
 import {
@@ -22,60 +23,44 @@ import {
   updateStudentUserProfile,
 } from "./studentAuth";
 import { sendPasswordReset, signInStudentWithGoogle } from "./teacherAuth";
-
-const INVESTMENT_GOALS = [
-  {
-    id: "grow",
-    title: "Grow my money",
-    blurb: "Aim for bigger returns over the semester, even if prices bounce around.",
-  },
-  {
-    id: "balanced",
-    title: "Keep a balance",
-    blurb: "Mix safer picks with a few growth ideas so you learn both sides.",
-  },
-  {
-    id: "learn",
-    title: "Learn how markets work",
-    blurb: "Try different markets and see how news and prices move your portfolio.",
-  },
-  {
-    id: "preserve",
-    title: "Protect what I start with",
-    blurb: "Focus on steadier assets and avoid big swings when you can.",
-  },
-];
+import MarketGlyph from "./MarketGlyph";
 
 const MARKET_GUIDE = [
   {
     id: "stocks",
     title: "Stocks",
-    blurb: "Own a slice of individual companies. Prices can rise or fall with news and earnings.",
+    blurb: "Own a slice of real companies",
+    tag: "Equity",
   },
   {
     id: "etfs",
     title: "ETFs",
-    blurb: "Baskets of many investments in one trade — a simple way to spread risk.",
+    blurb: "One trade that spreads your risk",
+    tag: "Basket",
   },
   {
     id: "bonds",
     title: "Bonds",
-    blurb: "Loans to governments or companies. Often steadier, with interest over time.",
+    blurb: "Steadier yield from loans",
+    tag: "Income",
   },
   {
     id: "commodities",
     title: "Commodities",
-    blurb: "Real-world stuff like gold, oil, or crops — useful for diversifying.",
+    blurb: "Raw prices for gold, oil, crops, metals",
+    tag: "Goods",
   },
   {
     id: "currencies",
     title: "Currencies",
-    blurb: "Trade dollars for euros, yen, and more. Values shift with exchange rates.",
+    blurb: "Swap dollars for other money",
+    tag: "FX",
   },
   {
     id: "realestate",
     title: "Real estate",
-    blurb: "Compare Florida home prices and mortgage rates — then take a classroom loan later.",
+    blurb: "Florida homes + a classroom mortgage",
+    tag: "Property",
   },
 ];
 
@@ -156,7 +141,6 @@ export default function StudentJoin({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [goalId, setGoalId] = useState("");
   const [authUser, setAuthUser] = useState(null);
   const [rosterId, setRosterId] = useState(null);
   const [apiStudentId, setApiStudentId] = useState(null);
@@ -192,9 +176,24 @@ export default function StudentJoin({
     };
   }, [inviteCode, setBusy, setError]);
 
+  async function ensureLedgerSeat(user, seatId, cash = 0) {
+    try {
+      await createStudent(user.name, Number(cash) || 0, {
+        classId: classInfo.id,
+        studentId: seatId,
+        authUid: user.uid,
+      });
+    } catch (err) {
+      console.warn("Ledger init:", err?.message || err);
+    }
+  }
+
   async function ensureRosterSeat(user, { createIfMissing }) {
     if (!classInfo) return null;
-    const existing = await findClassStudentByAuthUid(classInfo.id, user.uid);
+    const existing = await findClassStudent(classInfo.id, {
+      authUid: user.uid,
+      email: user.email,
+    });
     if (existing) {
       let health = { ledger: "sqlite" };
       try {
@@ -202,39 +201,37 @@ export default function StudentJoin({
       } catch {
         /* ignore */
       }
+      const ledger = health.ledger === "firestore" ? "firestore" : "sqlite";
       const tradingId =
-        health.ledger === "firestore"
-          ? existing.id
-          : existing.apiStudentId || existing.id;
-      if (health.ledger === "firestore" && existing.apiStudentId !== existing.id) {
+        tradingStudentId(existing, ledger) ||
+        tradingStudentId(existing, "firestore");
+      const patch = {};
+      if (existing.apiStudentId !== existing.id) {
+        patch.apiStudentId = existing.id;
+      }
+      if (!existing.authUid && user.uid) {
+        patch.authUid = user.uid;
+      }
+      if (user.email && !existing.email) {
+        patch.email = String(user.email).trim().toLowerCase();
+      }
+      if (Object.keys(patch).length) {
         try {
-          await updateClassStudent(classInfo.id, existing.id, {
-            apiStudentId: existing.id,
-          });
+          await updateClassStudent(classInfo.id, existing.id, patch);
         } catch {
-          /* non-fatal — rules may block until Admin ensure runs */
+          /* non-fatal */
         }
       }
       setRosterId(existing.id);
       setApiStudentId(tradingId);
       setName(existing.name || user.name);
-      if (existing.investmentGoal) setGoalId(existing.investmentGoal);
       if (existing.outfit) setOutfit(existing.outfit);
       await linkUserToClass(user.uid, classInfo.id, {
         name: existing.name || user.name,
         email: user.email,
       });
-      if (health.ledger === "firestore") {
-        try {
-          await createStudent(existing.name || user.name, Number(existing.cash) || 0, {
-            classId: classInfo.id,
-            studentId: existing.id,
-            authUid: user.uid,
-          });
-        } catch {
-          /* seat already has cash; ledger ensure is best-effort */
-        }
-      }
+      // Never block onboarding on ledger ensure — API hang was freezing "Updating".
+      void ensureLedgerSeat(user, existing.id, existing.cash);
       return { ...existing, apiStudentId: tradingId };
     }
     if (!createIfMissing) return null;
@@ -255,15 +252,7 @@ export default function StudentJoin({
         cash: startingCash,
         outfit: null,
       });
-      try {
-        await createStudent(user.name, startingCash, {
-          classId: classInfo.id,
-          studentId: firestoreStudentId,
-          authUid: user.uid,
-        });
-      } catch (err) {
-        console.warn("Ledger init:", err?.message || err);
-      }
+      void ensureLedgerSeat(user, firestoreStudentId, startingCash);
       setRosterId(firestoreStudentId);
       setApiStudentId(firestoreStudentId);
       return {
@@ -301,10 +290,8 @@ export default function StudentJoin({
     firestoreStudentId,
     studentApiId,
     nextOutfit,
-    investmentGoal: goalOverride,
   }) {
     if (!classInfo) return;
-    const savedGoal = goalOverride || goalId || null;
     saveOutfit(studentApiId, nextOutfit);
     setActiveClassId(classInfo.id);
     setStudentSession({
@@ -316,14 +303,14 @@ export default function StudentJoin({
       name: displayName,
       authUid: authUser?.uid || null,
       email: authUser?.email || null,
-      investmentGoal: savedGoal,
+      investmentGoal: null,
     });
     clearJoinFromUrl();
     onComplete?.({
       classId: classInfo.id,
       apiStudentId: studentApiId,
       name: displayName,
-      investmentGoal: savedGoal,
+      investmentGoal: null,
     });
   }
 
@@ -333,9 +320,21 @@ export default function StudentJoin({
     setBusy(true);
     setError("");
     try {
-      const user = await signUpStudent({ name, email, password });
+      let user;
+      try {
+        user = await signUpStudent({ name, email, password });
+      } catch (err) {
+        const msg = String(err?.message || "");
+        // Account was created on a previous hung attempt — continue as sign-in.
+        if (/already.*account|already.*use|email-already/i.test(msg)) {
+          user = await signInStudent({ email, password });
+        } else {
+          throw err;
+        }
+      }
       setAuthUser(user);
-      setOutfit(outfitForStudent(null, user.name));
+      setName(user.name || name);
+      setOutfit(outfitForStudent(null, user.name || name));
       const seat = await ensureRosterSeat(user, { createIfMissing: true });
       if (!seat) throw new Error("Could not add you to the class roster.");
       setStep("welcome");
@@ -358,27 +357,22 @@ export default function StudentJoin({
       const seat = await ensureRosterSeat(user, { createIfMissing: true });
       if (!seat) throw new Error("Could not find your seat in this class.");
 
-      const needsWelcome = !seat.investmentGoal && !user.investmentGoal;
-      if (needsWelcome) {
-        setOutfit(seat.outfit || outfitForStudent(null, user.name));
+      const nextOutfit =
+        seat.outfit || outfitForStudent(seat.apiStudentId || seat.id, user.name);
+      setOutfit(nextOutfit);
+
+      // Returning students: enter class if they finished avatar once (Firestore or local).
+      const hasOutfit = Boolean(seat.outfit) || user.onboardingComplete;
+      if (!hasOutfit) {
         setStep("welcome");
-        return;
-      }
-
-      if (seat.investmentGoal) setGoalId(seat.investmentGoal);
-      setOutfit(seat.outfit || outfitForStudent(seat.apiStudentId, user.name));
-
-      if (!seat.outfit) {
-        setStep("avatar");
         return;
       }
 
       await completeSession({
         displayName: seat.name || user.name,
         firestoreStudentId: seat.id,
-        studentApiId: seat.apiStudentId,
-        nextOutfit: seat.outfit,
-        investmentGoal: seat.investmentGoal || user.investmentGoal || null,
+        studentApiId: seat.apiStudentId || seat.id,
+        nextOutfit,
       });
     } catch (err) {
       setError(err.message || "Could not sign in");
@@ -399,27 +393,21 @@ export default function StudentJoin({
       const seat = await ensureRosterSeat(user, { createIfMissing: true });
       if (!seat) throw new Error("Could not add you to the class roster.");
 
-      const needsWelcome = !seat.investmentGoal && !user.investmentGoal;
-      if (needsWelcome) {
-        setOutfit(seat.outfit || outfitForStudent(null, user.name));
+      const nextOutfit =
+        seat.outfit || outfitForStudent(seat.apiStudentId || seat.id, user.name);
+      setOutfit(nextOutfit);
+
+      const hasOutfit = Boolean(seat.outfit) || user.onboardingComplete;
+      if (!hasOutfit) {
         setStep("welcome");
-        return;
-      }
-
-      if (seat.investmentGoal) setGoalId(seat.investmentGoal);
-      setOutfit(seat.outfit || outfitForStudent(seat.apiStudentId, user.name));
-
-      if (!seat.outfit) {
-        setStep("avatar");
         return;
       }
 
       await completeSession({
         displayName: seat.name || user.name,
         firestoreStudentId: seat.id,
-        studentApiId: seat.apiStudentId,
-        nextOutfit: seat.outfit,
-        investmentGoal: seat.investmentGoal || user.investmentGoal || null,
+        studentApiId: seat.apiStudentId || seat.id,
+        nextOutfit,
       });
     } catch (err) {
       setError(err.message || "Could not continue with Google");
@@ -443,33 +431,10 @@ export default function StudentJoin({
     }
   }
 
-  async function continueFromWelcome(e) {
+  function continueFromWelcome(e) {
     e.preventDefault();
-    if (!goalId) {
-      setError("Pick an investment goal to continue.");
-      return;
-    }
-    if (!authUser || !classInfo || !rosterId) {
-      setError("Your account session expired. Sign in again.");
-      setStep("auth");
-      return;
-    }
-    setBusy(true);
     setError("");
-    try {
-      await updateClassStudent(classInfo.id, rosterId, {
-        investmentGoal: goalId,
-      });
-      await updateStudentUserProfile(authUser.uid, {
-        investmentGoal: goalId,
-        onboardingComplete: false,
-      });
-      setStep("avatar");
-    } catch (err) {
-      setError(err.message || "Could not save your goal");
-    } finally {
-      setBusy(false);
-    }
+    setStep("avatar");
   }
 
   async function finishJoin() {
@@ -481,21 +446,28 @@ export default function StudentJoin({
     setBusy(true);
     setError("");
     try {
+      // Save roster + enter class first. Ledger ensure must not block onboarding —
+      // a hung Admin SDK /api/students call was freezing "Updating" forever.
       await updateClassStudent(classInfo.id, rosterId, {
         outfit,
-        investmentGoal: goalId || null,
         name: name.trim() || authUser.name,
+        apiStudentId: rosterId,
+        authUid: authUser.uid,
       });
       await updateStudentUserProfile(authUser.uid, {
-        investmentGoal: goalId || null,
         onboardingComplete: true,
+        primaryClassId: classInfo.id,
       });
+      void ensureLedgerSeat(
+        { ...authUser, name: name.trim() || authUser.name },
+        rosterId,
+        classInfo.startingCash
+      );
       await completeSession({
         displayName: name.trim() || authUser.name,
         firestoreStudentId: rosterId,
-        studentApiId: apiStudentId,
+        studentApiId: apiStudentId || rosterId,
         nextOutfit: outfit,
-        investmentGoal: goalId || null,
       });
     } catch (err) {
       setError(err.message || "Could not finish setup");
@@ -565,7 +537,7 @@ export default function StudentJoin({
                   ? "Enter your account email and we’ll send a link to choose a new password."
                   : "Sign in with the email and password you used for this class."
               : step === "welcome"
-                ? "Tell us what you’re aiming for, then take a quick tour of the markets."
+                ? "How class investing works — then pick your look."
                 : "Pick a look — you can change outfits anytime from your home page."}
           </p>
         </div>
@@ -773,44 +745,67 @@ export default function StudentJoin({
 
       {step === "welcome" && (
         <form className="join-welcome" onSubmit={continueFromWelcome}>
-          <section className="welcome-block" aria-labelledby="goals-heading">
-            <h3 id="goals-heading">What’s your investment goal?</h3>
-            <p className="welcome-lead">
-              There’s no wrong answer — this helps you think before you trade.
-            </p>
-            <div className="goal-grid" role="radiogroup" aria-label="Investment goal">
-              {INVESTMENT_GOALS.map((goal) => (
-                <button
-                  key={goal.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={goalId === goal.id}
-                  className={
-                    goalId === goal.id ? "goal-card selected" : "goal-card"
-                  }
-                  data-click="select"
-                  onClick={() => setGoalId(goal.id)}
-                >
-                  <strong>{goal.title}</strong>
-                  <span>{goal.blurb}</span>
-                </button>
-              ))}
-            </div>
+          <section className="welcome-block" aria-labelledby="howto-heading">
+            <h3 id="howto-heading">How to play</h3>
+            <ol className="welcome-steps">
+              <li>
+                <strong>Start with cash</strong>
+                <span>
+                  You begin with {money(classInfo?.startingCash)}. Use it to buy
+                  assets — sell anytime to free cash again.
+                </span>
+              </li>
+              <li>
+                <strong>Open a market</strong>
+                <span>
+                  From home, pick a market card, browse prices, then buy or sell.
+                </span>
+              </li>
+              <li>
+                <strong>Watch the news</strong>
+                <span>
+                  Classroom headlines can move prices. Check the news desk before
+                  you trade.
+                </span>
+              </li>
+              <li>
+                <strong>Track your standing</strong>
+                <span>
+                  Your portfolio value updates as prices change. Compare with
+                  classmates anytime.
+                </span>
+              </li>
+            </ol>
           </section>
 
-          <section className="welcome-block" aria-labelledby="markets-heading">
-            <h3 id="markets-heading">Markets you’ll use</h3>
-            <p className="welcome-lead">
-              Your class can trade in these markets. Here’s what each one means.
-            </p>
-            <ul className="market-guide-list">
-              {visibleMarkets.map((market) => (
-                <li key={market.id}>
-                  <strong>{market.title}</strong>
-                  <span>{market.blurb}</span>
-                </li>
+          <section className="welcome-block welcome-markets" aria-labelledby="markets-heading">
+            <div className="market-menu-head">
+              <p className="market-menu-kicker">Your class markets</p>
+              <h3 id="markets-heading">Where you can trade</h3>
+              <p className="market-menu-lead">
+                These floors are open for your class — same cards you’ll see on
+                your home page.
+              </p>
+            </div>
+            <div className="market-lanes join-market-lanes" role="list">
+              {visibleMarkets.map((market, i) => (
+                <div
+                  key={market.id}
+                  role="listitem"
+                  className={`market-lane market-lane-${market.id} market-lane-static`}
+                  style={{ animationDelay: `${i * 55}ms` }}
+                >
+                  <span className="market-lane-visual" aria-hidden="true">
+                    <MarketGlyph id={market.id} />
+                  </span>
+                  <span className="market-lane-copy">
+                    <span className="market-lane-tag">{market.tag}</span>
+                    <strong>{market.title}</strong>
+                    <span className="market-lane-blurb">{market.blurb}</span>
+                  </span>
+                </div>
               ))}
-            </ul>
+            </div>
           </section>
 
           <div className="form-actions join-avatar-actions">

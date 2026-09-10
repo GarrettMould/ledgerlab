@@ -11,23 +11,39 @@ function ledgerHeaders(extra = {}) {
 }
 
 async function request(path, options = {}) {
-  const { classId, headers: optHeaders, ...rest } = options;
+  const { classId, headers: optHeaders, timeoutMs = 20000, ...rest } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res;
   try {
     res = await fetch(`${API}${path}`, {
-      headers: { ...ledgerHeaders({ classId }), ...(optHeaders || {}) },
       ...rest,
+      headers: { ...ledgerHeaders({ classId }), ...(optHeaders || {}) },
+      signal: controller.signal,
     });
-  } catch {
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error("API request timed out. Check that npm run dev:api is running.");
+    }
     throw new Error("Cannot reach the API. Start it with: npm run dev:api");
+  } finally {
+    clearTimeout(timer);
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (data.error) {
       throw new Error(data.error);
     }
-    if (res.status === 502 || res.status === 503 || res.status === 504) {
-      throw new Error("API is not running. In another terminal run: npm run dev:api");
+    // Vite's /api proxy returns a bare 500 when nothing is listening on the API port.
+    if (
+      res.status === 500 ||
+      res.status === 502 ||
+      res.status === 503 ||
+      res.status === 504
+    ) {
+      throw new Error(
+        "API is not running. In another terminal run: npm run dev:api"
+      );
     }
     throw new Error(`Request failed (${res.status})`);
   }
@@ -43,6 +59,7 @@ export function createStudent(name, cash = 0, { classId, studentId, authUid } = 
   return request("/students", {
     method: "POST",
     classId,
+    timeoutMs: 8000,
     body: JSON.stringify({
       name,
       cash,
@@ -58,7 +75,7 @@ export function deleteStudent(id, classId) {
 }
 
 export function getStudent(id, classId) {
-  return request(`/students/${id}`, { classId });
+  return request(`/students/${id}`, { classId, timeoutMs: 10000 });
 }
 
 export function adjustCash(id, amount, classId) {

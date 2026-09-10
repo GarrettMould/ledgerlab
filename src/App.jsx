@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { buyHome, buyShares, getMarket, getStudent, listStudents, sellShares } from "./api";
+import { buyHome, buyShares, createStudent, getMarket, getStudent, listStudents, sellShares } from "./api";
 import PriceChart from "./PriceChart";
 import PortfolioHistoryChart from "./PortfolioHistoryChart";
 import CommodityInfoTip from "./CommodityInfoTip";
@@ -24,6 +24,7 @@ import { signOutStudentAuth } from "./studentAuth";
 import { signOutTeacherAuth, watchAccountAuth } from "./teacherAuth";
 import { setClickMuted } from "./clickSounds";
 import FloridaRealEstateMap from "./FloridaRealEstateMap";
+import MarketGlyph from "./MarketGlyph";
 import { groupHoldingsByCategory } from "./portfolioAllocation";
 import "./App.css";
 
@@ -139,116 +140,6 @@ const CATEGORIES = [
   },
 ];
 
-function MarketGlyph({ id }) {
-  const common = {
-    viewBox: "0 0 48 48",
-    fill: "none",
-    xmlns: "http://www.w3.org/2000/svg",
-    "aria-hidden": "true",
-    className: "market-lane-glyph",
-  };
-  switch (id) {
-    case "stocks":
-      return (
-        <svg {...common}>
-          <path
-            d="M8 34 L18 24 L26 30 L40 14"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M30 14 H40 V24"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      );
-    case "etfs":
-      return (
-        <svg {...common}>
-          <rect x="8" y="22" width="8" height="16" rx="2" fill="currentColor" opacity="0.35" />
-          <rect x="20" y="14" width="8" height="24" rx="2" fill="currentColor" opacity="0.55" />
-          <rect x="32" y="8" width="8" height="30" rx="2" fill="currentColor" />
-        </svg>
-      );
-    case "bonds":
-      return (
-        <svg {...common}>
-          <rect
-            x="10"
-            y="14"
-            width="28"
-            height="20"
-            rx="4"
-            stroke="currentColor"
-            strokeWidth="3"
-          />
-          <path
-            d="M16 24 H32"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinecap="round"
-          />
-          <circle cx="18" cy="20" r="1.6" fill="currentColor" />
-          <circle cx="30" cy="28" r="1.6" fill="currentColor" />
-        </svg>
-      );
-    case "commodities":
-      return (
-        <svg {...common}>
-          <path
-            d="M24 8 L38 16 V32 L24 40 L10 32 V16 Z"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M24 8 V40 M10 16 L38 32 M38 16 L10 32"
-            stroke="currentColor"
-            strokeWidth="2"
-            opacity="0.45"
-          />
-        </svg>
-      );
-    case "currencies":
-      return (
-        <svg {...common}>
-          <circle cx="24" cy="24" r="14" stroke="currentColor" strokeWidth="3" />
-          <path
-            d="M28 17 C24 15 18 16 18 22 C18 28 30 24 30 30 C30 35 24 37 19 35"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinecap="round"
-          />
-          <path d="M24 13 V35" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-        </svg>
-      );
-    case "realestate":
-      return (
-        <svg {...common}>
-          <path
-            d="M8 24 L24 10 L40 24 V38 H8 Z"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M20 38 V28 H28 V38"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinejoin="round"
-          />
-        </svg>
-      );
-    default:
-      return null;
-  }
-}
-
 /** Home-grid order by signup goal — riskier / more relevant markets float first. */
 const CATEGORY_ORDER_BY_GOAL = {
   grow: ["stocks", "commodities", "etfs", "realestate", "currencies", "bonds"],
@@ -285,9 +176,12 @@ function StudentPortfolio({
   setError,
   setBusy,
 }) {
-  const [selectedId, setSelectedId] = useState(() =>
-    lockedStudentId ? String(lockedStudentId) : ""
-  );
+  const [selectedId, setSelectedId] = useState(() => {
+    if (firestoreStudentId && (!lockedStudentId || /^\d+$/.test(String(lockedStudentId)))) {
+      return String(firestoreStudentId);
+    }
+    return lockedStudentId ? String(lockedStudentId) : "";
+  });
   const [portfolio, setPortfolio] = useState(null);
   const [category, setCategory] = useState(null);
   const [stockIndustry, setStockIndustry] = useState("All");
@@ -311,8 +205,13 @@ function StudentPortfolio({
   );
 
   useEffect(() => {
+    // Prefer Firestore seat id over leftover numeric SQLite trading ids.
+    if (firestoreStudentId && (!lockedStudentId || /^\d+$/.test(String(lockedStudentId)))) {
+      setSelectedId(String(firestoreStudentId));
+      return;
+    }
     if (lockedStudentId) setSelectedId(String(lockedStudentId));
-  }, [lockedStudentId]);
+  }, [lockedStudentId, firestoreStudentId]);
 
   useEffect(() => {
     return () => {
@@ -321,9 +220,25 @@ function StudentPortfolio({
   }, []);
 
   async function loadPortfolio(id) {
-    const data = await getStudent(id);
+    const data = await getStudent(id, classId || undefined);
     setPortfolio(data);
     return data;
+  }
+
+  function portfolioFallback() {
+    const seat =
+      students.find((s) => String(s.id) === String(firestoreStudentId)) ||
+      students.find((s) => String(s.id) === String(selectedId));
+    return {
+      id: firestoreStudentId || selectedId,
+      name: seat?.name || "Student",
+      cash: Number(seat?.cash) || 0,
+      portfolio_value: 0,
+      mortgage_debt: 0,
+      total_value: Number(seat?.cash) || 0,
+      holdings_count: 0,
+      holdings: [],
+    };
   }
 
   useEffect(() => {
@@ -343,10 +258,43 @@ function StudentPortfolio({
       setBusy(true);
       setError("");
       try {
-        const data = await getStudent(selectedId);
+        let data;
+        try {
+          data = await getStudent(selectedId, classId || undefined);
+        } catch (err) {
+          const msg = String(err?.message || "");
+          if (classId && firestoreStudentId && /not found|404/i.test(msg)) {
+            const seatName =
+              students.find((s) => String(s.id) === String(selectedId))?.name ||
+              students.find((s) => String(s.id) === String(firestoreStudentId))
+                ?.name ||
+              "Student";
+            try {
+              await createStudent(seatName, 0, {
+                classId,
+                studentId: firestoreStudentId,
+              });
+              data = await getStudent(firestoreStudentId, classId);
+              if (String(selectedId) !== String(firestoreStudentId)) {
+                setSelectedId(String(firestoreStudentId));
+              }
+            } catch {
+              data = portfolioFallback();
+            }
+          } else if (/timed out|not running|Cannot reach|500|Request failed/i.test(msg)) {
+            // Enter the home UI even if the ledger API is unhealthy.
+            data = portfolioFallback();
+            if (!cancelled) setError(msg);
+          } else {
+            throw err;
+          }
+        }
         if (!cancelled) setPortfolio(data);
       } catch (err) {
-        if (!cancelled) setError(err.message);
+        if (!cancelled) {
+          setPortfolio(portfolioFallback());
+          setError(err.message);
+        }
       } finally {
         if (!cancelled) setBusy(false);
       }
@@ -354,7 +302,7 @@ function StudentPortfolio({
     return () => {
       cancelled = true;
     };
-  }, [selectedId, setBusy, setError]);
+  }, [selectedId, classId, firestoreStudentId, setBusy, setError]);
 
   useEffect(() => {
     if (!selectedId || !portfolioRefreshToken) return;
@@ -2378,9 +2326,15 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [portfolioRefreshToken, setPortfolioRefreshToken] = useState(0);
 
-  async function refreshApiStudents() {
+  async function refreshApiStudents(classIdOverride) {
+    const classId =
+      classIdOverride ||
+      activeClassId ||
+      getStudentSession()?.classId ||
+      getActiveClassId() ||
+      undefined;
     try {
-      const data = await listStudents(false, activeClassId || undefined);
+      const data = await listStudents(false, classId);
       setApiStudents(data);
       return data;
     } catch (err) {
@@ -2398,8 +2352,9 @@ export default function App() {
     const session = getStudentSession();
     setStudentSessionState(session);
     setJoinCode("");
-    if (result?.classId) handleActiveClassChange(result.classId);
-    refreshApiStudents();
+    const classId = result?.classId || session?.classId || "";
+    if (classId) handleActiveClassChange(classId);
+    refreshApiStudents(classId);
   }
 
   async function handleSignOutStudent() {
@@ -2541,6 +2496,21 @@ export default function App() {
     setStudentSession(next);
     setStudentSessionState(next);
   }, [studentSession, rosterGoal]);
+
+  // Heal sessions that still store a numeric SQLite trading id.
+  useEffect(() => {
+    if (!studentSession?.firestoreStudentId) return;
+    const seatId = studentSession.firestoreStudentId;
+    const trading = studentSession.apiStudentId;
+    if (!trading || String(trading) === String(seatId)) return;
+    if (!/^\d+$/.test(String(trading))) return;
+    const next = {
+      ...studentSession,
+      apiStudentId: seatId,
+    };
+    setStudentSession(next);
+    setStudentSessionState(next);
+  }, [studentSession]);
 
   const brandSub =
     teacher && !studentSession && !joinCode

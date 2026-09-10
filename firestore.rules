@@ -16,8 +16,9 @@ service cloud.firestore {
     }
 
     match /classes/{classId} {
-      // Teachers manage classes from the client today; tighten later with custom claims.
-      allow read: if signedIn();
+      // Invite links look up a class by inviteCode BEFORE the student signs in.
+      // Class docs are OK to read publicly; roster/cash stay protected below.
+      allow read: if true;
       allow write: if signedIn();
 
       match /students/{studentId} {

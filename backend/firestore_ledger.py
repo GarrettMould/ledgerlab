@@ -301,25 +301,14 @@ def add_snapshot(
     total_value: float,
     recorded_at: str | None = None,
 ) -> None:
-    from firebase_admin import firestore as fs
-
     ts = recorded_at or utc_now_iso()
-    latest_q = (
-        snapshots_col(class_id, student_id)
-        .order_by("recordedAt", direction=fs.Query.DESCENDING)
-        .limit(1)
-        .stream()
-    )
-    for snap in latest_q:
-        data = snap.to_dict() or {}
-        prev_total = float(data.get("totalValue") or 0)
-        if abs(prev_total - float(total_value)) < 0.005:
-            prev_ts = data.get("recordedAt")
+    # Avoid order_by queries (index / mixed-type pitfalls). Dedupe in memory.
+    existing = list_snapshots(class_id, student_id)
+    if existing:
+        latest = existing[-1]
+        if abs(float(latest.get("total_value") or 0) - float(total_value)) < 0.005:
             try:
-                if hasattr(prev_ts, "isoformat"):
-                    prev = datetime.fromisoformat(prev_ts.isoformat())
-                else:
-                    prev = datetime.fromisoformat(str(prev_ts))
+                prev = datetime.fromisoformat(str(latest.get("recorded_at") or ""))
                 now = datetime.fromisoformat(ts)
                 if prev.tzinfo is None:
                     prev = prev.replace(tzinfo=timezone.utc)
@@ -329,7 +318,6 @@ def add_snapshot(
                     return
             except Exception:
                 pass
-        break
 
     snapshots_col(class_id, student_id).add(
         {
