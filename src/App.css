@@ -57,7 +57,7 @@ button {
 }
 
 .app-shell {
-  position: relative;
+    position: relative;
   max-width: 980px;
   margin: 0 auto;
   padding: 1.25rem 1.1rem 2.5rem;
@@ -800,7 +800,7 @@ button {
 
 .closet-item-copy {
   display: flex;
-  flex-direction: column;
+    flex-direction: column;
   gap: 0.1rem;
   min-width: 0;
 }
@@ -848,8 +848,8 @@ button {
   font-size: 0.82rem;
   font-weight: 700;
   color: var(--muted);
-  text-align: center;
-}
+    text-align: center;
+  }
 
 @media (max-width: 760px) {
   .closet-body {
@@ -1166,10 +1166,10 @@ select:focus {
 }
 
 .invite-card {
-  display: flex;
+    display: flex;
   flex-wrap: wrap;
   gap: 1rem 1.5rem;
-  align-items: center;
+    align-items: center;
   justify-content: space-between;
   padding: 1.1rem 1.25rem;
   border: 1px solid var(--line-soft);
@@ -1586,6 +1586,117 @@ select:focus {
   animation: closetRise 0.28s ease both;
 }
 
+.trade-success-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(12, 28, 22, 0.52);
+  backdrop-filter: blur(8px);
+  animation: closetFade 0.18s ease both;
+}
+
+.trade-success-modal {
+  width: min(360px, 100%);
+  padding: 1.75rem 1.5rem 1.4rem;
+  border-radius: 24px;
+  background: #fff;
+  border: 1px solid rgba(47, 107, 79, 0.12);
+  box-shadow: 0 20px 50px rgba(20, 53, 40, 0.22);
+  text-align: center;
+  animation: tradeSuccessRise 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.trade-success-badge {
+  display: grid;
+  place-items: center;
+  margin: 0 auto 1rem;
+  animation: tradeSuccessPop 0.42s cubic-bezier(0.22, 1, 0.36, 1) 0.06s both;
+}
+
+.trade-success-disc {
+  fill: #2f6b4f;
+  transform-origin: 32px 32px;
+  animation: tradeSuccessDisc 0.35s ease both;
+}
+
+.trade-success-check {
+  stroke-dasharray: 48;
+  stroke-dashoffset: 48;
+  animation: tradeSuccessCheck 0.4s ease forwards 0.28s;
+}
+
+.trade-success-modal h3 {
+  margin: 0;
+  font-size: 1.65rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+}
+
+.trade-success-detail {
+  margin: 0.45rem 0 0;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: #5f7468;
+}
+
+.trade-success-amount {
+  margin: 0.65rem 0 0;
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #2f6b4f;
+  letter-spacing: -0.02em;
+}
+
+.trade-success-btn {
+  margin-top: 1.25rem;
+  min-width: 9rem;
+  border-radius: 999px;
+}
+
+@keyframes tradeSuccessRise {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes tradeSuccessPop {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes tradeSuccessDisc {
+  from {
+    opacity: 0.4;
+    transform: scale(0.7);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes tradeSuccessCheck {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
 .confirm-kicker {
   margin: 0;
   font-size: 0.75rem;
@@ -1617,7 +1728,7 @@ select:focus {
 
 .confirm-actions {
   display: flex;
-  flex-wrap: wrap;
+    flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.55rem;
   margin-top: 1.15rem;
@@ -1761,7 +1872,7 @@ select:focus {
   width: 100%;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+    justify-content: center;
   gap: 0.65rem;
   min-height: 2.75rem;
   padding: 0.65rem 1rem;
@@ -1891,7 +2002,7 @@ select:focus {
 
 .transfer-accept {
   margin-top: 1.1rem;
-  width: 100%;
+      width: 100%;
 }
 
 .transfer-liquidate {
@@ -2086,7 +2197,7 @@ select:focus {
   color: var(--ink);
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+      justify-content: center;
   padding: 0;
   transition: transform 0.12s ease, background 0.15s ease;
 }
@@ -2701,16 +2812,20 @@ select:focus {
 
 .class-walker-tag {
   display: inline-block;
-  padding: 0.18rem 0.55rem;
+  max-width: 6.2rem;
+  padding: 0.1rem 0.4rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.94);
   border: 1px solid rgba(47, 107, 79, 0.22);
   color: #1f3d30;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.01em;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   box-shadow: 0 2px 8px rgba(20, 53, 40, 0.12);
+  transform: translateY(-2px);
 }
 
 .class-walker-tag.is-you {
@@ -2925,7 +3040,7 @@ select:focus {
 
 .class-cell {
   position: absolute;
-  box-sizing: border-box;
+      box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3565,7 +3680,7 @@ select:focus {
 }
 
 .commodity-tooltip {
-  position: absolute;
+    position: absolute;
   left: 0;
   top: calc(100% + 0.45rem);
   z-index: 40;
@@ -3768,6 +3883,32 @@ select:focus {
   display: grid;
   gap: 0.45rem;
   margin-bottom: 0.85rem;
+}
+
+.market-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+  padding: 0.35rem 0 0.15rem;
+}
+
+.market-pager-status {
+  min-width: 7.5rem;
+  text-align: center;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #5f7468;
+}
+
+.market-pager-btn {
+  min-width: 5.5rem;
+}
+
+.market-pager-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .market-pricing-banner {
@@ -4704,7 +4845,7 @@ select:focus {
 
 .holding-col-tip-bubble {
   position: absolute;
-  left: 0;
+    left: 0;
   bottom: calc(100% + 0.45rem);
   z-index: 8;
   width: max-content;

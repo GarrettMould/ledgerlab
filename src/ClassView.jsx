@@ -1,11 +1,13 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { getStudent } from "./api";
+import { getStandings } from "./api";
 import { listClassStudents } from "./classStore";
 import {
   ClassWalkingStage,
+  classFishWalker,
   loadSavedOutfit,
   outfitForStudent,
+  stripPlayerFishForm,
 } from "./StudentCharacter";
 
 function money(n) {
@@ -18,35 +20,15 @@ function money(n) {
 }
 
 function outfitForSeat(seat, tradingId, name) {
+  const base = outfitForStudent(tradingId, name);
   if (seat?.outfit && typeof seat.outfit === "object") {
-    return { ...outfitForStudent(tradingId, name), ...seat.outfit };
+    return stripPlayerFishForm({ ...base, ...seat.outfit, npcFish: false }, base);
   }
   return loadSavedOutfit(tradingId, name);
 }
 
 function tradingIdForSeat(seat) {
   return String(seat.apiStudentId || seat.id);
-}
-
-/** Build one standings row from a Firestore class seat + optional API portfolio. */
-function rowFromSeat(seat, portfolio) {
-  const id = tradingIdForSeat(seat);
-  const name = seat.name || portfolio?.name || "Student";
-  const cash = Number(portfolio?.cash ?? seat.cash) || 0;
-  const total =
-    portfolio?.total_value != null
-      ? Number(portfolio.total_value)
-      : cash;
-  return {
-    id,
-    seatId: seat.id,
-    name,
-    cash,
-    portfolio_value: Number(portfolio?.portfolio_value) || 0,
-    total_value: total,
-    netWorth: total,
-    outfit: seat.outfit || null,
-  };
 }
 
 export default function ClassView({ currentStudentId, classId, onBack }) {
@@ -63,26 +45,54 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
         if (!classId) {
           throw new Error("Join a class to see standings for that roster.");
         }
-        // Source of truth: Firestore seats for THIS class — not the global SQLite list.
-        const seats = await listClassStudents(classId);
-        const rows = await Promise.all(
-          (seats || []).map(async (seat) => {
-            const tradeId = tradingIdForSeat(seat);
-            let portfolio = null;
-            try {
-              portfolio = await getStudent(tradeId, classId);
-            } catch {
-              try {
-                if (String(seat.id) !== tradeId) {
-                  portfolio = await getStudent(seat.id, classId);
-                }
-              } catch {
-                portfolio = null;
-              }
-            }
-            return rowFromSeat(seat, portfolio);
-          })
-        );
+        // Seats (names/outfits) from Firestore client; totals from one light API call.
+        const [seats, standingsPayload] = await Promise.all([
+          listClassStudents(classId),
+          getStandings(classId),
+        ]);
+        const byId = new Map();
+        for (const row of standingsPayload?.students || []) {
+          byId.set(String(row.id), row);
+        }
+        const rows = (seats || []).map((seat) => {
+          const tradeId = tradingIdForSeat(seat);
+          const live =
+            byId.get(String(seat.id)) ||
+            byId.get(String(tradeId)) ||
+            null;
+          const cash = Number(live?.cash ?? seat.cash) || 0;
+          const total =
+            live?.total_value != null ? Number(live.total_value) : cash;
+          return {
+            id: tradeId,
+            seatId: seat.id,
+            name: seat.name || live?.name || "Student",
+            cash,
+            portfolio_value: Number(live?.portfolio_value) || 0,
+            total_value: total,
+            netWorth: total,
+            outfit: seat.outfit || null,
+          };
+        });
+        // Include any ledger-only rows missing from the client roster.
+        for (const row of standingsPayload?.students || []) {
+          const already = rows.some(
+            (r) =>
+              String(r.id) === String(row.id) ||
+              String(r.seatId) === String(row.id)
+          );
+          if (already) continue;
+          rows.push({
+            id: String(row.id),
+            seatId: String(row.id),
+            name: row.name || "Student",
+            cash: Number(row.cash) || 0,
+            portfolio_value: Number(row.portfolio_value) || 0,
+            total_value: Number(row.total_value) || 0,
+            netWorth: Number(row.total_value) || 0,
+            outfit: null,
+          });
+        }
         if (!cancelled) setRoster(rows);
       } catch (err) {
         if (!cancelled) setError(err.message || "Could not load class standings");
@@ -114,20 +124,20 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
     return rows.map((s, i) => ({ ...s, rank: i + 1 }));
   }, [roster]);
 
-  const walkers = useMemo(
-    () =>
-      ranked.map((s) => ({
-        id: s.id,
-        name: s.name,
-        isYou: s.id === currentStudentId || s.seatId === currentStudentId,
-        outfit: outfitForSeat(
-          { id: s.seatId, outfit: s.outfit },
-          s.id,
-          s.name
-        ),
-      })),
-    [ranked, currentStudentId]
-  );
+  const walkers = useMemo(() => {
+    const students = ranked.map((s) => ({
+      id: s.id,
+      name: s.name,
+      isYou: s.id === currentStudentId || s.seatId === currentStudentId,
+      outfit: outfitForSeat(
+        { id: s.seatId, outfit: s.outfit },
+        s.id,
+        s.name
+      ),
+    }));
+    // Always include the class fish NPC on the standings walk stage.
+    return [...students, classFishWalker()];
+  }, [ranked, currentStudentId]);
 
   const classTotal = useMemo(
     () => ranked.reduce((s, r) => s + Math.max(0, r.netWorth), 0),
@@ -177,71 +187,69 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
 
       {loading && <p className="standings-empty">Loading the class…</p>}
       {error && <p className="standings-empty standings-error">{error}</p>}
-      {!loading && !error && ranked.length === 0 && (
-        <p className="standings-empty">No students in this class yet.</p>
-      )}
-
-      {!loading && !error && ranked.length > 0 && (
+      {!loading && !error && (
         <div className="standings-body">
-          {walkers.length > 0 && (
-            <div className="standings-walk-wrap" aria-label="Class walking stage">
-              <Suspense fallback={<div className="standings-walk-stage standings-walk-fallback" />}>
-                <ClassWalkingStage walkers={walkers} className="standings-walk-stage" />
-              </Suspense>
+          <div className="standings-walk-wrap" aria-label="Class walking stage">
+            <Suspense fallback={<div className="standings-walk-stage standings-walk-fallback" />}>
+              <ClassWalkingStage walkers={walkers} className="standings-walk-stage" />
+            </Suspense>
+          </div>
+
+          {ranked.length === 0 ? (
+            <p className="standings-empty">No students in this class yet.</p>
+          ) : (
+            <div className="standings-table-panel">
+              <div className="standings-table-scroll">
+                <table className="standings-table">
+                  <caption className="sr-only">
+                    Class standings ranked by total portfolio value
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Student</th>
+                      <th scope="col" className="standings-col-value">
+                        Portfolio value
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ranked.map((s) => {
+                      const isYou =
+                        s.id === currentStudentId || s.seatId === currentStudentId;
+                      const share =
+                        classTotal > 0
+                          ? ((Math.max(0, s.netWorth) / classTotal) * 100).toFixed(1)
+                          : null;
+                      return (
+                        <tr
+                          key={s.seatId || s.id}
+                          className={[
+                            "standings-row",
+                            isYou ? "is-you" : "",
+                            s.rank <= 3 ? `is-top-${s.rank}` : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                        >
+                          <td className="standings-player">
+                            <span className="standings-rank">#{s.rank}</span>
+                            <strong className="standings-name">{s.name}</strong>
+                            {isYou ? <span className="standings-you-pill">You</span> : null}
+                          </td>
+                          <td className="standings-value">
+                            <strong>{money(s.netWorth)}</strong>
+                            {share != null && (
+                              <span className="standings-share">{share}% of class</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
-
-          <div className="standings-table-panel">
-            <div className="standings-table-scroll">
-              <table className="standings-table">
-                <caption className="sr-only">
-                  Class standings ranked by total portfolio value
-                </caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Student</th>
-                    <th scope="col" className="standings-col-value">
-                      Portfolio value
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ranked.map((s) => {
-                    const isYou =
-                      s.id === currentStudentId || s.seatId === currentStudentId;
-                    const share =
-                      classTotal > 0
-                        ? ((Math.max(0, s.netWorth) / classTotal) * 100).toFixed(1)
-                        : null;
-                    return (
-                      <tr
-                        key={s.seatId || s.id}
-                        className={[
-                          "standings-row",
-                          isYou ? "is-you" : "",
-                          s.rank <= 3 ? `is-top-${s.rank}` : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                      >
-                        <td className="standings-player">
-                          <span className="standings-rank">#{s.rank}</span>
-                          <strong className="standings-name">{s.name}</strong>
-                          {isYou ? <span className="standings-you-pill">You</span> : null}
-                        </td>
-                        <td className="standings-value">
-                          <strong>{money(s.netWorth)}</strong>
-                          {share != null && (
-                            <span className="standings-share">{share}% of class</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
         </div>
       )}
     </div>

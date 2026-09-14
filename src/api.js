@@ -96,6 +96,10 @@ export function getStudent(id, classId) {
   return request(`/students/${id}`, { classId, timeoutMs: 10000 });
 }
 
+export function getStandings(classId) {
+  return request("/standings", { classId, timeoutMs: 12000 });
+}
+
 export function adjustCash(id, amount, classId) {
   return request(`/students/${id}/adjust`, {
     method: "POST",

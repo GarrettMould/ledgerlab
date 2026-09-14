@@ -16,6 +16,7 @@ import {
   AvatarSetupPanel,
   outfitForStudent,
   saveOutfit,
+  stripPlayerFishForm,
 } from "./StudentCharacter";
 import {
   signInStudent,
@@ -225,7 +226,7 @@ export default function StudentJoin({
       setRosterId(existing.id);
       setApiStudentId(tradingId);
       setName(existing.name || user.name);
-      if (existing.outfit) setOutfit(existing.outfit);
+      if (existing.outfit) setOutfit(stripPlayerFishForm(existing.outfit));
       await linkUserToClass(user.uid, classInfo.id, {
         name: existing.name || user.name,
         email: user.email,
@@ -357,8 +358,9 @@ export default function StudentJoin({
       const seat = await ensureRosterSeat(user, { createIfMissing: true });
       if (!seat) throw new Error("Could not find your seat in this class.");
 
-      const nextOutfit =
-        seat.outfit || outfitForStudent(seat.apiStudentId || seat.id, user.name);
+      const nextOutfit = stripPlayerFishForm(
+        seat.outfit || outfitForStudent(seat.apiStudentId || seat.id, user.name)
+      );
       setOutfit(nextOutfit);
 
       // Returning students: enter class if they finished avatar once (Firestore or local).
@@ -393,8 +395,9 @@ export default function StudentJoin({
       const seat = await ensureRosterSeat(user, { createIfMissing: true });
       if (!seat) throw new Error("Could not add you to the class roster.");
 
-      const nextOutfit =
-        seat.outfit || outfitForStudent(seat.apiStudentId || seat.id, user.name);
+      const nextOutfit = stripPlayerFishForm(
+        seat.outfit || outfitForStudent(seat.apiStudentId || seat.id, user.name)
+      );
       setOutfit(nextOutfit);
 
       const hasOutfit = Boolean(seat.outfit) || user.onboardingComplete;
@@ -449,7 +452,7 @@ export default function StudentJoin({
       // Save roster + enter class first. Ledger ensure must not block onboarding —
       // a hung Admin SDK /api/students call was freezing "Updating" forever.
       await updateClassStudent(classInfo.id, rosterId, {
-        outfit,
+        outfit: stripPlayerFishForm(outfit),
         name: name.trim() || authUser.name,
         apiStudentId: rosterId,
         authUid: authUser.uid,
@@ -467,7 +470,7 @@ export default function StudentJoin({
         displayName: name.trim() || authUser.name,
         firestoreStudentId: rosterId,
         studentApiId: apiStudentId || rosterId,
-        nextOutfit: outfit,
+        nextOutfit: stripPlayerFishForm(outfit),
       });
     } catch (err) {
       setError(err.message || "Could not finish setup");

@@ -145,6 +145,16 @@ def get_student(class_id: str, student_id: str) -> dict | None:
         "created_at": created_at,
         "auth_uid": data.get("authUid"),
         "class_id": class_id,
+        "last_total_value": (
+            float(data["lastTotalValue"])
+            if data.get("lastTotalValue") is not None
+            else None
+        ),
+        "last_portfolio_value": (
+            float(data["lastPortfolioValue"])
+            if data.get("lastPortfolioValue") is not None
+            else None
+        ),
     }
 
 
@@ -174,6 +184,16 @@ def list_students(class_id: str) -> list[dict]:
                 "created_at": created_at,
                 "auth_uid": data.get("authUid"),
                 "class_id": class_id,
+                "last_total_value": (
+                    float(data["lastTotalValue"])
+                    if data.get("lastTotalValue") is not None
+                    else None
+                ),
+                "last_portfolio_value": (
+                    float(data["lastPortfolioValue"])
+                    if data.get("lastPortfolioValue") is not None
+                    else None
+                ),
             }
         )
     out.sort(key=lambda s: (s["name"] or "").lower())
@@ -226,6 +246,30 @@ def set_cash(class_id: str, student_id: str, cash: float, *, holdings_count: int
 
     patch: dict[str, Any] = {
         "cash": float(cash),
+        "apiStudentId": student_id,
+        "updatedAt": fs.SERVER_TIMESTAMP,
+    }
+    if holdings_count is not None:
+        patch["holdingsCount"] = int(holdings_count)
+    student_ref(class_id, student_id).update(patch)
+
+
+def set_last_totals(
+    class_id: str,
+    student_id: str,
+    *,
+    cash: float,
+    portfolio_value: float,
+    total_value: float,
+    holdings_count: int | None = None,
+) -> None:
+    """Cache standings-friendly totals on the student doc (no live quotes needed later)."""
+    from firebase_admin import firestore as fs
+
+    patch: dict[str, Any] = {
+        "cash": float(cash),
+        "lastTotalValue": float(total_value),
+        "lastPortfolioValue": float(portfolio_value),
         "apiStudentId": student_id,
         "updatedAt": fs.SERVER_TIMESTAMP,
     }
@@ -359,6 +403,13 @@ def add_snapshot(
             "cash": float(cash),
             "portfolioValue": float(portfolio_value),
         }
+    )
+    set_last_totals(
+        class_id,
+        student_id,
+        cash=cash,
+        portfolio_value=portfolio_value,
+        total_value=total_value,
     )
 
 

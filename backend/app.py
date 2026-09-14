@@ -54,7 +54,7 @@ CORS(app)
 # In-memory quote cache: ticker -> (price, fetched_at, change_pct)
 _quote_cache: dict[str, tuple[float, float, float | None]] = {}
 _category_cache: dict[str, tuple[float, list[dict]]] = {}
-CACHE_TTL_SECONDS = 120
+CACHE_TTL_SECONDS = 60 * 10  # 10 minutes — classroom quotes don't need second-by-second freshness
 # Keep showing last-known prices for a week if live providers fail (classroom continuity).
 STALE_OK_SECONDS = 60 * 60 * 24 * 7
 
@@ -2747,6 +2747,101 @@ def health():
         "ledger": "firestore" if using_firestore() else "sqlite",
         "firestore_error": None if using_firestore() else fs_ledger.config_error(),
     })
+
+
+@app.get("/api/standings")
+def class_standings():
+    """
+    Lightweight class ranking for the standings UI.
+    Uses last stored totals (snapshots / student cache) — no live quotes, ZHVI, or settlement.
+    """
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    rows: list[dict] = []
+    if using_firestore():
+        if not class_id:
+            return jsonify({"error": "X-Class-Id header (or classId) is required"}), 400
+        for student in fs_ledger.list_students(class_id):
+            cash = float(student.get("cash") or 0)
+            total = student.get("last_total_value")
+            portfolio_value = student.get("last_portfolio_value")
+            if total is None:
+                # First visit after deploy / never snapshotted: book value, no live quotes.
+                holdings = fs_ledger.list_holdings(class_id, student["id"])
+                pv = 0.0
+                mort = 0.0
+                for h in holdings:
+                    pv += float(h.get("avg_cost") or 0) * float(h.get("shares") or 0)
+                    mort += float(h.get("mortgage_balance") or 0)
+                portfolio_value = pv
+                total = cash + pv - mort
+                fs_ledger.set_last_totals(
+                    class_id,
+                    student["id"],
+                    cash=cash,
+                    portfolio_value=pv,
+                    total_value=total,
+                    holdings_count=len(holdings),
+                )
+            rows.append(
+                {
+                    "id": student["id"],
+                    "name": student.get("name") or "Student",
+                    "cash": round(cash, 2),
+                    "total_value": round(float(total), 2),
+                    "portfolio_value": (
+                        round(float(portfolio_value), 2)
+                        if portfolio_value is not None
+                        else None
+                    ),
+                }
+            )
+    else:
+        with get_db() as conn:
+            db_rows = conn.execute(
+                """
+                SELECT s.id, s.name, s.cash,
+                       COALESCE(
+                         (
+                           SELECT ps.total_value
+                             FROM portfolio_snapshots ps
+                            WHERE ps.student_id = s.id
+                            ORDER BY ps.recorded_at DESC
+                            LIMIT 1
+                         ),
+                         s.cash
+                       ) AS total_value,
+                       (
+                         SELECT ps.portfolio_value
+                           FROM portfolio_snapshots ps
+                          WHERE ps.student_id = s.id
+                          ORDER BY ps.recorded_at DESC
+                          LIMIT 1
+                       ) AS portfolio_value
+                  FROM students s
+                 ORDER BY s.name COLLATE NOCASE
+                """
+            ).fetchall()
+            for r in db_rows:
+                rows.append(
+                    {
+                        "id": r["id"],
+                        "name": r["name"],
+                        "cash": round(float(r["cash"]), 2),
+                        "total_value": round(float(r["total_value"]), 2),
+                        "portfolio_value": (
+                            round(float(r["portfolio_value"]), 2)
+                            if r["portfolio_value"] is not None
+                            else None
+                        ),
+                    }
+                )
+
+    rows.sort(key=lambda s: (-float(s["total_value"]), (s["name"] or "").lower()))
+    for i, row in enumerate(rows, start=1):
+        row["rank"] = i
+    return jsonify({"students": rows, "class_total": round(sum(float(s["total_value"]) for s in rows), 2)})
 
 
 @app.get("/api/students")

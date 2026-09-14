@@ -140,13 +140,13 @@ export const TICKER_CATEGORY = {
 };
 
 export const PIE_COLORS = {
-  cash: "#2f6b4f",
-  stocks: "#3b82f6",
-  etfs: "#d97706",
-  bonds: "#7c3aed",
-  commodities: "#b45309",
-  currencies: "#0891b2",
-  realestate: "#5a7a4f",
+  cash: "#43a047", // green
+  stocks: "#e53935", // red
+  etfs: "#fb8c00", // orange
+  bonds: "#fdd835", // yellow
+  commodities: "#1e88e5", // blue
+  currencies: "#3949ab", // indigo
+  realestate: "#8e24aa", // violet
 };
 
 function holdingValue(h) {

@@ -15,6 +15,7 @@ const DEFAULT_OUTFIT = {
   shoes: "#2a241f",
   eyes: "#1a2e24",
   hairStyleId: "hair-block",
+  form: "human",
   ownedLuxuries: [],
   hat: null,
   glasses: null,
@@ -284,6 +285,7 @@ export function outfitForStudent(studentId, name) {
     hair: hairs[seed % hairs.length].color,
     skin: skinPick.color,
     skinId: skinPick.id,
+    form: skinPick.form || "human",
     hairStyleId: stylePick.id,
     shirtId: shirts[seed % shirts.length].id,
     pantsId: "pants-pine",
@@ -306,12 +308,15 @@ export function loadSavedOutfit(studentId, name) {
     const raw = localStorage.getItem(outfitStorageKey(studentId));
     if (!raw) return base;
     const saved = JSON.parse(raw);
-    return stripUnownedBuyables(
-      {
-        ...base,
-        ...saved,
-        ownedLuxuries: Array.isArray(saved.ownedLuxuries) ? saved.ownedLuxuries : [],
-      },
+    return stripPlayerFishForm(
+      stripUnownedBuyables(
+        {
+          ...base,
+          ...saved,
+          ownedLuxuries: Array.isArray(saved.ownedLuxuries) ? saved.ownedLuxuries : [],
+        },
+        base
+      ),
       base
     );
   } catch {
@@ -321,7 +326,10 @@ export function loadSavedOutfit(studentId, name) {
 
 export function saveOutfit(studentId, outfit) {
   try {
-    localStorage.setItem(outfitStorageKey(studentId), JSON.stringify(outfit));
+    localStorage.setItem(
+      outfitStorageKey(studentId),
+      JSON.stringify(stripPlayerFishForm(outfit))
+    );
   } catch {
     /* ignore quota */
   }
@@ -561,6 +569,27 @@ function BlenderAvatarModel({ outfit, waving, spin = false, still = false }) {
   );
 }
 
+function isNpcFish(outfit) {
+  // Only the class standings NPC may render as a fish — never a student.
+  return Boolean(outfit?.npcFish);
+}
+
+/** Strip any player fish form leftover from old saves / Firestore. */
+export function stripPlayerFishForm(outfit, fallback = DEFAULT_OUTFIT) {
+  if (!outfit || outfit.npcFish) return outfit;
+  if (outfit.form !== "fish" && outfit.skinId !== "skin-fish") return outfit;
+  const free =
+    freeCatalogItems("skin").find((entry) => entry.id === fallback?.skinId) ||
+    freeCatalogItems("skin")[0];
+  return {
+    ...outfit,
+    npcFish: false,
+    form: "human",
+    skinId: free?.id || "skin-light",
+    skin: free?.color || fallback?.skin || "#e0b090",
+  };
+}
+
 function ProceduralAvatarModel({ outfit, waving, spin = false, still = false }) {
   const group = useRef();
   const armR = useRef();
@@ -643,6 +672,171 @@ function ProceduralAvatarModel({ outfit, waving, spin = false, still = false }) 
   );
 }
 
+/** Upright bipedal fish — tall pill body like a cartoon incidental fish. */
+function FishAvatarModel({ outfit, waving, spin = false, still = false }) {
+  const group = useRef();
+  const armR = useRef();
+  const legL = useRef();
+  const legR = useRef();
+  const body = outfit.skin || "#f08a2a";
+  const fin = "#e6c57a";
+  const finEdge = "#d4b05f";
+  const shirt = outfit.shirt || "#7ec8e8";
+  const beak = "#f0d78a";
+  const eyeWhite = "#f7f7f2";
+  const pupil = outfit.eyes || "#1a1a18";
+
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime();
+    if (group.current) {
+      if (still) {
+        group.current.rotation.y = 0;
+      } else {
+        group.current.rotation.y = spin
+          ? t * 0.35
+          : Math.sin(t * 0.55) * 0.18;
+      }
+      group.current.position.y = AVATAR_BASE_Y + (still ? 0 : Math.sin(t * 1.4) * 0.02);
+    }
+    // Fin-leg walk cycle when pacing (dash / class standings).
+    if (still) {
+      const swing = Math.sin(t * 7.5) * 0.45;
+      if (legL.current) legL.current.rotation.x = swing;
+      if (legR.current) legR.current.rotation.x = -swing;
+    } else if (legL.current && legR.current) {
+      legL.current.rotation.x = 0.12;
+      legR.current.rotation.x = -0.08;
+    }
+    if (armR.current && waving) {
+      armR.current.rotation.x = -0.15 + Math.sin(t * 4.2) * 0.55;
+      armR.current.rotation.z = Math.sin(t * 4.2) * 0.25;
+    }
+  });
+
+  // Match human avatar height (~4.5 units before AVATAR_SCALE).
+  const bodyH = 3.15;
+  const bodyR = 0.78;
+  const bodyY = 1.35 + bodyH / 2;
+  const shirtY = bodyY - 0.15;
+  const armY = shirtY + 0.15;
+  const eyeY = bodyY + bodyH / 2 - 0.15;
+  const legTop = 1.35;
+
+  return (
+    <group ref={group} position={[0, AVATAR_BASE_Y, 0]} scale={AVATAR_SCALE}>
+      {/* Jointed beige fin-legs */}
+      <group ref={legL} position={[-0.38, legTop, 0]}>
+        <mesh position={[0, -0.42, 0]} castShadow>
+          <capsuleGeometry args={[0.12, 0.55, 6, 10]} />
+          <meshStandardMaterial color={fin} roughness={0.55} metalness={0.04} />
+        </mesh>
+        <mesh position={[0, -1.0, 0.02]} castShadow>
+          <capsuleGeometry args={[0.11, 0.48, 6, 10]} />
+          <meshStandardMaterial color={fin} roughness={0.55} metalness={0.04} />
+        </mesh>
+        <mesh position={[0, -1.38, 0.16]} rotation={[0.55, 0, 0]} castShadow>
+          <boxGeometry args={[0.28, 0.08, 0.48]} />
+          <meshStandardMaterial color={finEdge} roughness={0.6} metalness={0.04} />
+        </mesh>
+      </group>
+      <group ref={legR} position={[0.38, legTop, 0]}>
+        <mesh position={[0, -0.42, 0]} castShadow>
+          <capsuleGeometry args={[0.12, 0.55, 6, 10]} />
+          <meshStandardMaterial color={fin} roughness={0.55} metalness={0.04} />
+        </mesh>
+        <mesh position={[0, -1.0, 0.02]} castShadow>
+          <capsuleGeometry args={[0.11, 0.48, 6, 10]} />
+          <meshStandardMaterial color={fin} roughness={0.55} metalness={0.04} />
+        </mesh>
+        <mesh position={[0, -1.38, 0.16]} rotation={[0.55, 0, 0]} castShadow>
+          <boxGeometry args={[0.28, 0.08, 0.48]} />
+          <meshStandardMaterial color={finEdge} roughness={0.6} metalness={0.04} />
+        </mesh>
+      </group>
+
+      {/* Continuous pill body (head + torso, no neck) */}
+      <mesh position={[0, bodyY, 0]} castShadow>
+        <capsuleGeometry args={[bodyR, bodyH - bodyR * 2, 10, 20]} />
+        <meshStandardMaterial color={body} roughness={0.48} metalness={0.06} />
+      </mesh>
+
+      {/* Light blue tee band across midsection */}
+      <mesh position={[0, shirtY, 0]} castShadow>
+        <cylinderGeometry args={[bodyR + 0.04, bodyR + 0.04, 1.05, 24]} />
+        <meshStandardMaterial color={shirt} roughness={0.72} metalness={0.02} />
+      </mesh>
+      <mesh position={[-bodyR - 0.12, armY + 0.1, 0]} rotation={[0, 0, 0.55]} castShadow>
+        <cylinderGeometry args={[0.22, 0.26, 0.45, 12]} />
+        <meshStandardMaterial color={shirt} roughness={0.72} metalness={0.02} />
+      </mesh>
+      <mesh position={[bodyR + 0.12, armY + 0.1, 0]} rotation={[0, 0, -0.55]} castShadow>
+        <cylinderGeometry args={[0.22, 0.26, 0.45, 12]} />
+        <meshStandardMaterial color={shirt} roughness={0.72} metalness={0.02} />
+      </mesh>
+
+      {/* Dorsal fin down the back */}
+      <mesh position={[0, bodyY + 0.55, -bodyR + 0.05]} rotation={[0.15, 0, 0]} castShadow>
+        <coneGeometry args={[0.28, 1.55, 3]} />
+        <meshStandardMaterial color={fin} roughness={0.55} metalness={0.04} />
+      </mesh>
+      <mesh position={[0, bodyY + 1.15, -bodyR + 0.12]} rotation={[0.35, 0, 0]} castShadow>
+        <boxGeometry args={[0.08, 0.55, 0.35]} />
+        <meshStandardMaterial color={finEdge} roughness={0.55} metalness={0.04} />
+      </mesh>
+
+      {/* Fin arms from sleeves */}
+      <group position={[-bodyR - 0.35, armY - 0.15, 0.05]} rotation={[0.2, 0, 0.35]}>
+        <mesh castShadow>
+          <capsuleGeometry args={[0.1, 0.55, 6, 8]} />
+          <meshStandardMaterial color={fin} roughness={0.55} metalness={0.04} />
+        </mesh>
+        <mesh position={[0, -0.45, 0.05]} rotation={[0.4, 0, 0.2]} castShadow>
+          <boxGeometry args={[0.22, 0.08, 0.38]} />
+          <meshStandardMaterial color={finEdge} roughness={0.55} metalness={0.04} />
+        </mesh>
+      </group>
+      <group ref={armR} position={[bodyR + 0.35, armY - 0.15, 0.05]} rotation={[0.2, 0, -0.35]}>
+        <mesh castShadow>
+          <capsuleGeometry args={[0.1, 0.55, 6, 8]} />
+          <meshStandardMaterial color={fin} roughness={0.55} metalness={0.04} />
+        </mesh>
+        <mesh position={[0, -0.45, 0.05]} rotation={[0.4, 0, -0.2]} castShadow>
+          <boxGeometry args={[0.22, 0.08, 0.38]} />
+          <meshStandardMaterial color={finEdge} roughness={0.55} metalness={0.04} />
+        </mesh>
+      </group>
+
+      {/* Big top-of-head eyes */}
+      <mesh position={[-0.32, eyeY, bodyR * 0.55]} castShadow>
+        <sphereGeometry args={[0.32, 16, 14]} />
+        <meshStandardMaterial color={eyeWhite} roughness={0.35} metalness={0.05} />
+      </mesh>
+      <mesh position={[0.32, eyeY, bodyR * 0.55]} castShadow>
+        <sphereGeometry args={[0.32, 16, 14]} />
+        <meshStandardMaterial color={eyeWhite} roughness={0.35} metalness={0.05} />
+      </mesh>
+      <mesh position={[-0.32, eyeY + 0.02, bodyR * 0.55 + 0.22]}>
+        <sphereGeometry args={[0.1, 12, 10]} />
+        <meshStandardMaterial color={pupil} roughness={0.4} metalness={0.1} />
+      </mesh>
+      <mesh position={[0.32, eyeY + 0.02, bodyR * 0.55 + 0.22]}>
+        <sphereGeometry args={[0.1, 12, 10]} />
+        <meshStandardMaterial color={pupil} roughness={0.4} metalness={0.1} />
+      </mesh>
+
+      {/* Beak / downturned snout */}
+      <mesh position={[0, bodyY + 0.55, bodyR * 0.85]} rotation={[0.35, 0, 0]} castShadow>
+        <coneGeometry args={[0.28, 0.55, 10]} />
+        <meshStandardMaterial color={beak} roughness={0.5} metalness={0.05} />
+      </mesh>
+      <mesh position={[0, bodyY + 0.42, bodyR * 0.95]} rotation={[1.1, 0, 0]}>
+        <boxGeometry args={[0.42, 0.06, 0.12]} />
+        <meshStandardMaterial color="#2a2418" roughness={0.7} metalness={0.02} />
+      </mesh>
+    </group>
+  );
+}
+
 function useBlenderCharacterAvailable() {
   const [available, setAvailable] = useState(false);
   useEffect(() => {
@@ -662,6 +856,9 @@ function useBlenderCharacterAvailable() {
 }
 
 function AvatarModel({ outfit, waving, spin = false, still = false, useBlender }) {
+  if (isNpcFish(outfit)) {
+    return <FishAvatarModel outfit={outfit} waving={waving} spin={spin} still={still} />;
+  }
   if (useBlender) {
     return <BlenderAvatarModel outfit={outfit} waving={waving} spin={spin} still={still} />;
   }
@@ -732,6 +929,96 @@ function WalkingPad({
   return <group ref={ref}>{children}</group>;
 }
 
+/** Wooden stool + glass fishbowl prop for the home dashboard stage. */
+function FishbowlOnStool({ position = [1.52, AVATAR_SHADOW_Y, -0.42] }) {
+  const fishRef = useRef();
+  const wood = "#9a6234";
+  const woodDark = "#6b4124";
+  const seatY = 0.92;
+  const bowlY = seatY + 0.3;
+
+  useFrame((state) => {
+    if (!fishRef.current) return;
+    const t = state.clock.getElapsedTime();
+    const r = 0.1;
+    fishRef.current.position.x = Math.cos(t * 1.35) * r;
+    fishRef.current.position.z = Math.sin(t * 1.35) * r * 0.85;
+    fishRef.current.position.y = Math.sin(t * 2.1) * 0.018;
+    fishRef.current.rotation.y = -t * 1.35 + Math.PI / 2;
+  });
+
+  const leg = (x, z) => (
+    <mesh key={`${x}-${z}`} position={[x, seatY / 2, z]} castShadow>
+      <cylinderGeometry args={[0.032, 0.04, seatY, 8]} />
+      <meshStandardMaterial color={woodDark} roughness={0.88} metalness={0.02} />
+    </mesh>
+  );
+
+  return (
+    <group position={position}>
+      {/* Stool legs + seat */}
+      {leg(-0.15, -0.15)}
+      {leg(0.15, -0.15)}
+      {leg(-0.15, 0.15)}
+      {leg(0.15, 0.15)}
+      <mesh position={[0, seatY, 0]} castShadow receiveShadow>
+        <cylinderGeometry args={[0.24, 0.25, 0.05, 20]} />
+        <meshStandardMaterial color={wood} roughness={0.82} metalness={0.04} />
+      </mesh>
+      <mesh position={[0, seatY - 0.12, 0]}>
+        <torusGeometry args={[0.16, 0.022, 8, 20]} />
+        <meshStandardMaterial color={woodDark} roughness={0.9} metalness={0.02} />
+      </mesh>
+      <mesh position={[0, seatY * 0.45, 0]}>
+        <torusGeometry args={[0.14, 0.02, 8, 20]} />
+        <meshStandardMaterial color={woodDark} roughness={0.9} metalness={0.02} />
+      </mesh>
+
+      {/* Fishbowl */}
+      <group position={[0, bowlY, 0]}>
+        <mesh castShadow>
+          <sphereGeometry args={[0.26, 28, 20]} />
+          <meshStandardMaterial
+            color="#d8eef5"
+            transparent
+            opacity={0.28}
+            roughness={0.08}
+            metalness={0.15}
+            depthWrite={false}
+          />
+        </mesh>
+        <mesh position={[0, -0.03, 0]} scale={[0.92, 0.72, 0.92]}>
+          <sphereGeometry args={[0.235, 24, 16]} />
+          <meshStandardMaterial
+            color="#4db8c9"
+            transparent
+            opacity={0.42}
+            roughness={0.35}
+            metalness={0.05}
+            depthWrite={false}
+          />
+        </mesh>
+        {/* Rim */}
+        <mesh position={[0, 0.21, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.15, 0.016, 8, 24]} />
+          <meshStandardMaterial color="#c5d9e0" roughness={0.25} metalness={0.2} />
+        </mesh>
+        {/* Fish */}
+        <group ref={fishRef}>
+          <mesh castShadow>
+            <sphereGeometry args={[0.048, 12, 10]} />
+            <meshStandardMaterial color="#f08a2a" roughness={0.45} metalness={0.1} />
+          </mesh>
+          <mesh position={[-0.055, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
+            <coneGeometry args={[0.028, 0.05, 8]} />
+            <meshStandardMaterial color="#e07820" roughness={0.5} metalness={0.08} />
+          </mesh>
+        </group>
+      </group>
+    </group>
+  );
+}
+
 function ClassWalkScene({ walkers, useBlender }) {
   const n = walkers.length;
   const scale = n > 18 ? 0.72 : n > 12 ? 0.82 : n > 6 ? 0.92 : 1.05;
@@ -755,10 +1042,12 @@ function ClassWalkScene({ walkers, useBlender }) {
         const lane = (i % 3) - 1;
         const startX = ((i + 0.5) / Math.max(n, 1) - 0.5) * limit * 1.7;
         const speed = 0.48 + (i % 5) * 0.08;
-        const first =
-          String(w.name || "")
-            .trim()
-            .split(/\s+/)[0] || "Student";
+        const label = w.isYou
+          ? "You"
+          : String(w.name || "")
+              .trim() || "Student";
+        // Html is outside AvatarModel’s AVATAR_SCALE group — use world-ish head height.
+        const tagY = AVATAR_BASE_Y + 4.55 * AVATAR_SCALE + 0.22;
         return (
           <WalkingPad
             key={w.id}
@@ -779,13 +1068,17 @@ function ClassWalkScene({ walkers, useBlender }) {
                 useBlender={useBlender}
               />
               <Html
-                position={[0, 5.15, 0]}
+                position={[0, tagY, 0]}
                 center
                 distanceFactor={12}
+                zIndexRange={[100, 60]}
                 style={{ pointerEvents: "none" }}
               >
-                <span className={w.isYou ? "class-walker-tag is-you" : "class-walker-tag"}>
-                  {w.isYou ? "You" : first}
+                <span
+                  className={w.isYou ? "class-walker-tag is-you" : "class-walker-tag"}
+                  title={label}
+                >
+                  {label}
                 </span>
               </Html>
             </group>
@@ -809,6 +1102,29 @@ function ClassWalkScene({ walkers, useBlender }) {
       />
     </>
   );
+}
+
+/** Shared class NPC: upright fish student on every standings walk stage. */
+export const CLASS_FISH_OUTFIT = {
+  ...DEFAULT_OUTFIT,
+  npcFish: true,
+  form: "fish",
+  skin: "#f08a2a",
+  skinId: "skin-fish",
+  shirt: "#7ec8e8",
+  shirtId: "tee-sky",
+  pants: "#1e3a5f",
+  shoes: "#24312b",
+  eyes: "#1a1a18",
+};
+
+export function classFishWalker() {
+  return {
+    id: "__class-fish__",
+    name: "Fish",
+    isYou: false,
+    outfit: CLASS_FISH_OUTFIT,
+  };
 }
 
 /** Shared class stage: every student’s avatar pacing the board. */
@@ -870,6 +1186,7 @@ function Scene({ outfit, mode = "thumb", useBlender }) {
           {avatar}
         </Float>
       )}
+      {isDash && <FishbowlOnStool />}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, AVATAR_SHADOW_Y - 0.01, 0]}
@@ -920,8 +1237,8 @@ const ACCESSORY_SLOTS = ["hat", "glasses", "neck", "jersey", "backpack", "bag", 
 
 function stripUnownedBuyables(outfit, fallback = null) {
   const owned = new Set(outfit?.ownedLuxuries || []);
-  const next = { ...outfit };
   const base = fallback || DEFAULT_OUTFIT;
+  const next = stripPlayerFishForm({ ...outfit }, base);
 
   for (const slot of ACCESSORY_SLOTS) {
     const id = next[slot];
@@ -943,6 +1260,7 @@ function stripUnownedBuyables(outfit, fallback = null) {
       if (free) {
         next[category] = free.color;
         next[idKey] = free.id;
+        if (category === "skin") next.form = free.form || "human";
       }
     }
   }
@@ -1016,10 +1334,10 @@ function ClosetShelf({
     );
   }
 
-  function renderColorPalette(ariaLabel) {
+  function renderColorPalette(ariaLabel, paletteItems = freeItems) {
     return (
       <div className="closet-color-palette" role="group" aria-label={ariaLabel}>
-        {freeItems.map((item) => {
+        {paletteItems.map((item) => {
           const active =
             outfit[`${category}Id`] === item.id || outfit[category] === item.color;
           return (
@@ -1115,13 +1433,26 @@ function ClosetShelf({
     shoes: "Shoes color",
   };
 
+  const toneItems = freeItems.filter((item) => !item.form);
+  const formItems = freeItems.filter((item) => item.form);
+
   return (
     <div className="closet-shelf" role="tabpanel">
-      {category === "hairStyle"
-        ? renderHairStyleTiles(freeItems)
-        : paletteLabels[category]
-          ? renderColorPalette(paletteLabels[category])
-          : freeItems.map(renderFreeItem)}
+      {category === "hairStyle" ? (
+        renderHairStyleTiles(freeItems)
+      ) : paletteLabels[category] ? (
+        <>
+          {renderColorPalette(paletteLabels[category], toneItems)}
+          {formItems.length > 0 && (
+            <>
+              <p className="closet-shelf-label">Characters</p>
+              {formItems.map(renderFreeItem)}
+            </>
+          )}
+        </>
+      ) : (
+        freeItems.map(renderFreeItem)
+      )}
       {paidItems.length > 0 && (
         <>
           <p className="closet-shelf-label">Buyables</p>
@@ -1136,11 +1467,20 @@ function applyCatalogSelection(outfit, category, item) {
   if (category === "hairStyle") {
     return { ...outfit, hairStyleId: item.id };
   }
-  return {
+  // Fish is NPC-only — never apply as a player form from the closet.
+  if (category === "skin" && (item?.form === "fish" || item?.id === "skin-fish")) {
+    return outfit;
+  }
+  const next = {
     ...outfit,
     [category]: item.color,
     [`${category}Id`]: item.id,
   };
+  if (category === "skin") {
+    next.form = item.form && item.form !== "fish" ? item.form : "human";
+    next.npcFish = false;
+  }
+  return next;
 }
 
 function ClosetNav({ sections, sectionId, categoryId, onSection, onCategory }) {
@@ -1489,10 +1829,11 @@ export default function StudentCharacter({
   const displayOutfit = useMemo(() => outfit, [outfit]);
 
   function handleOutfitChange(next) {
-    setOutfit(next);
-    saveOutfit(studentId, next);
+    const cleaned = stripPlayerFishForm(next);
+    setOutfit(cleaned);
+    saveOutfit(studentId, cleaned);
     if (classId && firestoreStudentId) {
-      updateClassStudent(classId, firestoreStudentId, { outfit: next }).catch(() => {});
+      updateClassStudent(classId, firestoreStudentId, { outfit: cleaned }).catch(() => {});
     }
   }
 

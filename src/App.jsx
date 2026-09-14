@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buyHome, buyShares, createStudent, getMarket, getStudent, listStudents, sellShares } from "./api";
 import PriceChart from "./PriceChart";
 import PortfolioHistoryChart from "./PortfolioHistoryChart";
@@ -9,6 +9,7 @@ import NewsFeed from "./NewsFeed";
 import TeacherDashboard from "./TeacherDashboard";
 import TeacherGate from "./TeacherGate";
 import CashTransferAlert from "./CashTransferAlert";
+import TradeSuccessModal from "./TradeSuccessModal";
 import {
   DEFAULT_MARKETS,
   clearStudentSession,
@@ -195,6 +196,7 @@ function StudentPortfolio({
   });
   const [category, setCategory] = useState(null);
   const [stockIndustry, setStockIndustry] = useState("All");
+  const [marketPage, setMarketPage] = useState(0);
   const [showClass, setShowClass] = useState(false);
   const [showNews, setShowNews] = useState(false);
   const [marketItems, setMarketItems] = useState([]);
@@ -209,7 +211,9 @@ function StudentPortfolio({
   const [tradeDraft, setTradeDraft] = useState(null);
   const [selectedHolding, setSelectedHolding] = useState(null);
   const [tradePulse, setTradePulse] = useState(null); // { ticker, action }
+  const [tradeSuccess, setTradeSuccess] = useState(null);
   const tradePulseTimer = useRef(null);
+  const closeTradeSuccess = useCallback(() => setTradeSuccess(null), []);
   const holdingsByCategory = useMemo(
     () => groupHoldingsByCategory(portfolio?.holdings),
     [portfolio?.holdings]
@@ -334,6 +338,7 @@ function StudentPortfolio({
       return;
     }
     setStockIndustry("All");
+    setMarketPage(0);
     setSelectedAsset(null);
     setChartTicker(null);
     setTradeDraft(null);
@@ -426,6 +431,13 @@ function StudentPortfolio({
       const fn = action === "buy" ? buyShares : sellShares;
       const data = await fn(selectedId, selectedAsset.ticker, qty);
       setPortfolio(data);
+      setTradeSuccess({
+        action,
+        ticker: selectedAsset.ticker,
+        name: selectedAsset.name || selectedAsset.ticker,
+        qty,
+        assetType: selectedAsset.asset_type,
+      });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -461,6 +473,19 @@ function StudentPortfolio({
     category === "stocks" && stockIndustry !== "All"
       ? marketItems.filter((item) => item.industry === stockIndustry)
       : marketItems;
+  const MARKET_PAGE_SIZE = 10;
+  const stockPageCount =
+    category === "stocks"
+      ? Math.max(1, Math.ceil(visibleMarketItems.length / MARKET_PAGE_SIZE))
+      : 1;
+  const safeMarketPage = Math.min(marketPage, stockPageCount - 1);
+  const pagedMarketItems =
+    category === "stocks"
+      ? visibleMarketItems.slice(
+          safeMarketPage * MARKET_PAGE_SIZE,
+          safeMarketPage * MARKET_PAGE_SIZE + MARKET_PAGE_SIZE
+        )
+      : visibleMarketItems;
 
   function currencyUnitsFromUsd(item, usd) {
     const price = Number(item?.price);
@@ -534,6 +559,17 @@ function StudentPortfolio({
       setSelectedHolding(null);
       setShares(String(qty));
       setTradePulse({ ticker: item.ticker, action });
+      setTradeSuccess({
+        action,
+        ticker: item.ticker,
+        name: item.name || item.ticker,
+        qty,
+        assetType: item.asset_type,
+        faceUsd:
+          item.asset_type === "bond" && tradeDraft?.mode === "bond"
+            ? snapBondFace(tradeDraft.faceUsd)
+            : undefined,
+      });
       if (action === "buy") {
         setChartTicker((prev) => (prev === item.ticker ? null : prev));
       }
@@ -953,6 +989,7 @@ function StudentPortfolio({
                       data-click="select"
                       onClick={() => {
                         setStockIndustry(industry);
+                        setMarketPage(0);
                         setSelectedAsset(null);
                         setChartTicker(null);
                         setTradeDraft(null);
@@ -1025,6 +1062,12 @@ function StudentPortfolio({
                         const data = await buyHome(selectedId, item.ticker);
                         setPortfolio(data);
                         setTradePulse({ ticker: item.ticker, action: "buy" });
+                        setTradeSuccess({
+                          action: "buy",
+                          ticker: item.ticker,
+                          name: item.name || item.ticker,
+                          assetType: "realestate",
+                        });
                         if (tradePulseTimer.current) clearTimeout(tradePulseTimer.current);
                         tradePulseTimer.current = setTimeout(() => setTradePulse(null), 900);
                       } catch (err) {
@@ -1042,7 +1085,7 @@ function StudentPortfolio({
                   {visibleMarketItems.length === 0 && (
                     <p className="empty">No stocks in this industry yet.</p>
                   )}
-                  {visibleMarketItems.map((item) => {
+                  {pagedMarketItems.map((item) => {
                     const selected = selectedAsset?.ticker === item.ticker;
                     const held = heldTickers.has(item.ticker);
                     const draftOpen =
@@ -1865,6 +1908,44 @@ function StudentPortfolio({
                       </div>
                     );
                   })}
+                  {category === "stocks" && visibleMarketItems.length > MARKET_PAGE_SIZE && (
+                    <div className="market-pager" role="navigation" aria-label="Stock pages">
+                      <button
+                        type="button"
+                        className="ghost-btn market-pager-btn"
+                        data-click="select"
+                        disabled={safeMarketPage <= 0}
+                        onClick={() => {
+                          setMarketPage((p) => Math.max(0, p - 1));
+                          setSelectedAsset(null);
+                          setTradeDraft(null);
+                        }}
+                      >
+                        Previous
+                      </button>
+                      <span className="market-pager-status">
+                        {safeMarketPage * MARKET_PAGE_SIZE + 1}–
+                        {Math.min(
+                          (safeMarketPage + 1) * MARKET_PAGE_SIZE,
+                          visibleMarketItems.length
+                        )}{" "}
+                        of {visibleMarketItems.length}
+                      </span>
+                      <button
+                        type="button"
+                        className="ghost-btn market-pager-btn"
+                        data-click="select"
+                        disabled={safeMarketPage >= stockPageCount - 1}
+                        onClick={() => {
+                          setMarketPage((p) => Math.min(stockPageCount - 1, p + 1));
+                          setSelectedAsset(null);
+                          setTradeDraft(null);
+                        }}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -2438,6 +2519,7 @@ function StudentPortfolio({
           )}
         </>
       )}
+      <TradeSuccessModal trade={tradeSuccess} onClose={closeTradeSuccess} />
     </section>
   );
 }
