@@ -7,6 +7,9 @@ import { updateClassStudent } from "./classStore";
 
 const BLENDER_CHARACTER_URL = "/models/character.glb?v=hairstyles1";
 
+/** TEMP testing: show the fish body in every avatar panel. Flip to false before ship. */
+const FORCE_FISH_AVATAR_FOR_TESTING = false;
+
 const DEFAULT_OUTFIT = {
   skin: "#e0b090",
   hair: "#3b2a1e",
@@ -36,7 +39,8 @@ const AVATAR_SHADOW_Y = -0.92;
 const ATTACH = {
   headTop: [0, 4.5, 0],
   eyes: [0, 4.08, 0.5],
-  neck: [0, 3.5, 0],
+  // Collar front — ahead of the torso box so necklaces aren’t buried in the shirt.
+  neck: [0, 3.48, 0.58],
   torso: [0, 2.5, 0],
   torsoBack: [0, 2.55, -0.55],
   shoulderL: [-0.95, 3.15, 0.05],
@@ -73,6 +77,8 @@ export const CLOSET_CATALOG = {
     { id: "hair-poof", label: "Poof", mesh: "Hair_Poof", swatch: "#5c4030", price: 0 },
     { id: "hair-side", label: "Side sweep", mesh: "Hair_Side", swatch: "#2c1810", price: 0 },
     { id: "hair-buzz", label: "Buzz", mesh: "Hair_Buzz", swatch: "#6b4423", price: 0 },
+    { id: "hair-bob", label: "Bob", mesh: "Hair_Bob", swatch: "#4a3428", price: 0 },
+    { id: "hair-long", label: "Long", mesh: "Hair_Long", swatch: "#3b2a1e", price: 0 },
     { id: "hair-bald", label: "Bald", mesh: null, swatch: "#e0b090", price: 0 },
     {
       id: "acc-tophat",
@@ -152,8 +158,10 @@ export const CLOSET_CATALOG = {
       id: "acc-chain",
       kind: "neck",
       label: "Gold chain",
-      url: "/accessories/GoldChain.glb",
+      url: "/accessories/GoldChain.glb?v=front2",
       attach: "neck",
+      offset: [0, -0.08, 0.18],
+      scale: 1.12,
       color: "#d4ad35",
       accent: "#f0d078",
       price: 5000,
@@ -164,6 +172,7 @@ export const CLOSET_CATALOG = {
       label: "Scarf",
       url: "/accessories/Scarf.glb",
       attach: "neck",
+      offset: [0, -0.02, 0.08],
       color: "#9e1a1f",
       accent: "#c42a30",
       price: 900,
@@ -344,6 +353,61 @@ function Limb({ args, position, rotation, color, metalness = 0.05, roughness = 0
   );
 }
 
+/** Hair meshes that ship inside character.glb (others are procedural-only). */
+const GLB_HAIR_MESHES = new Set([
+  "Hair_Block",
+  "Hair_Tall",
+  "Hair_Poof",
+  "Hair_Side",
+  "Hair_Buzz",
+]);
+
+/** Shared blocky hair pieces for closet preview + avatars. */
+function HairPieces({ hairMesh, color, hairTop, hideHair = false }) {
+  if (hideHair || !hairMesh) return null;
+  return (
+    <>
+      {hairMesh === "Hair_Block" && (
+        <Limb args={[1.05, 0.35, 1.05]} position={[0, hairTop + 0.12, 0]} color={color} />
+      )}
+      {hairMesh === "Hair_Tall" && (
+        <Limb args={[0.95, 0.72, 0.95]} position={[0, hairTop + 0.32, 0.02]} color={color} />
+      )}
+      {hairMesh === "Hair_Poof" && (
+        <Limb args={[1.25, 0.42, 1.2]} position={[0, hairTop + 0.15, 0]} color={color} />
+      )}
+      {hairMesh === "Hair_Side" && (
+        <>
+          <Limb args={[1.02, 0.12, 1.02]} position={[0, hairTop + 0.04, 0]} color={color} />
+          <Limb args={[0.7, 0.5, 1.05]} position={[0.28, hairTop + 0.2, 0.02]} color={color} />
+        </>
+      )}
+      {hairMesh === "Hair_Buzz" && (
+        <Limb args={[1.02, 0.12, 1.02]} position={[0, hairTop + 0.04, 0]} color={color} />
+      )}
+      {/* Chin-length bob */}
+      {hairMesh === "Hair_Bob" && (
+        <>
+          <Limb args={[1.12, 0.28, 1.12]} position={[0, hairTop + 0.1, 0]} color={color} />
+          <Limb args={[0.38, 0.85, 0.55]} position={[-0.48, hairTop - 0.28, 0.08]} color={color} />
+          <Limb args={[0.38, 0.85, 0.55]} position={[0.48, hairTop - 0.28, 0.08]} color={color} />
+          <Limb args={[1.05, 0.7, 0.42]} position={[0, hairTop - 0.22, -0.42]} color={color} />
+        </>
+      )}
+      {/* Long straight */}
+      {hairMesh === "Hair_Long" && (
+        <>
+          <Limb args={[1.08, 0.28, 1.08]} position={[0, hairTop + 0.1, 0]} color={color} />
+          <Limb args={[0.36, 1.55, 0.48]} position={[-0.52, hairTop - 0.58, 0.02]} color={color} />
+          <Limb args={[0.36, 1.55, 0.48]} position={[0.52, hairTop - 0.58, 0.02]} color={color} />
+          <Limb args={[0.95, 1.65, 0.4]} position={[0, hairTop - 0.62, -0.48]} color={color} />
+          <Limb args={[0.9, 0.22, 0.35]} position={[0, hairTop + 0.02, 0.42]} color={color} />
+        </>
+      )}
+    </>
+  );
+}
+
 /** Tiny head + hair (and optional hat) for hairstyle picker tiles. */
 function HeadHairPreviewModel({ outfit, hairStyleId, hatItem = null }) {
   const headS = 1.0;
@@ -369,24 +433,12 @@ function HeadHairPreviewModel({ outfit, hairStyleId, hatItem = null }) {
         color={outfit.eyes}
         roughness={0.35}
       />
-      {!hideHair && hairMesh === "Hair_Block" && (
-        <Limb args={[1.05, 0.35, 1.05]} position={[0, hairTop + 0.12, 0]} color={outfit.hair} />
-      )}
-      {!hideHair && hairMesh === "Hair_Tall" && (
-        <Limb args={[0.95, 0.72, 0.95]} position={[0, hairTop + 0.32, 0.02]} color={outfit.hair} />
-      )}
-      {!hideHair && hairMesh === "Hair_Poof" && (
-        <Limb args={[1.25, 0.42, 1.2]} position={[0, hairTop + 0.15, 0]} color={outfit.hair} />
-      )}
-      {!hideHair && hairMesh === "Hair_Side" && (
-        <>
-          <Limb args={[1.02, 0.12, 1.02]} position={[0, hairTop + 0.04, 0]} color={outfit.hair} />
-          <Limb args={[0.7, 0.5, 1.05]} position={[0.28, hairTop + 0.2, 0.02]} color={outfit.hair} />
-        </>
-      )}
-      {!hideHair && hairMesh === "Hair_Buzz" && (
-        <Limb args={[1.02, 0.12, 1.02]} position={[0, hairTop + 0.04, 0]} color={outfit.hair} />
-      )}
+      <HairPieces
+        hairMesh={hairMesh}
+        color={outfit.hair}
+        hairTop={hairTop}
+        hideHair={hideHair}
+      />
       {hatItem && (
         <group position={[0, hairTop + 0.02, 0]}>
           <AccessoryAtOrigin item={hatItem} scale={0.42} />
@@ -424,16 +476,32 @@ function AccessoryModel({ item }) {
 
   useLayoutEffect(() => {
     cloned.traverse((obj) => {
-      if (obj.isMesh) {
-        obj.castShadow = true;
-        obj.receiveShadow = true;
+      if (!obj.isMesh) return;
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+      // Keep necklaces / scarves drawing in front of the shirt (no z-fight bury).
+      if (item.kind === "neck" || item.attach === "neck") {
+        obj.renderOrder = 4;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach((m) => {
+          if (!m) return;
+          m.polygonOffset = true;
+          m.polygonOffsetFactor = -2;
+          m.polygonOffsetUnits = -2;
+          m.needsUpdate = true;
+        });
       }
     });
-  }, [cloned]);
+  }, [cloned, item]);
 
-  const position = ATTACH[item.attach] || ATTACH.torso;
+  const base = ATTACH[item.attach] || ATTACH.torso;
+  const offset = item.offset || [0, 0, 0];
+  const position = [base[0] + offset[0], base[1] + offset[1], base[2] + offset[2]];
   const rotation = item.rotation || [0, 0, 0];
-  return <primitive object={cloned} position={position} rotation={rotation} />;
+  const scale = item.scale ?? 1;
+  return (
+    <primitive object={cloned} position={position} rotation={rotation} scale={scale} />
+  );
 }
 
 function AccessoryAtOrigin({ item, scale = 1 }) {
@@ -564,6 +632,16 @@ function BlenderAvatarModel({ outfit, waving, spin = false, still = false }) {
   return (
     <group ref={group} position={[0, AVATAR_BASE_Y, 0]} scale={AVATAR_SCALE}>
       <primitive object={cloned} />
+      <HairPieces
+        hairMesh={
+          GLB_HAIR_MESHES.has(hairMeshForOutfit(outfit))
+            ? null
+            : hairMeshForOutfit(outfit)
+        }
+        color={outfit.hair}
+        hairTop={4.5}
+        hideHair={Boolean(outfit.hat)}
+      />
       <AccessoryProps outfit={outfit} />
     </group>
   );
@@ -637,24 +715,12 @@ function ProceduralAvatarModel({ outfit, waving, spin = false, still = false }) 
         <Limb args={[0.6, armH, 0.6]} position={[0, 0, 0]} color={outfit.skin} />
       </group>
       <Limb args={[headS, headS, headS]} position={[0, headZ, 0]} color={outfit.skin} />
-      {!hideHair && hairMesh === "Hair_Block" && (
-        <Limb args={[1.05, 0.35, 1.05]} position={[0, hairTop + 0.12, 0]} color={outfit.hair} />
-      )}
-      {!hideHair && hairMesh === "Hair_Tall" && (
-        <Limb args={[0.95, 0.72, 0.95]} position={[0, hairTop + 0.32, 0.02]} color={outfit.hair} />
-      )}
-      {!hideHair && hairMesh === "Hair_Poof" && (
-        <Limb args={[1.25, 0.42, 1.2]} position={[0, hairTop + 0.15, 0]} color={outfit.hair} />
-      )}
-      {!hideHair && hairMesh === "Hair_Side" && (
-        <>
-          <Limb args={[1.02, 0.12, 1.02]} position={[0, hairTop + 0.04, 0]} color={outfit.hair} />
-          <Limb args={[0.7, 0.5, 1.05]} position={[0.28, hairTop + 0.2, 0.02]} color={outfit.hair} />
-        </>
-      )}
-      {!hideHair && hairMesh === "Hair_Buzz" && (
-        <Limb args={[1.02, 0.12, 1.02]} position={[0, hairTop + 0.04, 0]} color={outfit.hair} />
-      )}
+      <HairPieces
+        hairMesh={hairMesh}
+        color={outfit.hair}
+        hairTop={hairTop}
+        hideHair={hideHair}
+      />
       <Limb
         args={[0.12, 0.12, 0.05]}
         position={[-0.18, headZ + 0.08, 0.52]}
@@ -856,8 +922,15 @@ function useBlenderCharacterAvailable() {
 }
 
 function AvatarModel({ outfit, waving, spin = false, still = false, useBlender }) {
-  if (isNpcFish(outfit)) {
-    return <FishAvatarModel outfit={outfit} waving={waving} spin={spin} still={still} />;
+  if (FORCE_FISH_AVATAR_FOR_TESTING || isNpcFish(outfit)) {
+    return (
+      <FishAvatarModel
+        outfit={FORCE_FISH_AVATAR_FOR_TESTING ? { ...CLASS_FISH_OUTFIT, ...outfit, npcFish: true } : outfit}
+        waving={waving}
+        spin={spin}
+        still={still}
+      />
+    );
   }
   if (useBlender) {
     return <BlenderAvatarModel outfit={outfit} waving={waving} spin={spin} still={still} />;

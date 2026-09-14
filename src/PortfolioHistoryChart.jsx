@@ -150,7 +150,10 @@ export default function PortfolioHistoryChart({ studentId, refreshKey, portfolio
   const allocation = useMemo(() => buildAllocation(portfolio), [portfolio]);
 
   const delta = data ? data.current - data.baseline : 0;
+  const baseline = data?.baseline || 100000;
+  const pctChange = baseline !== 0 ? (delta / baseline) * 100 : 0;
   const up = delta >= 0;
+  const pctLabel = `${up ? "+" : ""}${pctChange.toFixed(2)}% since start`;
 
   return (
     <div className="stripe-chart">
@@ -160,8 +163,7 @@ export default function PortfolioHistoryChart({ studentId, refreshKey, portfolio
           <h3 className="stripe-value">{moneyExact(data?.current ?? portfolio?.total_value)}</h3>
           {mode === "line" ? (
             <p className={up ? "stripe-delta up" : "stripe-delta down"}>
-              {up ? "+" : ""}
-              {moneyExact(delta)} vs ${data?.baseline?.toLocaleString() ?? "100,000"} start
+              {pctLabel}
             </p>
           ) : (
             <p className="stripe-delta">Share of cash, stocks, ETFs, bonds, commodities, and currencies</p>
