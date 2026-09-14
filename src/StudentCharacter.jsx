@@ -7,8 +7,8 @@ import { updateClassStudent } from "./classStore";
 
 const BLENDER_CHARACTER_URL = "/models/character.glb?v=hairstyles1";
 
-/** TEMP testing: show the fish body in every avatar panel. Flip to false before ship. */
-const FORCE_FISH_AVATAR_FOR_TESTING = false;
+/** TEMP testing: show the fruit fly body in every avatar panel. Flip to false before ship. */
+const FORCE_FRUIT_FLY_AVATAR_FOR_TESTING = false;
 
 const DEFAULT_OUTFIT = {
   skin: "#e0b090",
@@ -69,7 +69,14 @@ export const CLOSET_CATALOG = {
     { id: "skin-jack", label: "Jack-o'-lantern", color: "#e67a1f", price: 1800 },
     { id: "skin-zombie", label: "Zombie", color: "#8fa87a", price: 1500 },
     { id: "skin-alien", label: "Alien", color: "#6ec4b8", price: 2200 },
-    { id: "skin-shadow", label: "Shadow", color: "#3a3140", price: 2000 },
+    { id: "skin-shadow", label: "Shadow", color: "#3a3140", eyes: "#f5f5f2", price: 2000 },
+    {
+      id: "skin-fish",
+      label: "Fish",
+      color: "#f08a2a",
+      form: "fish",
+      price: 10000,
+    },
   ],
   hairStyle: [
     { id: "hair-block", label: "Block", mesh: "Hair_Block", swatch: "#3b2a1e", price: 0 },
@@ -158,10 +165,12 @@ export const CLOSET_CATALOG = {
       id: "acc-chain",
       kind: "neck",
       label: "Gold chain",
+      // Procedural chain-link mesh (not a single-hoop GLB).
+      procedural: "goldChain",
       url: "/accessories/GoldChain.glb?v=front2",
       attach: "neck",
-      offset: [0, -0.08, 0.18],
-      scale: 1.12,
+      offset: [0, -0.12, 0.12],
+      scale: 1,
       color: "#d4ad35",
       accent: "#f0d078",
       price: 5000,
@@ -216,7 +225,60 @@ export const CLOSET_CATALOG = {
 };
 
 function isAccessoryItem(item) {
-  return Boolean(item?.kind && item?.url);
+  return Boolean(item?.kind && (item?.url || item?.procedural));
+}
+
+/** Interlocking gold oval links draped as a necklace (not a single hoop). */
+function GoldChainNecklace({
+  position = [0, 0, 0],
+  rotation = [0, 0, 0],
+  scale = 1,
+  linkCount = 20,
+  radiusX = 0.58,
+  radiusY = 0.48,
+  depth = 0.38,
+  color = "#d4ad35",
+  accent = "#f0d078",
+}) {
+  const links = useMemo(() => {
+    const out = [];
+    for (let i = 0; i < linkCount; i += 1) {
+      const t = i / (linkCount - 1);
+      const angle = Math.PI * t;
+      const x = Math.cos(angle) * radiusX;
+      const y = -Math.sin(angle) * radiusY;
+      const z = Math.sin(angle) * depth;
+      // Alternate link twist so they read as chain links, not one ring.
+      const twist = i % 2 === 0 ? 0 : Math.PI / 2;
+      const tangent = angle - Math.PI / 2;
+      out.push({ x, y, z, rotX: twist, rotY: 0, rotZ: tangent });
+    }
+    return out;
+  }, [linkCount, radiusX, radiusY, depth]);
+
+  return (
+    <group position={position} rotation={rotation} scale={scale} renderOrder={4}>
+      {links.map((link, i) => (
+        <mesh
+          key={i}
+          position={[link.x, link.y, link.z]}
+          rotation={[link.rotX, link.rotY, link.rotZ]}
+          castShadow
+          renderOrder={4}
+        >
+          <torusGeometry args={[0.085, 0.026, 8, 14]} />
+          <meshStandardMaterial
+            color={i % 2 === 0 ? color : accent}
+            metalness={0.92}
+            roughness={0.22}
+            polygonOffset
+            polygonOffsetFactor={-2}
+            polygonOffsetUnits={-2}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
 }
 
 function isPaidItem(item) {
@@ -424,13 +486,13 @@ function HeadHairPreviewModel({ outfit, hairStyleId, hatItem = null }) {
       <Limb
         args={[0.12, 0.12, 0.05]}
         position={[-0.18, 0.08, 0.52]}
-        color={outfit.eyes}
+        color={eyesForOutfit(outfit)}
         roughness={0.35}
       />
       <Limb
         args={[0.12, 0.12, 0.05]}
         position={[0.18, 0.08, 0.52]}
-        color={outfit.eyes}
+        color={eyesForOutfit(outfit)}
         roughness={0.35}
       />
       <HairPieces
@@ -470,7 +532,35 @@ function HairStylePreview({ outfit, hairStyleId, hatItem = null, className }) {
   );
 }
 
+function accessoryPose(item) {
+  const base = ATTACH[item.attach] || ATTACH.torso;
+  const offset = item.offset || [0, 0, 0];
+  return {
+    position: [base[0] + offset[0], base[1] + offset[1], base[2] + offset[2]],
+    rotation: item.rotation || [0, 0, 0],
+    scale: item.scale ?? 1,
+  };
+}
+
 function AccessoryModel({ item }) {
+  const pose = accessoryPose(item);
+
+  if (item.procedural === "goldChain") {
+    return (
+      <GoldChainNecklace
+        position={pose.position}
+        rotation={pose.rotation}
+        scale={pose.scale}
+        color={item.color}
+        accent={item.accent}
+      />
+    );
+  }
+
+  return <GlbAccessoryModel item={item} pose={pose} />;
+}
+
+function GlbAccessoryModel({ item, pose }) {
   const { scene } = useGLTF(item.url);
   const cloned = useMemo(() => scene.clone(true), [scene]);
 
@@ -494,17 +584,34 @@ function AccessoryModel({ item }) {
     });
   }, [cloned, item]);
 
-  const base = ATTACH[item.attach] || ATTACH.torso;
-  const offset = item.offset || [0, 0, 0];
-  const position = [base[0] + offset[0], base[1] + offset[1], base[2] + offset[2]];
-  const rotation = item.rotation || [0, 0, 0];
-  const scale = item.scale ?? 1;
   return (
-    <primitive object={cloned} position={position} rotation={rotation} scale={scale} />
+    <primitive
+      object={cloned}
+      position={pose.position}
+      rotation={pose.rotation}
+      scale={pose.scale}
+    />
   );
 }
 
 function AccessoryAtOrigin({ item, scale = 1 }) {
+  if (item.procedural === "goldChain") {
+    return (
+      <GoldChainNecklace
+        scale={scale * 0.85}
+        color={item.color}
+        accent={item.accent}
+        radiusX={0.5}
+        radiusY={0.42}
+        depth={0.32}
+      />
+    );
+  }
+
+  return <GlbAccessoryAtOrigin item={item} scale={scale} />;
+}
+
+function GlbAccessoryAtOrigin({ item, scale = 1 }) {
   const { scene } = useGLTF(item.url);
   const cloned = useMemo(() => scene.clone(true), [scene]);
 
@@ -538,13 +645,18 @@ function AccessoryProps({ outfit }) {
   );
 }
 
+function eyesForOutfit(outfit) {
+  if (outfit?.skinId === "skin-shadow") return "#f5f5f2";
+  return outfit?.eyes || DEFAULT_OUTFIT.eyes;
+}
+
 function colorForMeshName(name, outfit) {
   const n = String(name || "");
   if (n.startsWith("Torso") || n.startsWith("Shirt")) return outfit.shirt;
   if (n.startsWith("Leg") || n.startsWith("Pants")) return outfit.pants;
   if (n.startsWith("Shoe") || n.startsWith("Shoes")) return outfit.shoes;
   if (n.startsWith("Hair")) return outfit.hair;
-  if (n.startsWith("Eye")) return outfit.eyes;
+  if (n.startsWith("Eye")) return eyesForOutfit(outfit);
   if (
     n.startsWith("Head") ||
     n.startsWith("Arm") ||
@@ -647,15 +759,24 @@ function BlenderAvatarModel({ outfit, waving, spin = false, still = false }) {
   );
 }
 
-function isNpcFish(outfit) {
-  // Only the class standings NPC may render as a fish — never a student.
+function isNpcFruitFly(outfit) {
+  // Only the class standings NPC may render as a fruit fly — never a student.
   return Boolean(outfit?.npcFish);
 }
 
-/** Strip any player fish form leftover from old saves / Firestore. */
+function isFishForm(outfit) {
+  return outfit?.form === "fish" || outfit?.skinId === "skin-fish";
+}
+
+/** NPC-only forms that students must never keep from old saves. */
+const NPC_ONLY_FORM_IDS = new Set(["fruitfly", "skin-fruitfly"]);
+
+/** Strip any player NPC form leftover from old saves / Firestore. */
 export function stripPlayerFishForm(outfit, fallback = DEFAULT_OUTFIT) {
   if (!outfit || outfit.npcFish) return outfit;
-  if (outfit.form !== "fish" && outfit.skinId !== "skin-fish") return outfit;
+  if (!NPC_ONLY_FORM_IDS.has(outfit.form) && !NPC_ONLY_FORM_IDS.has(outfit.skinId)) {
+    return outfit;
+  }
   const free =
     freeCatalogItems("skin").find((entry) => entry.id === fallback?.skinId) ||
     freeCatalogItems("skin")[0];
@@ -724,13 +845,13 @@ function ProceduralAvatarModel({ outfit, waving, spin = false, still = false }) 
       <Limb
         args={[0.12, 0.12, 0.05]}
         position={[-0.18, headZ + 0.08, 0.52]}
-        color={outfit.eyes}
+        color={eyesForOutfit(outfit)}
         roughness={0.35}
       />
       <Limb
         args={[0.12, 0.12, 0.05]}
         position={[0.18, headZ + 0.08, 0.52]}
-        color={outfit.eyes}
+        color={eyesForOutfit(outfit)}
         roughness={0.35}
       />
       <AccessoryProps outfit={outfit} />
@@ -750,7 +871,7 @@ function FishAvatarModel({ outfit, waving, spin = false, still = false }) {
   const shirt = outfit.shirt || "#7ec8e8";
   const beak = "#f0d78a";
   const eyeWhite = "#f7f7f2";
-  const pupil = outfit.eyes || "#1a1a18";
+  const pupil = eyesForOutfit(outfit);
 
   useFrame((state) => {
     const t = state.clock.getElapsedTime();
@@ -903,6 +1024,221 @@ function FishAvatarModel({ outfit, waving, spin = false, still = false }) {
   );
 }
 
+/** Upright bipedal fruit fly — same blocky classroom style as classmates. */
+function FruitFlyAvatarModel({ outfit, waving, spin = false, still = false }) {
+  const group = useRef();
+  const armR = useRef();
+  const legL = useRef();
+  const legR = useRef();
+  const wingL = useRef();
+  const wingR = useRef();
+  const body = outfit.skin || "#5c4030";
+  const bodyDark = "#3d2a1f";
+  const eyeRed = "#c62828";
+  const eyeDark = "#6b1010";
+  const wing = "#e8f0e8";
+
+  useFrame((state) => {
+    const t = state.clock.getElapsedTime();
+    if (group.current) {
+      if (still) {
+        group.current.rotation.y = 0;
+      } else {
+        group.current.rotation.y = spin
+          ? t * 0.35
+          : Math.sin(t * 0.55) * 0.18;
+      }
+      group.current.position.y = AVATAR_BASE_Y + (still ? 0 : Math.sin(t * 1.4) * 0.02);
+    }
+    if (still) {
+      const swing = Math.sin(t * 7.5) * 0.45;
+      if (legL.current) legL.current.rotation.x = swing;
+      if (legR.current) legR.current.rotation.x = -swing;
+    } else if (legL.current && legR.current) {
+      legL.current.rotation.x = 0.12;
+      legR.current.rotation.x = -0.08;
+    }
+    if (armR.current && waving) {
+      armR.current.rotation.x = -0.15 + Math.sin(t * 4.2) * 0.55;
+      armR.current.rotation.z = Math.sin(t * 4.2) * 0.25;
+    }
+    const flap = Math.sin(t * 18) * 0.2;
+    if (wingL.current) {
+      wingL.current.rotation.x = 0.2 + flap;
+      wingL.current.rotation.z = 0.28;
+    }
+    if (wingR.current) {
+      wingR.current.rotation.x = 0.2 + flap;
+      wingR.current.rotation.z = -0.28;
+    }
+  });
+
+  const thoraxY = 2.35;
+  // Head sits on the thorax (overlap + short neck) so it isn’t floating.
+  const headY = 3.28;
+  const abdomenY = 1.55;
+  const armY = 2.55;
+  const armX = 0.95;
+  const legTop = 1.35;
+
+  return (
+    <group ref={group} position={[0, AVATAR_BASE_Y, 0]} scale={AVATAR_SCALE}>
+      {/* Stick legs */}
+      <group ref={legL} position={[-0.32, legTop, 0]}>
+        <mesh position={[0, -0.4, 0]} castShadow>
+          <capsuleGeometry args={[0.07, 0.55, 4, 8]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+        </mesh>
+        <mesh position={[0, -0.95, 0.02]} castShadow>
+          <capsuleGeometry args={[0.06, 0.45, 4, 8]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+        </mesh>
+        <mesh position={[0, -1.28, 0.12]} rotation={[0.4, 0, 0]} castShadow>
+          <boxGeometry args={[0.2, 0.07, 0.32]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.75} metalness={0.04} />
+        </mesh>
+      </group>
+      <group ref={legR} position={[0.32, legTop, 0]}>
+        <mesh position={[0, -0.4, 0]} castShadow>
+          <capsuleGeometry args={[0.07, 0.55, 4, 8]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+        </mesh>
+        <mesh position={[0, -0.95, 0.02]} castShadow>
+          <capsuleGeometry args={[0.06, 0.45, 4, 8]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+        </mesh>
+        <mesh position={[0, -1.28, 0.12]} rotation={[0.4, 0, 0]} castShadow>
+          <boxGeometry args={[0.2, 0.07, 0.32]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.75} metalness={0.04} />
+        </mesh>
+      </group>
+
+      {/* Abdomen */}
+      <mesh position={[0, abdomenY, -0.05]} scale={[1, 1.15, 1.05]} castShadow>
+        <sphereGeometry args={[0.55, 16, 14]} />
+        <meshStandardMaterial color={body} roughness={0.55} metalness={0.06} />
+      </mesh>
+      <mesh position={[0, abdomenY + 0.05, -0.05]} scale={[1.02, 0.15, 1.02]}>
+        <sphereGeometry args={[0.56, 12, 10]} />
+        <meshStandardMaterial color={bodyDark} roughness={0.6} metalness={0.05} />
+      </mesh>
+
+      {/* Thorax */}
+      <mesh position={[0, thoraxY, 0]} castShadow>
+        <sphereGeometry args={[0.62, 16, 14]} />
+        <meshStandardMaterial color={body} roughness={0.5} metalness={0.06} />
+      </mesh>
+
+      {/* Short neck joining thorax → head */}
+      <mesh position={[0, thoraxY + 0.55, 0.06]} castShadow>
+        <capsuleGeometry args={[0.28, 0.22, 6, 10]} />
+        <meshStandardMaterial color={body} roughness={0.5} metalness={0.06} />
+      </mesh>
+
+      {/* Wings — rooted on the back of the thorax, extending out/back */}
+      <group ref={wingL} position={[-0.38, thoraxY + 0.18, -0.52]}>
+        <mesh
+          position={[-0.55, 0.28, -0.22]}
+          rotation={[0.15, 0.45, 0.55]}
+          scale={[1.35, 0.08, 0.72]}
+          castShadow
+        >
+          <sphereGeometry args={[0.5, 12, 10]} />
+          <meshStandardMaterial
+            color={wing}
+            transparent
+            opacity={0.42}
+            roughness={0.18}
+            metalness={0.05}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+      <group ref={wingR} position={[0.38, thoraxY + 0.18, -0.52]}>
+        <mesh
+          position={[0.55, 0.28, -0.22]}
+          rotation={[0.15, -0.45, -0.55]}
+          scale={[1.35, 0.08, 0.72]}
+          castShadow
+        >
+          <sphereGeometry args={[0.5, 12, 10]} />
+          <meshStandardMaterial
+            color={wing}
+            transparent
+            opacity={0.42}
+            roughness={0.18}
+            metalness={0.05}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+
+      {/* Stick arms */}
+      <group position={[-armX, armY, 0]} rotation={[0.15, 0, 0.4]}>
+        <mesh castShadow>
+          <capsuleGeometry args={[0.07, 0.7, 4, 8]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+        </mesh>
+        <mesh position={[0, -0.55, 0.05]} castShadow>
+          <boxGeometry args={[0.16, 0.12, 0.22]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+        </mesh>
+      </group>
+      <group ref={armR} position={[armX, armY, 0]} rotation={[0.15, 0, -0.4]}>
+        <mesh castShadow>
+          <capsuleGeometry args={[0.07, 0.7, 4, 8]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+        </mesh>
+        <mesh position={[0, -0.55, 0.05]} castShadow>
+          <boxGeometry args={[0.16, 0.12, 0.22]} />
+          <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+        </mesh>
+      </group>
+
+      {/* Head + huge red compound eyes */}
+      <mesh position={[0, headY, 0.08]} castShadow>
+        <sphereGeometry args={[0.72, 18, 16]} />
+        <meshStandardMaterial color={body} roughness={0.48} metalness={0.06} />
+      </mesh>
+      <mesh position={[-0.42, headY + 0.08, 0.45]} castShadow>
+        <sphereGeometry args={[0.42, 16, 14]} />
+        <meshStandardMaterial color={eyeRed} roughness={0.35} metalness={0.15} />
+      </mesh>
+      <mesh position={[0.42, headY + 0.08, 0.45]} castShadow>
+        <sphereGeometry args={[0.42, 16, 14]} />
+        <meshStandardMaterial color={eyeRed} roughness={0.35} metalness={0.15} />
+      </mesh>
+      <mesh position={[-0.42, headY + 0.1, 0.72]}>
+        <sphereGeometry args={[0.14, 10, 8]} />
+        <meshStandardMaterial color={eyeDark} roughness={0.4} metalness={0.1} />
+      </mesh>
+      <mesh position={[0.42, headY + 0.1, 0.72]}>
+        <sphereGeometry args={[0.14, 10, 8]} />
+        <meshStandardMaterial color={eyeDark} roughness={0.4} metalness={0.1} />
+      </mesh>
+
+      {/* Antennae */}
+      <mesh position={[-0.22, headY + 0.75, 0.15]} rotation={[0.35, 0, -0.35]} castShadow>
+        <capsuleGeometry args={[0.035, 0.55, 4, 6]} />
+        <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+      </mesh>
+      <mesh position={[0.22, headY + 0.75, 0.15]} rotation={[0.35, 0, 0.35]} castShadow>
+        <capsuleGeometry args={[0.035, 0.55, 4, 6]} />
+        <meshStandardMaterial color={bodyDark} roughness={0.7} metalness={0.05} />
+      </mesh>
+      <mesh position={[-0.42, headY + 1.05, 0.35]} castShadow>
+        <sphereGeometry args={[0.08, 8, 8]} />
+        <meshStandardMaterial color={bodyDark} roughness={0.65} metalness={0.05} />
+      </mesh>
+      <mesh position={[0.42, headY + 1.05, 0.35]} castShadow>
+        <sphereGeometry args={[0.08, 8, 8]} />
+        <meshStandardMaterial color={bodyDark} roughness={0.65} metalness={0.05} />
+      </mesh>
+    </group>
+  );
+}
+
+
 function useBlenderCharacterAvailable() {
   const [available, setAvailable] = useState(false);
   useEffect(() => {
@@ -922,10 +1258,24 @@ function useBlenderCharacterAvailable() {
 }
 
 function AvatarModel({ outfit, waving, spin = false, still = false, useBlender }) {
-  if (FORCE_FISH_AVATAR_FOR_TESTING || isNpcFish(outfit)) {
+  if (FORCE_FRUIT_FLY_AVATAR_FOR_TESTING || isNpcFruitFly(outfit)) {
+    return (
+      <FruitFlyAvatarModel
+        outfit={
+          FORCE_FRUIT_FLY_AVATAR_FOR_TESTING
+            ? { ...CLASS_FISH_OUTFIT, ...outfit, npcFish: true }
+            : outfit
+        }
+        waving={waving}
+        spin={spin}
+        still={still}
+      />
+    );
+  }
+  if (isFishForm(outfit)) {
     return (
       <FishAvatarModel
-        outfit={FORCE_FISH_AVATAR_FOR_TESTING ? { ...CLASS_FISH_OUTFIT, ...outfit, npcFish: true } : outfit}
+        outfit={outfit}
         waving={waving}
         spin={spin}
         still={still}
@@ -1177,24 +1527,24 @@ function ClassWalkScene({ walkers, useBlender }) {
   );
 }
 
-/** Shared class NPC: upright fish student on every standings walk stage. */
+/** Shared class NPC: upright fruit fly on every standings walk stage. */
 export const CLASS_FISH_OUTFIT = {
   ...DEFAULT_OUTFIT,
   npcFish: true,
-  form: "fish",
-  skin: "#f08a2a",
-  skinId: "skin-fish",
+  form: "fruitfly",
+  skin: "#5c4030",
+  skinId: "skin-fruitfly",
   shirt: "#7ec8e8",
   shirtId: "tee-sky",
-  pants: "#1e3a5f",
-  shoes: "#24312b",
-  eyes: "#1a1a18",
+  pants: "#3d2a1f",
+  shoes: "#3d2a1f",
+  eyes: "#c62828",
 };
 
 export function classFishWalker() {
   return {
-    id: "__class-fish__",
-    name: "Fish",
+    id: "__class-fruit-fly__",
+    name: "Fruit fly",
     isYou: false,
     outfit: CLASS_FISH_OUTFIT,
   };
@@ -1333,7 +1683,10 @@ function stripUnownedBuyables(outfit, fallback = null) {
       if (free) {
         next[category] = free.color;
         next[idKey] = free.id;
-        if (category === "skin") next.form = free.form || "human";
+        if (category === "skin") {
+          next.form = free.form || "human";
+          next.eyes = free.eyes || DEFAULT_OUTFIT.eyes;
+        }
       }
     }
   }
@@ -1540,8 +1893,11 @@ function applyCatalogSelection(outfit, category, item) {
   if (category === "hairStyle") {
     return { ...outfit, hairStyleId: item.id };
   }
-  // Fish is NPC-only — never apply as a player form from the closet.
-  if (category === "skin" && (item?.form === "fish" || item?.id === "skin-fish")) {
+  // Fruit fly is NPC-only — never apply as a player form from the closet.
+  if (
+    category === "skin" &&
+    (NPC_ONLY_FORM_IDS.has(item?.form) || NPC_ONLY_FORM_IDS.has(item?.id))
+  ) {
     return outfit;
   }
   const next = {
@@ -1550,8 +1906,10 @@ function applyCatalogSelection(outfit, category, item) {
     [`${category}Id`]: item.id,
   };
   if (category === "skin") {
-    next.form = item.form && item.form !== "fish" ? item.form : "human";
+    next.form =
+      item.form && !NPC_ONLY_FORM_IDS.has(item.form) ? item.form : "human";
     next.npcFish = false;
+    next.eyes = item.eyes || DEFAULT_OUTFIT.eyes;
   }
   return next;
 }
@@ -1728,7 +2086,18 @@ function ClosetModal({
       freeCatalogItems(category).find((entry) => entry.id === committed[`${category}Id`])
       || freeCatalogItems(category)[0];
     return free
-      ? { ...draft, [category]: free.color, [`${category}Id`]: free.id }
+      ? {
+          ...draft,
+          [category]: free.color,
+          [`${category}Id`]: free.id,
+          ...(category === "skin"
+            ? {
+                form: free.form || "human",
+                npcFish: false,
+                eyes: free.eyes || DEFAULT_OUTFIT.eyes,
+              }
+            : {}),
+        }
       : draft;
   }
 

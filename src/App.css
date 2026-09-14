@@ -1582,7 +1582,7 @@ select:focus {
   border-radius: 20px;
   background: #fff;
   border: 1px solid var(--line-soft);
-  box-shadow: var(--shadow);
+      box-shadow: var(--shadow);
   animation: closetRise 0.28s ease both;
 }
 

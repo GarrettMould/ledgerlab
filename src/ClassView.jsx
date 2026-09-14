@@ -135,7 +135,7 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
         s.name
       ),
     }));
-    // Always include the class fish NPC on the standings walk stage.
+    // Always include the class fruit-fly NPC on the standings walk stage.
     return [...students, classFishWalker()];
   }, [ranked, currentStudentId]);
 
