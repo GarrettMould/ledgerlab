@@ -9,6 +9,12 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == uid;
     }
 
+    function isTeacher() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['teacher', 'admin'];
+    }
+
     match /users/{uid} {
       allow read: if isSelf(uid);
       allow create, update: if isSelf(uid);
@@ -43,6 +49,48 @@ service cloud.firestore {
           allow read: if signedIn();
           allow create, update: if signedIn();
           allow delete: if false;
+        }
+      }
+
+      match /messages/{messageId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.keys().hasOnly([
+            'body', 'authorName', 'authorId', 'authorRole', 'createdAt'
+          ])
+          && request.resource.data.body is string
+          && request.resource.data.body.size() > 0
+          && request.resource.data.body.size() <= 400
+          && request.resource.data.authorName is string
+          && request.resource.data.authorName.size() > 0
+          && request.resource.data.authorName.size() <= 48
+          && request.resource.data.authorRole in ['student', 'teacher'];
+        allow update: if false;
+        allow delete: if isTeacher();
+      }
+
+      match /threads/{threadId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 80
+          && request.resource.data.authorName is string
+          && request.resource.data.authorRole in ['student', 'teacher'];
+        allow update: if signedIn();
+        allow delete: if isTeacher()
+          && !(resource.data.isStarter == true);
+
+        match /posts/{postId} {
+          allow read: if signedIn();
+          allow create: if signedIn()
+            && request.resource.data.body is string
+            && request.resource.data.body.size() > 0
+            && request.resource.data.body.size() <= 400
+            && request.resource.data.authorName is string
+            && request.resource.data.authorRole in ['student', 'teacher'];
+          allow update: if false;
+          allow delete: if isTeacher();
         }
       }
     }

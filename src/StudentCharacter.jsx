@@ -1300,6 +1300,10 @@ function CameraRig({ mode }) {
     } else if (mode === "class") {
       camera.position.set(0, 1.05, 6.4);
       camera.lookAt(0, 0.55, 0);
+    } else if (mode === "headshot") {
+      // Frame face/shoulders only — head sits ~0.7–0.95 world Y after scale.
+      camera.position.set(0, 0.82, 1.55);
+      camera.lookAt(0, 0.78, 0);
     } else {
       camera.position.set(0, 0.12, 4.05);
       camera.lookAt(0, -0.02, 0);
@@ -1576,12 +1580,13 @@ export function ClassWalkingStage({ walkers = [], className }) {
 function Scene({ outfit, mode = "thumb", useBlender }) {
   const isDash = mode === "dash";
   const isCloset = mode === "closet";
+  const isHeadshot = mode === "headshot";
   const avatar = (
     <AvatarModel
       outfit={outfit}
-      waving={!isCloset && !isDash}
+      waving={!isCloset && !isDash && !isHeadshot}
       spin={isCloset}
-      still={isDash}
+      still={isDash || isHeadshot}
       useBlender={useBlender}
     />
   );
@@ -1589,16 +1594,18 @@ function Scene({ outfit, mode = "thumb", useBlender }) {
   return (
     <>
       <CameraRig mode={mode} />
-      <ambientLight intensity={0.75} />
+      <ambientLight intensity={isHeadshot ? 0.85 : 0.75} />
       <directionalLight
         position={[2.5, 4, 2]}
         intensity={1.15}
-        castShadow
+        castShadow={!isHeadshot}
         shadow-mapSize-width={512}
         shadow-mapSize-height={512}
       />
       <directionalLight position={[-2, 2, -1]} intensity={0.35} color="#9fd4a8" />
-      {isDash ? (
+      {isHeadshot ? (
+        avatar
+      ) : isDash ? (
         <WalkingPad enabled>{avatar}</WalkingPad>
       ) : (
         <Float
@@ -1610,27 +1617,32 @@ function Scene({ outfit, mode = "thumb", useBlender }) {
         </Float>
       )}
       {isDash && <FishbowlOnStool />}
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, AVATAR_SHADOW_Y - 0.01, 0]}
-        receiveShadow
-      >
-        <planeGeometry args={[isDash ? 5.2 : 2.4, isDash ? 2.2 : 1.6]} />
-        <meshStandardMaterial color="#d7ebe0" roughness={0.95} metalness={0} />
-      </mesh>
-      <ContactShadows
-        position={[0, AVATAR_SHADOW_Y, 0]}
-        opacity={0.28}
-        scale={isDash ? 6.5 : 3.2}
-        blur={2.4}
-        far={2.5}
-      />
+      {!isHeadshot && (
+        <>
+          <mesh
+            rotation={[-Math.PI / 2, 0, 0]}
+            position={[0, AVATAR_SHADOW_Y - 0.01, 0]}
+            receiveShadow
+          >
+            <planeGeometry args={[isDash ? 5.2 : 2.4, isDash ? 2.2 : 1.6]} />
+            <meshStandardMaterial color="#d7ebe0" roughness={0.95} metalness={0} />
+          </mesh>
+          <ContactShadows
+            position={[0, AVATAR_SHADOW_Y, 0]}
+            opacity={0.28}
+            scale={isDash ? 6.5 : 3.2}
+            blur={2.4}
+            far={2.5}
+          />
+        </>
+      )}
     </>
   );
 }
 
-function AvatarCanvas({ outfit, mode, className }) {
+export function AvatarCanvas({ outfit, mode, className }) {
   const useBlender = useBlenderCharacterAvailable();
+  const isHeadshot = mode === "headshot";
   return (
     <div className={className}>
       <Canvas
@@ -1640,8 +1652,10 @@ function AvatarCanvas({ outfit, mode, className }) {
               ? [0, 0.18, 3.5]
               : mode === "dash"
                 ? [0, 0.55, 5.2]
-                : [0, 0.1, 3.85],
-          fov: mode === "closet" ? 34 : mode === "dash" ? 38 : 32,
+                : isHeadshot
+                  ? [0, 0.82, 1.55]
+                  : [0, 0.1, 3.85],
+          fov: mode === "closet" ? 34 : mode === "dash" ? 38 : isHeadshot ? 28 : 32,
           near: 0.1,
           far: 50,
         }}

@@ -171,8 +171,7 @@ def record_fs_snapshot(
 
 
 def ensure_fs_starting_snapshot(class_id: str, student: dict) -> None:
-    existing = fs_ledger.list_snapshots(class_id, student["id"])
-    if existing:
+    if fs_ledger.has_any_snapshot(class_id, student["id"]):
         return
     cash = float(student["cash"])
     fs_ledger.add_snapshot(

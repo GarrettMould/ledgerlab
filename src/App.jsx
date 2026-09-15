@@ -5,6 +5,7 @@ import PortfolioHistoryChart from "./PortfolioHistoryChart";
 import CommodityInfoTip from "./CommodityInfoTip";
 import BondGlossaryTip from "./BondGlossaryTip";
 import ClassView from "./ClassView";
+import ClassMessageBoard from "./ClassMessageBoard";
 import NewsFeed from "./NewsFeed";
 import TeacherDashboard from "./TeacherDashboard";
 import TeacherGate from "./TeacherGate";
@@ -15,26 +16,52 @@ import {
   clearStudentSession,
   getActiveClassId,
   getClass,
+  getClassStudent,
   getStudentSession,
   listClassStudents,
   parseJoinCodeFromUrl,
   setActiveClassId,
   setStudentSession,
+  updateClassStudent,
 } from "./classStore";
 import { signOutStudentAuth } from "./studentAuth";
 import { signOutTeacherAuth, watchAccountAuth } from "./teacherAuth";
 import { setClickMuted } from "./clickSounds";
 import FloridaRealEstateMap from "./FloridaRealEstateMap";
 import MarketGlyph from "./MarketGlyph";
+import PopularStocksTicker from "./PopularStocksTicker";
+import FearGreedMeter from "./FearGreedMeter";
 import { groupHoldingsByCategory } from "./portfolioAllocation";
 import "./App.css";
 
 const StudentCharacter = lazy(() => import("./StudentCharacter"));
+
+/** Set true to restore class chat on student home + teacher dashboard. */
+const SHOW_CLASS_CHAT = false;
+const STRATEGY_BIO_MAX = 280;
 const StudentJoin = lazy(() => import("./StudentJoin"));
 
 // Market price charts (stocks/ETFs/etc.) — hide until the /chart feed is reliable.
 // Flip to true to show the chart button + PriceChart row again.
 const SHOW_MARKET_PRICE_CHARTS = false;
+
+const SOUND_PREF_KEY = "ledgerlab.sfx";
+
+function readSoundPref() {
+  try {
+    return localStorage.getItem(SOUND_PREF_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function writeSoundPref(on) {
+  try {
+    localStorage.setItem(SOUND_PREF_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
 
 const CURRENCY_LOTS = {
   EUR: 1,
@@ -169,12 +196,158 @@ function money(n) {
   });
 }
 
+function StrategyBioEditor({ classId, firestoreStudentId, setError }) {
+  const [bio, setBio] = useState("");
+  const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!classId || !firestoreStudentId) {
+      setBio("");
+      setDraft("");
+      setLoading(false);
+      return undefined;
+    }
+    setLoading(true);
+    getClassStudent(classId, firestoreStudentId)
+      .then((seat) => {
+        if (cancelled) return;
+        const text = String(seat?.strategyBio || "").trim();
+        setBio(text);
+        setDraft(text);
+        setEditing(!text);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBio("");
+          setDraft("");
+          setEditing(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [classId, firestoreStudentId]);
+
+  async function saveBio() {
+    if (!classId || !firestoreStudentId) return;
+    const next = draft.trim().slice(0, STRATEGY_BIO_MAX);
+    setSaving(true);
+    setError("");
+    try {
+      await updateClassStudent(classId, firestoreStudentId, {
+        strategyBio: next || null,
+      });
+      setBio(next);
+      setDraft(next);
+      setEditing(false);
+    } catch (err) {
+      setError(err.message || "Could not save your strategy bio.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!classId || !firestoreStudentId) return null;
+
+  return (
+    <div className="strategy-bio">
+      <div className="strategy-bio-head">
+        <p className="strategy-bio-label">Investing strategy</p>
+        {!loading && !editing && (
+          <button
+            type="button"
+            className="strategy-bio-pencil"
+            data-click="select"
+            aria-label={bio ? "Edit investing strategy" : "Add investing strategy"}
+            title={bio ? "Edit" : "Add strategy"}
+            onClick={() => {
+              setDraft(bio);
+              setEditing(true);
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none">
+              <path
+                d="M4 20h4.5L19 9.5 14.5 5 4 15.5V20z"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M12.5 7l4.5 4.5"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        )}
+      </div>
+      {loading ? (
+        <p className="strategy-bio-note">Loading…</p>
+      ) : editing ? (
+        <div className="strategy-bio-edit">
+          <textarea
+            className="strategy-bio-input"
+            rows={3}
+            maxLength={STRATEGY_BIO_MAX}
+            value={draft}
+            placeholder="Tell your classmates a bit about your investment philosophy...."
+            onChange={(e) => setDraft(e.target.value.slice(0, STRATEGY_BIO_MAX))}
+          />
+          <div className="strategy-bio-actions">
+            <span className="strategy-bio-count">
+              {draft.trim().length}/{STRATEGY_BIO_MAX}
+            </span>
+            <div className="strategy-bio-btns">
+              {bio ? (
+                <button
+                  type="button"
+                  className="ghost-btn strategy-bio-cancel"
+                  data-click="select"
+                  disabled={saving}
+                  onClick={() => {
+                    setDraft(bio);
+                    setEditing(false);
+                  }}
+                >
+                  Cancel
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="primary-btn strategy-bio-save"
+                data-click="confirm"
+                disabled={saving || draft.trim() === bio}
+                onClick={saveBio}
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <p className="strategy-bio-text">
+          {bio || "No strategy written yet."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function StudentPortfolio({
   students,
   enabledMarkets,
   lockedStudentId,
   investmentGoal,
   classId = "",
+  className = "",
   firestoreStudentId = "",
   portfolioRefreshToken = 0,
   busy,
@@ -199,6 +372,7 @@ function StudentPortfolio({
   const [marketPage, setMarketPage] = useState(0);
   const [showClass, setShowClass] = useState(false);
   const [showNews, setShowNews] = useState(false);
+  const [showBoard, setShowBoard] = useState(false);
   const [marketItems, setMarketItems] = useState([]);
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketPricesPending, setMarketPricesPending] = useState(false);
@@ -513,6 +687,16 @@ function StudentPortfolio({
       setSelectedAsset(item);
     }
     if (!selectedId) return;
+    if (
+      action === "buy" &&
+      item.asset_type === "commodity" &&
+      item.buy_ok === false
+    ) {
+      setError(
+        "Commodity buys need live futures prices. Try again in a few minutes — selling still works."
+      );
+      return;
+    }
 
     let qty = Number(qtyOverride);
     if (tradeDraft?.sellAll && action === "sell") {
@@ -611,6 +795,16 @@ function StudentPortfolio({
   function openTradeDraft(item, action) {
     if (action === "buy" && item.asset_type !== "bond" && !(Number(item.price) > 0)) {
       setError("Wait for a live price before buying.");
+      return;
+    }
+    if (
+      action === "buy" &&
+      item.asset_type === "commodity" &&
+      item.buy_ok === false
+    ) {
+      setError(
+        "Commodity buys need live futures prices. Try again in a few minutes — selling still works."
+      );
       return;
     }
     setSelectedAsset(item);
@@ -755,11 +949,16 @@ function StudentPortfolio({
                 ? portfolio.name
                 : "Student portfolio"}
           </h2>
-          <p>
-            {portfolioLoading
-              ? "Pulling your cash, holdings, and avatar…"
-              : "Pick a market and put your classroom cash to work."}
-          </p>
+          {!portfolioLoading && portfolio && (
+            <StrategyBioEditor
+              classId={classId}
+              firestoreStudentId={firestoreStudentId}
+              setError={setError}
+            />
+          )}
+          {portfolioLoading && (
+            <p>Pulling your cash, holdings, and avatar…</p>
+          )}
         </div>
         <div className="student-header-right">
           {portfolioLoading ? (
@@ -824,11 +1023,11 @@ function StudentPortfolio({
         <>
           <div
             className={
-              category || showClass || showNews
+              category || showClass || showNews || showBoard
                 ? "student-dash collapsed"
                 : "student-dash"
             }
-            aria-hidden={Boolean(category || showClass || showNews)}
+            aria-hidden={Boolean(category || showClass || showNews || showBoard)}
           >
             <div className="student-dash-inner">
               <div className="balance-strip">
@@ -863,13 +1062,28 @@ function StudentPortfolio({
             />
           )}
 
-          {showNews && !showClass && (
+          {showNews && !showClass && !showBoard && (
             <NewsFeed
               onBack={() => setShowNews(false)}
             />
           )}
 
-          {!category && !showClass && !showNews && (
+          {SHOW_CLASS_CHAT && showBoard && !showClass && !showNews && (classId || import.meta.env.DEV) && (
+            <ClassMessageBoard
+              classId={classId}
+              authorName={
+                students.find((s) => String(s.id) === String(portfolio?.id))
+                  ?.name ||
+                portfolio?.name ||
+                "Student"
+              }
+              authorId={firestoreStudentId || portfolio?.id || null}
+              authorRole="student"
+              onBack={() => setShowBoard(false)}
+            />
+          )}
+
+          {!category && !showClass && !showNews && !(SHOW_CLASS_CHAT && showBoard) && (
             <div className="home-menu">
               <div className="home-tools" aria-label="Classroom">
                 <button
@@ -880,6 +1094,7 @@ function StudentPortfolio({
                   onClick={() => {
                     setShowClass(true);
                     setShowNews(false);
+                    setShowBoard(false);
                     setSelectedAsset(null);
                     setTradeDraft(null);
                   }}
@@ -890,6 +1105,27 @@ function StudentPortfolio({
                     →
                   </span>
                 </button>
+                {SHOW_CLASS_CHAT && (
+                <button
+                  type="button"
+                  className="home-tool home-tool-board"
+                  data-click="select"
+                  title="Class message board"
+                  onClick={() => {
+                    setShowBoard(true);
+                    setShowNews(false);
+                    setShowClass(false);
+                    setSelectedAsset(null);
+                    setTradeDraft(null);
+                  }}
+                >
+                  <span className="home-tool-kicker">Classroom</span>
+                  <strong>Class chat</strong>
+                  <span className="home-tool-go" aria-hidden="true">
+                    →
+                  </span>
+                </button>
+                )}
                 <button
                   type="button"
                   className="home-tool home-tool-news"
@@ -897,6 +1133,7 @@ function StudentPortfolio({
                   onClick={() => {
                     setShowNews(true);
                     setShowClass(false);
+                    setShowBoard(false);
                     setSelectedAsset(null);
                     setTradeDraft(null);
                   }}
@@ -911,11 +1148,14 @@ function StudentPortfolio({
 
               <div className="market-menu">
                 <div className="market-menu-head">
-                  <p className="market-menu-kicker">Trade floor</p>
-                  <h3>Pick a market</h3>
-                  <p className="market-menu-lead">
-                    Each floor has its own feel — browse prices, then put cash to work.
-                  </p>
+                  <div className="market-menu-copy">
+                    <p className="market-menu-kicker">Trade floor</p>
+                    <h3>Pick a market</h3>
+                    <p className="market-menu-lead">
+                      Each floor has its own feel — browse prices, then put cash to work.
+                    </p>
+                  </div>
+                  <FearGreedMeter />
                 </div>
                 <div className="market-lanes" role="list">
                   {availableCategories.map((c, i) => (
@@ -950,7 +1190,7 @@ function StudentPortfolio({
             </div>
           )}
 
-          {category && !showClass && !showNews && (
+          {category && !showClass && !showNews && !showBoard && (
             <div className="market-view">
               <div className="market-toolbar">
                 <button
@@ -972,6 +1212,21 @@ function StudentPortfolio({
                   {category === "bonds" && <BondGlossaryTip />}
                 </h3>
               </div>
+
+              {category === "stocks" && (
+                <PopularStocksTicker
+                  classId={classId}
+                  className={className}
+                  onPickTicker={(ticker) => {
+                    const item = marketItems.find((m) => m.ticker === ticker);
+                    if (!item) return;
+                    setStockIndustry("All");
+                    setSelectedAsset(item);
+                    setChartTicker(null);
+                    setTradeDraft(null);
+                  }}
+                />
+              )}
 
               {category === "stocks" && stockIndustries.length > 1 && (
                 <div className="industry-tags" role="tablist" aria-label="Filter by industry">
@@ -1005,6 +1260,8 @@ function StudentPortfolio({
                 <p className="bond-note currency-explain">
                   These are raw commodity futures prices (not ETFs) — gold per ounce, oil per
                   barrel, corn per bushel, and so on. Buying 1 unit means 1 of that measure.
+                  If futures prices are temporarily unavailable, buying pauses (selling still
+                  works) so portfolios don’t jump when the real price returns.
                 </p>
               )}
 
@@ -1127,10 +1384,13 @@ function StudentPortfolio({
                     const noPrice =
                       item.asset_type !== "bond" &&
                       !(Number(item.price) > 0);
+                    const futuresOffline =
+                      item.asset_type === "commodity" && item.buy_ok === false;
                     const buyBlocked =
                       draftOpen &&
                       tradeDraft.action === "buy" &&
                       (noPrice ||
+                        futuresOffline ||
                         (item.asset_type === "currency" &&
                           (!Number.isFinite(usdAmount) ||
                             usdAmount <= 0 ||
@@ -1314,7 +1574,9 @@ function StudentPortfolio({
                                       ? buyBlocked
                                         ? "row-buy confirm disabled"
                                         : "row-buy confirm"
-                                      : "row-buy"
+                                      : futuresOffline
+                                        ? "row-buy disabled"
+                                        : "row-buy"
                                   }
                                   data-click={
                                     draftOpen && tradeDraft.action === "buy"
@@ -1323,11 +1585,17 @@ function StudentPortfolio({
                                         : "confirm"
                                       : "select"
                                   }
-                                  disabled={Boolean(buyBlocked) || noPrice}
-                                  aria-disabled={Boolean(buyBlocked) || noPrice}
+                                  disabled={
+                                    Boolean(buyBlocked) || noPrice || futuresOffline
+                                  }
+                                  aria-disabled={
+                                    Boolean(buyBlocked) || noPrice || futuresOffline
+                                  }
                                   aria-label={
                                     noPrice
                                       ? "Price unavailable"
+                                      : futuresOffline
+                                        ? "Futures price unavailable — buying paused"
                                       : draftOpen && tradeDraft.action === "buy"
                                       ? buyBlocked
                                         ? "Not enough cash"
@@ -1338,6 +1606,12 @@ function StudentPortfolio({
                                     e.stopPropagation();
                                     if (noPrice) {
                                       setError("Wait for a live price before buying.");
+                                      return;
+                                    }
+                                    if (futuresOffline) {
+                                      setError(
+                                        "Commodity buys need live futures prices. Try again in a few minutes — selling still works."
+                                      );
                                       return;
                                     }
                                     if (draftOpen && tradeDraft.action === "buy") {
@@ -1354,6 +1628,8 @@ function StudentPortfolio({
                                     </span>
                                   ) : noPrice ? (
                                     "No price"
+                                  ) : futuresOffline ? (
+                                    "Paused"
                                   ) : (
                                     "Buy"
                                   )}
@@ -2000,7 +2276,7 @@ function StudentPortfolio({
             </div>
           )}
 
-          {!showClass && !showNews && (
+          {!showClass && !showNews && !showBoard && (
           <section className="holdings" aria-label="Your holdings">
             <div className="holdings-head">
               <h3>Your holdings</h3>
@@ -2530,6 +2806,7 @@ export default function App() {
   const [studentSession, setStudentSessionState] = useState(
     initialJoin ? null : getStudentSession()
   );
+  const [soundOn, setSoundOn] = useState(readSoundPref);
   const [teacher, setTeacher] = useState(null);
   const [teacherReady, setTeacherReady] = useState(Boolean(initialJoin));
   const [apiStudents, setApiStudents] = useState([]);
@@ -2659,8 +2936,20 @@ export default function App() {
   }, [activeClassId, studentSession, teacher]);
 
   useEffect(() => {
-    setClickMuted(Boolean(joinCode) || Boolean(teacher) || (!studentSession && teacherReady));
-  }, [joinCode, teacher, studentSession, teacherReady]);
+    const forceMute =
+      Boolean(joinCode) ||
+      Boolean(teacher) ||
+      (!studentSession && teacherReady);
+    setClickMuted(forceMute || !soundOn);
+  }, [joinCode, teacher, studentSession, teacherReady, soundOn]);
+
+  function toggleStudentSound() {
+    setSoundOn((prev) => {
+      const next = !prev;
+      writeSoundPref(next);
+      return next;
+    });
+  }
 
   const classStudents = (() => {
     const byId = new Map(apiStudents.map((s) => [String(s.id), s]));
@@ -2777,6 +3066,7 @@ export default function App() {
         enabledMarkets={enabledMarkets}
         investmentGoal={investmentGoal}
         classId={studentSession.classId || ""}
+        className={studentSession.className || ""}
         firestoreStudentId={studentSession.firestoreStudentId || ""}
         portfolioRefreshToken={portfolioRefreshToken}
         busy={busy}
@@ -2832,6 +3122,42 @@ export default function App() {
               onClick={handleSignOutStudent}
             >
               Sign out
+            </button>
+            <button
+              type="button"
+              className={`sound-toggle${soundOn ? "" : " is-off"}`}
+              aria-pressed={soundOn}
+              aria-label={soundOn ? "Turn sound effects off" : "Turn sound effects on"}
+              title={soundOn ? "Sound on" : "Sound off"}
+              onClick={toggleStudentSound}
+            >
+              {soundOn ? (
+                <svg
+                  className="sound-toggle-icon"
+                  viewBox="0 0 24 24"
+                  width="28"
+                  height="28"
+                  aria-hidden="true"
+                >
+                  <path
+                    fill="currentColor"
+                    d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"
+                  />
+                </svg>
+              ) : (
+                <svg
+                  className="sound-toggle-icon"
+                  viewBox="0 0 24 24"
+                  width="28"
+                  height="28"
+                  aria-hidden="true"
+                >
+                  <path
+                    fill="currentColor"
+                    d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z"
+                  />
+                </svg>
+              )}
             </button>
           </div>
         ) : teacher && !joinCode ? (

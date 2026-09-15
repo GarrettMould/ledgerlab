@@ -184,6 +184,7 @@ def list_students(class_id: str) -> list[dict]:
                 "created_at": created_at,
                 "auth_uid": data.get("authUid"),
                 "class_id": class_id,
+                "holdings_count": int(data.get("holdingsCount") or 0),
                 "last_total_value": (
                     float(data["lastTotalValue"])
                     if data.get("lastTotalValue") is not None
@@ -369,6 +370,11 @@ def list_snapshots(class_id: str, student_id: str) -> list[dict]:
     return out
 
 
+def has_any_snapshot(class_id: str, student_id: str) -> bool:
+    """Cheap existence check — avoids streaming the full history on every page load."""
+    return next(snapshots_col(class_id, student_id).limit(1).stream(), None) is not None
+
+
 def add_snapshot(
     class_id: str,
     student_id: str,
@@ -379,20 +385,18 @@ def add_snapshot(
     recorded_at: str | None = None,
 ) -> None:
     ts = recorded_at or utc_now_iso()
-    # Avoid order_by queries (index / mixed-type pitfalls). Dedupe in memory.
-    existing = list_snapshots(class_id, student_id)
-    if existing:
-        latest = existing[-1]
-        if abs(float(latest.get("total_value") or 0) - float(total_value)) < 0.005:
+    # Dedupe using cached totals on the student doc (no full snapshot scan).
+    existing = get_student(class_id, student_id)
+    if existing and existing.get("last_total_value") is not None:
+        if abs(float(existing["last_total_value"]) - float(total_value)) < 0.005:
             try:
-                prev = datetime.fromisoformat(str(latest.get("recorded_at") or ""))
-                now = datetime.fromisoformat(ts)
-                if prev.tzinfo is None:
-                    prev = prev.replace(tzinfo=timezone.utc)
-                if now.tzinfo is None:
-                    now = now.replace(tzinfo=timezone.utc)
-                if abs((now - prev).total_seconds()) < 15:
-                    return
+                snap = student_ref(class_id, student_id).get()
+                data = snap.to_dict() or {}
+                updated = data.get("updatedAt")
+                if hasattr(updated, "timestamp"):
+                    age = datetime.now(timezone.utc).timestamp() - float(updated.timestamp())
+                    if age < 60:
+                        return
             except Exception:
                 pass
 
@@ -424,3 +428,132 @@ def delete_student(class_id: str, student_id: str) -> bool:
         snap.reference.delete()
     ref.delete()
     return True
+
+
+def class_ref(class_id: str):
+    return db().collection("classes").document(class_id)
+
+
+def get_class(class_id: str) -> dict | None:
+    snap = class_ref(class_id).get()
+    if not snap.exists:
+        return None
+    data = snap.to_dict() or {}
+    data["id"] = snap.id
+    return data
+
+
+def _rank_popular_stocks(rows: list[dict]) -> list[dict]:
+    cleaned = []
+    for row in rows:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        holders = max(0, int(row.get("holders") or 0))
+        shares = max(0.0, float(row.get("shares") or 0))
+        if holders <= 0 or shares <= 1e-9:
+            continue
+        cleaned.append(
+            {
+                "ticker": ticker,
+                "name": str(row.get("name") or ticker),
+                "holders": holders,
+                "shares": round(shares, 4),
+            }
+        )
+    cleaned.sort(key=lambda r: (-r["holders"], -r["shares"], r["ticker"]))
+    return cleaned
+
+
+def get_popular_stocks(class_id: str) -> list[dict] | None:
+    """Return cached popular stocks, or None if the cache has never been built."""
+    snap = class_ref(class_id).get()
+    if not snap.exists:
+        return []
+    data = snap.to_dict() or {}
+    if "popularStocks" not in data:
+        return None
+    rows = data.get("popularStocks") or []
+    if not isinstance(rows, list):
+        return []
+    return _rank_popular_stocks(rows)
+
+
+def write_popular_stocks(class_id: str, rows: list[dict]) -> list[dict]:
+    ranked = _rank_popular_stocks(rows)
+    class_ref(class_id).set(
+        {
+            "popularStocks": ranked,
+            "popularStocksUpdatedAt": utc_now_iso(),
+        },
+        merge=True,
+    )
+    return ranked
+
+
+def rebuild_popular_stocks(class_id: str, stock_names: dict[str, str]) -> list[dict]:
+    """Scan roster holdings once and cache stock popularity on the class doc."""
+    allowed = {str(t).upper(): (n or t) for t, n in (stock_names or {}).items()}
+    agg: dict[str, dict] = {}
+    for student in list_students(class_id):
+        for holding in list_holdings(class_id, student["id"]):
+            ticker = str(holding.get("ticker") or "").upper()
+            if ticker not in allowed:
+                continue
+            shares = float(holding.get("shares") or 0)
+            if shares <= 1e-9:
+                continue
+            row = agg.setdefault(
+                ticker,
+                {
+                    "ticker": ticker,
+                    "name": allowed[ticker],
+                    "holders": 0,
+                    "shares": 0.0,
+                },
+            )
+            row["holders"] += 1
+            row["shares"] += shares
+    return write_popular_stocks(class_id, list(agg.values()))
+
+
+def ensure_popular_stocks(class_id: str, stock_names: dict[str, str]) -> list[dict]:
+    cached = get_popular_stocks(class_id)
+    if cached is not None:
+        return cached
+    return rebuild_popular_stocks(class_id, stock_names)
+
+
+def adjust_popular_stock(
+    class_id: str,
+    ticker: str,
+    *,
+    name: str,
+    holders_delta: int = 0,
+    shares_delta: float = 0.0,
+) -> list[dict]:
+    """Cheap incremental update after a stock buy/sell (1 class-doc read + write)."""
+    ticker = str(ticker or "").strip().upper()
+    if not ticker:
+        return get_popular_stocks(class_id) or []
+
+    cached = get_popular_stocks(class_id)
+    if cached is None:
+        # Cache not built yet — leave rebuild for ensure/API rather than scanning here.
+        return []
+
+    by_ticker = {row["ticker"]: dict(row) for row in cached}
+    row = by_ticker.get(ticker) or {
+        "ticker": ticker,
+        "name": name or ticker,
+        "holders": 0,
+        "shares": 0.0,
+    }
+    row["name"] = name or row.get("name") or ticker
+    row["holders"] = max(0, int(row.get("holders") or 0) + int(holders_delta))
+    row["shares"] = max(0.0, float(row.get("shares") or 0) + float(shares_delta))
+    if row["holders"] <= 0 or row["shares"] <= 1e-9:
+        by_ticker.pop(ticker, None)
+    else:
+        by_ticker[ticker] = row
+    return write_popular_stocks(class_id, list(by_ticker.values()))

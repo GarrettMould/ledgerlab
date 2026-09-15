@@ -1,8 +1,9 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { getStandings } from "./api";
+import { getStandings, getStudent } from "./api";
 import { listClassStudents } from "./classStore";
 import {
+  AvatarCanvas,
   ClassWalkingStage,
   classFishWalker,
   loadSavedOutfit,
@@ -10,12 +11,15 @@ import {
   stripPlayerFishForm,
 } from "./StudentCharacter";
 
-function money(n) {
+const STRATEGY_PLACEHOLDER =
+  "This student hasn’t written an investing strategy yet.";
+
+function money(n, digits = 0) {
   if (n == null || Number.isNaN(n)) return "—";
   return n.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: 0,
+    maximumFractionDigits: digits,
   });
 }
 
@@ -31,10 +35,36 @@ function tradingIdForSeat(seat) {
   return String(seat.apiStudentId || seat.id);
 }
 
+function topHoldingsFromPortfolio(portfolio) {
+  const rows = Array.isArray(portfolio?.holdings) ? portfolio.holdings : [];
+  return [...rows]
+    .map((h) => {
+      const value =
+        h.market_value != null
+          ? Number(h.market_value)
+          : h.equity != null
+            ? Number(h.equity)
+            : Number(h.avg_cost || 0) * Number(h.shares || 0);
+      return {
+        ticker: h.ticker,
+        name: h.name || h.ticker,
+        value: Number.isFinite(value) ? value : 0,
+        shares: Number(h.shares) || 0,
+      };
+    })
+    .filter((h) => h.ticker && h.value > 0.005)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 3);
+}
+
 export default function ClassView({ currentStudentId, classId, onBack }) {
   const [roster, setRoster] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [profileHoldings, setProfileHoldings] = useState([]);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -72,6 +102,8 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
             total_value: total,
             netWorth: total,
             outfit: seat.outfit || null,
+            investmentGoal: seat.investmentGoal || null,
+            strategyBio: String(seat.strategyBio || "").trim() || null,
           };
         });
         // Include any ledger-only rows missing from the client roster.
@@ -91,6 +123,8 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
             total_value: Number(row.total_value) || 0,
             netWorth: Number(row.total_value) || 0,
             outfit: null,
+            investmentGoal: null,
+            strategyBio: null,
           });
         }
         if (!cancelled) setRoster(rows);
@@ -109,14 +143,48 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (e) => {
-      if (e.key === "Escape") onBack();
+      if (e.key !== "Escape") return;
+      if (selected) {
+        setSelected(null);
+        return;
+      }
+      onBack();
     };
     document.addEventListener("keydown", onKey);
     return () => {
       document.body.style.overflow = prev;
       document.removeEventListener("keydown", onKey);
     };
-  }, [onBack]);
+  }, [onBack, selected]);
+
+  useEffect(() => {
+    if (!selected || !classId) {
+      setProfileHoldings([]);
+      setProfileError("");
+      setProfileLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setProfileLoading(true);
+    setProfileError("");
+    setProfileHoldings([]);
+    getStudent(selected.id, classId)
+      .then((portfolio) => {
+        if (cancelled) return;
+        setProfileHoldings(topHoldingsFromPortfolio(portfolio));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setProfileError(err.message || "Could not load holdings.");
+        setProfileHoldings([]);
+      })
+      .finally(() => {
+        if (!cancelled) setProfileLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected, classId]);
 
   const ranked = useMemo(() => {
     const rows = [...roster];
@@ -150,6 +218,18 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
     );
     return row?.rank ?? null;
   }, [ranked, currentStudentId]);
+
+  const selectedOutfit = selected
+    ? outfitForSeat(
+        { id: selected.seatId, outfit: selected.outfit },
+        selected.id,
+        selected.name
+      )
+    : null;
+
+  function closeProfile() {
+    setSelected(null);
+  }
 
   const overlay = (
     <div className="standings-overlay" role="dialog" aria-modal="true" aria-label="Class standings">
@@ -233,7 +313,14 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
                         >
                           <td className="standings-player">
                             <span className="standings-rank">#{s.rank}</span>
-                            <strong className="standings-name">{s.name}</strong>
+                            <button
+                              type="button"
+                              className="standings-name-btn"
+                              data-click="select"
+                              onClick={() => setSelected(s)}
+                            >
+                              <strong className="standings-name">{s.name}</strong>
+                            </button>
                             {isYou ? <span className="standings-you-pill">You</span> : null}
                           </td>
                           <td className="standings-value">
@@ -250,6 +337,102 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {selected && (
+        <div
+          className="standings-profile-overlay"
+          role="presentation"
+          onClick={closeProfile}
+        >
+          <div
+            className="standings-profile-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="standings-profile-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="standings-profile-hero">
+              <div className="standings-profile-avatar" aria-hidden="true">
+                <Suspense
+                  fallback={
+                    <div className="standings-profile-avatar-fallback">
+                      <span className="busy-spinner" />
+                    </div>
+                  }
+                >
+                  {selectedOutfit ? (
+                    <AvatarCanvas
+                      outfit={selectedOutfit}
+                      mode="headshot"
+                      className="standings-profile-stage"
+                    />
+                  ) : null}
+                </Suspense>
+              </div>
+
+              <div className="standings-profile-identity">
+                <p className="standings-profile-kicker">
+                  #{selected.rank}
+                  {(selected.id === currentStudentId ||
+                    selected.seatId === currentStudentId) &&
+                    " · You"}
+                </p>
+                <h3 id="standings-profile-title">{selected.name}</h3>
+                <p className="standings-profile-value">
+                  {money(selected.netWorth)}
+                  <span> portfolio</span>
+                </p>
+              </div>
+            </div>
+
+            <section className="standings-profile-section">
+              <h4>Top holdings</h4>
+              {profileLoading && (
+                <p className="standings-profile-note">Loading holdings…</p>
+              )}
+              {!profileLoading && profileError && (
+                <p className="standings-profile-note">{profileError}</p>
+              )}
+              {!profileLoading && !profileError && profileHoldings.length === 0 && (
+                <p className="standings-profile-note">
+                  No investments yet — mostly cash.
+                </p>
+              )}
+              {!profileLoading && profileHoldings.length > 0 && (
+                <ol className="standings-profile-holdings">
+                  {profileHoldings.map((h) => (
+                    <li key={h.ticker}>
+                      <span className="standings-profile-holding-main">
+                        <strong>{h.ticker}</strong>
+                        <span>{h.name}</span>
+                      </span>
+                      <span className="standings-profile-holding-val">
+                        {money(h.value, 2)}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
+
+            <section className="standings-profile-section">
+              <h4>Investment strategy</h4>
+              <p className="standings-profile-strategy">
+                {selected.strategyBio || STRATEGY_PLACEHOLDER}
+              </p>
+            </section>
+
+            <button
+              type="button"
+              className="primary-btn standings-profile-done"
+              data-click="confirm"
+              onClick={closeProfile}
+            >
+              Done
+            </button>
+          </div>
         </div>
       )}
     </div>

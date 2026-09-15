@@ -51,12 +51,78 @@ TREASURY_CACHE_PATH = _DATA_DIR / "treasury_yields_cache.json"
 app = Flask(__name__)
 CORS(app)
 
+
+@app.errorhandler(Exception)
+def api_unhandled_error(exc):
+    """Return JSON for API crashes so the UI doesn’t show a generic ‘unreachable’ message."""
+    from werkzeug.exceptions import HTTPException
+
+    if isinstance(exc, HTTPException):
+        payload = {"error": exc.description or exc.name}
+        if (request.path or "").startswith("/api"):
+            return jsonify(payload), exc.code
+        return exc
+    msg = str(exc).strip() or exc.__class__.__name__
+    low = msg.lower()
+    if "resource_exhausted" in low or "quota exceeded" in low or "429" in low:
+        return jsonify({
+            "error": (
+                "Firestore quota is exhausted for today (too many classroom reads/writes). "
+                "Trading pauses until quota resets, or upgrade the Firebase billing plan. "
+                "Teachers: avoid mass-refreshing the roster; students: wait a minute and retry."
+            ),
+            "type": "QuotaExceeded",
+        }), 503
+    if "permission" in low or "403" in low or "unauthenticated" in low:
+        msg = (
+            "Firestore rejected the API credentials. "
+            "Check FIREBASE_SERVICE_ACCOUNT_JSON / FIREBASE_PROJECT_ID on Vercel "
+            f"({msg})"
+        )
+    return jsonify({"error": msg, "type": exc.__class__.__name__}), 500
+
+
 # In-memory quote cache: ticker -> (price, fetched_at, change_pct)
 _quote_cache: dict[str, tuple[float, float, float | None]] = {}
+# Where the cached classroom price came from (yahoo futures vs ETF proxy, etc.).
+_quote_source_by_ticker: dict[str, str] = {}
 _category_cache: dict[str, tuple[float, list[dict]]] = {}
 CACHE_TTL_SECONDS = 60 * 10  # 10 minutes — classroom quotes don't need second-by-second freshness
 # Keep showing last-known prices for a week if live providers fail (classroom continuity).
 STALE_OK_SECONDS = 60 * 60 * 24 * 7
+
+# Commodity buys only when the unit price came from Yahoo futures (not ETF proxies).
+COMMODITY_BUY_SOURCES = frozenset({"yahoo", "yfinance"})
+
+
+def _remember_quote(
+    ticker: str,
+    price: float,
+    fetched_at: float,
+    change_pct: float | None,
+    source: str | None,
+) -> None:
+    _quote_cache[ticker] = (price, fetched_at, change_pct)
+    if source:
+        _quote_source_by_ticker[ticker] = source
+
+
+def _forget_quote(ticker: str) -> None:
+    _quote_cache.pop(ticker, None)
+    _quote_source_by_ticker.pop(ticker, None)
+
+
+def quote_source_for(ticker: str) -> str | None:
+    return _quote_source_by_ticker.get(ticker)
+
+
+def commodity_buy_allowed(ticker: str) -> bool:
+    """Stocks/FX always OK; commodities need a Yahoo futures-sourced unit price."""
+    symbol = (ticker or "").strip().upper()
+    if symbol not in COMMODITY_BY_TICKER:
+        return True
+    src = (quote_source_for(symbol) or "").strip().lower()
+    return src in COMMODITY_BUY_SOURCES
 
 FINNHUB_API_KEY = (os.environ.get("FINNHUB_API_KEY") or "").strip()
 FINNHUB_BASE = "https://finnhub.io/api/v1"
@@ -69,8 +135,83 @@ HTTP_HEADERS = {
 # Free tier is ~60 calls/min — pause briefly if we get throttled.
 _finnhub_cooldown_until = 0.0
 FINNHUB_COOLDOWN_SECONDS = 65
+# Yahoo chart/futures 429s — skip Yahoo for a bit so Finnhub can answer fast.
+_yahoo_cooldown_until = 0.0
+YAHOO_COOLDOWN_SECONDS = 90
 _last_quote_provider_error: str | None = None
 _last_quote_source: str | None = None
+
+# CNN Fear & Greed (stock-market sentiment) — cache for an hour; changes slowly.
+_fear_greed_cache: dict | None = None
+_fear_greed_fetched_at = 0.0
+FEAR_GREED_TTL_SECONDS = 60 * 60
+
+
+def _normalize_fear_greed_rating(raw: str | None, score: float) -> str:
+    text = str(raw or "").strip().lower().replace("_", " ")
+    if text in {
+        "extreme fear",
+        "fear",
+        "neutral",
+        "greed",
+        "extreme greed",
+    }:
+        return text
+    if score <= 24:
+        return "extreme fear"
+    if score <= 44:
+        return "fear"
+    if score <= 55:
+        return "neutral"
+    if score <= 75:
+        return "greed"
+    return "extreme greed"
+
+
+def fetch_fear_greed(*, force_refresh: bool = False) -> dict | None:
+    """Live CNN Fear & Greed Index via CNN's public dataviz JSON endpoint."""
+    global _fear_greed_cache, _fear_greed_fetched_at
+    now = time.time()
+    if (
+        not force_refresh
+        and _fear_greed_cache is not None
+        and now - _fear_greed_fetched_at < FEAR_GREED_TTL_SECONDS
+    ):
+        return _fear_greed_cache
+
+    start = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+    url = f"https://production.dataviz.cnn.io/index/fearandgreed/graphdata/{start}"
+    headers = {
+        **HTTP_HEADERS,
+        "Accept": "application/json",
+        "Referer": "https://www.cnn.com/markets/fear-and-greed",
+    }
+    try:
+        res = requests.get(url, headers=headers, timeout=12)
+        res.raise_for_status()
+        payload = res.json() or {}
+        fg = payload.get("fear_and_greed") or {}
+        score = float(fg.get("score"))
+        rating = _normalize_fear_greed_rating(fg.get("rating"), score)
+        previous_close = fg.get("previous_close")
+        snapshot = {
+            "score": round(score, 1),
+            "rating": rating,
+            "previousClose": (
+                round(float(previous_close), 1)
+                if previous_close is not None
+                else None
+            ),
+            "updatedAt": fg.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+            "source": "cnn",
+        }
+        _fear_greed_cache = snapshot
+        _fear_greed_fetched_at = now
+        return snapshot
+    except Exception:
+        if _fear_greed_cache is not None:
+            return {**_fear_greed_cache, "stale": True}
+        return None
 
 
 def _finnhub_on_cooldown() -> bool:
@@ -80,6 +221,15 @@ def _finnhub_on_cooldown() -> bool:
 def _trip_finnhub_cooldown() -> None:
     global _finnhub_cooldown_until
     _finnhub_cooldown_until = time.time() + FINNHUB_COOLDOWN_SECONDS
+
+
+def _yahoo_on_cooldown() -> bool:
+    return time.time() < _yahoo_cooldown_until
+
+
+def _trip_yahoo_cooldown() -> None:
+    global _yahoo_cooldown_until
+    _yahoo_cooldown_until = time.time() + YAHOO_COOLDOWN_SECONDS
 
 
 def finnhub_configured() -> bool:
@@ -553,6 +703,14 @@ MARKET_CATALOG = {
             },
         },
         {
+            "ticker": "RBLX",
+            "name": "Roblox",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Roblox is an online platform where people play and create games. It earns money from in-game purchases and premium subscriptions.",
+            },
+        },
+        {
             "ticker": "LYV",
             "name": "Live Nation",
             "industry": "Entertainment",
@@ -974,7 +1132,9 @@ MARKET_CATALOG = {
             "kind": "Precious metal",
             "yahoo": "GC=F",
             "finnhub": "GLD",
-            "scale": 10,
+            # GLD ≈ 1/10 oz historically; ~×11 matches current GC=F better than ×10.
+            "scale": 11,
+            "proxy": "scaled",
             "unit_label": "troy oz",
             "info": {
                 "summary": "Gold is a rare yellow precious metal used in jewelry, electronics, and as a store of value. The classroom price is dollars per troy ounce.",
@@ -987,6 +1147,7 @@ MARKET_CATALOG = {
             "yahoo": "SI=F",
             "finnhub": "SLV",
             "scale": 1,
+            "proxy": "unit",
             "unit_label": "troy oz",
             "info": {
                 "summary": "Silver is used in jewelry, electronics, and solar panels. Price here is dollars per troy ounce.",
@@ -998,7 +1159,9 @@ MARKET_CATALOG = {
             "kind": "Precious metal",
             "yahoo": "PL=F",
             "finnhub": "PPLT",
-            "scale": 10,
+            # PPLT share ≈ 1/111 oz (not 1/10 like GLD). Live used ×10 → ~$160 vs ~$1,780/oz.
+            "scale": 111,
+            "proxy": "scaled",
             "unit_label": "troy oz",
             "info": {
                 "summary": "Platinum is used in catalytic converters, jewelry, and industry. Price here is dollars per troy ounce.",
@@ -1009,10 +1172,10 @@ MARKET_CATALOG = {
             "name": "Crude Oil",
             "kind": "Energy",
             "yahoo": "CL=F",
-            # USO is an oil ETF — its share price is NOT $/barrel. Do not use as a
-            # unit-price proxy (scale would need to be ≠ 1 to convert).
+            # USO is not $/barrel; scale approximates WTI when Yahoo futures are blocked.
             "finnhub": "USO",
-            "scale": 1,
+            "scale": 0.65,
+            "proxy": "approx",
             "unit_label": "barrel",
             "info": {
                 "summary": "Crude oil is refined into fuels and plastics. Price here tracks WTI crude futures in dollars per barrel.",
@@ -1024,7 +1187,8 @@ MARKET_CATALOG = {
             "kind": "Energy",
             "yahoo": "NG=F",
             "finnhub": "UNG",
-            "scale": 1,
+            "scale": 0.28,
+            "proxy": "approx",
             "unit_label": "MMBtu",
             "info": {
                 "summary": "Natural gas powers electricity and heat. Price here tracks the natural gas market in dollars per MMBtu.",
@@ -1036,7 +1200,8 @@ MARKET_CATALOG = {
             "kind": "Industrial metal",
             "yahoo": "HG=F",
             "finnhub": "CPER",
-            "scale": 1,
+            "scale": 0.17,
+            "proxy": "approx",
             "unit_label": "lb",
             "info": {
                 "summary": "Copper is used in wiring, construction, and EVs. Price here tracks the copper market in dollars per pound.",
@@ -1048,7 +1213,8 @@ MARKET_CATALOG = {
             "kind": "Agriculture",
             "yahoo": "ZC=F",
             "finnhub": "CORN",
-            "scale": 1,
+            "scale": 0.27,
+            "proxy": "approx",
             "divisor": 100,
             "unit_label": "bushel",
             "info": {
@@ -1061,7 +1227,8 @@ MARKET_CATALOG = {
             "kind": "Agriculture",
             "yahoo": "ZW=F",
             "finnhub": "WEAT",
-            "scale": 1,
+            "scale": 0.28,
+            "proxy": "approx",
             "divisor": 100,
             "unit_label": "bushel",
             "info": {
@@ -1074,7 +1241,8 @@ MARKET_CATALOG = {
             "kind": "Agriculture",
             "yahoo": "ZS=F",
             "finnhub": "SOYB",
-            "scale": 1,
+            "scale": 0.47,
+            "proxy": "approx",
             "divisor": 100,
             "unit_label": "bushel",
             "info": {
@@ -1087,7 +1255,8 @@ MARKET_CATALOG = {
             "kind": "Agriculture",
             "yahoo": "SB=F",
             "finnhub": "CANE",
-            "scale": 1,
+            "scale": 0.017,
+            "proxy": "approx",
             "divisor": 100,
             "unit_label": "lb",
             "info": {
@@ -1100,7 +1269,8 @@ MARKET_CATALOG = {
             "kind": "Agriculture",
             "yahoo": "KC=F",
             "finnhub": "JO",
-            "scale": 1,
+            "scale": 0.052,
+            "proxy": "approx",
             "divisor": 100,
             "unit_label": "lb",
             "info": {
@@ -1359,14 +1529,27 @@ def commodity_price_scale(local_ticker: str) -> float:
 
 def commodity_etf_proxy_ok(local_ticker: str) -> bool:
     """
-    Finnhub free tier has no futures — we sometimes map to an ETF (GLD, USO, …).
-    Only treat that ETF as the classroom unit price when `scale` is an intentional
-    conversion (e.g. GLD × 10 ≈ $/oz). scale == 1 with a different feed ticker
-    means the ETF share price is NOT $/bbl, $/MMBtu, etc. (USO ≈ $155 ≠ WTI ≈ $100).
+    Finnhub free tier has no futures — we sometimes map to an ETF (GLD, SLV, …).
+
+    Catalog `proxy` modes:
+      - scaled: ETF × scale ≈ unit price (GOLD←GLD×11, PLAT←PPLT×111)
+      - unit:   ETF share ≈ one unit already (SILVER←SLV)
+      - approx: rough classroom stand-in when futures are blocked
+      - none:   never use the ETF as $/bbl, $/bushel, etc.
+
+    Legacy fallback: scale != 1 with a different feed ticker.
     """
     meta = COMMODITY_BY_TICKER.get(local_ticker) or {}
     feed = meta.get("finnhub")
-    if not feed or str(feed).upper() == str(local_ticker).upper():
+    if not feed:
+        return False
+    mode = str(meta.get("proxy") or "").strip().lower()
+    if mode in {"scaled", "unit", "approx"}:
+        return True
+    if mode in {"none", "off", "false", "0"}:
+        return False
+    # Legacy: different feed ticker + non-1 scale (e.g. GOLD←GLD×10).
+    if str(feed).upper() == str(local_ticker).upper():
         return False
     return commodity_price_scale(local_ticker) != 1.0
 
@@ -1699,10 +1882,12 @@ def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | No
         if prev_f is not None:
             prev_f = currency_usd_price(prev_f, cur_meta)
     elif local_symbol in COMMODITY_BY_TICKER:
-        # Finnhub uses ETF/proxy feeds; only scale when conversion is intentional.
+        # Finnhub uses ETF/proxy feeds; only accept intentional proxy modes.
         if not commodity_etf_proxy_ok(local_symbol):
             return local_symbol, None, None
         price, prev_f = _apply_commodity_scale(local_symbol, price, prev_f)
+        if price is None or price <= 0:
+            return local_symbol, None, None
 
     change_pct = None
     if pct is not None and not cur_meta:
@@ -1717,81 +1902,66 @@ def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | No
 
 def _yahoo_chart_quote(yahoo_symbol: str) -> tuple[float | None, float | None]:
     """Lightweight Yahoo chart quote — more reliable than yfinance under rate limits."""
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
-    try:
-        res = requests.get(
-            url,
-            params={"range": "5d", "interval": "1d"},
-            headers=HTTP_HEADERS,
-            timeout=12,
-        )
-        if res.status_code != 200:
-            return None, None
-        payload = res.json()
-        result = (payload.get("chart") or {}).get("result") or []
-        if not result:
-            return None, None
-        meta = result[0].get("meta") or {}
-        price = meta.get("regularMarketPrice")
-        prev = meta.get("chartPreviousClose")
-        if prev is None:
-            prev = meta.get("previousClose")
-        price_f = float(price) if price not in (None, 0, 0.0) else None
-        prev_f = float(prev) if prev not in (None, 0, 0.0) else None
-        if price_f is None:
-            quotes = (result[0].get("indicators") or {}).get("quote") or []
-            closes = (quotes[0].get("close") if quotes else None) or []
-            closes = [float(v) for v in closes if v is not None]
-            if closes:
-                price_f = closes[-1]
-                if len(closes) >= 2:
-                    prev_f = closes[-2]
-        return price_f, prev_f
-    except Exception:
+    from urllib.parse import quote
+
+    if _yahoo_on_cooldown():
         return None, None
+
+    # Futures tickers contain "=" (CL=F). Leaving it unencoded breaks on some hosts (Vercel).
+    encoded = quote(str(yahoo_symbol), safe="")
+    hosts = (
+        "https://query1.finance.yahoo.com",
+        "https://query2.finance.yahoo.com",
+    )
+    headers = {
+        **HTTP_HEADERS,
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    for host in hosts:
+        url = f"{host}/v8/finance/chart/{encoded}"
+        try:
+            res = requests.get(
+                url,
+                params={"range": "5d", "interval": "1d"},
+                headers=headers,
+                timeout=4,
+            )
+            if res.status_code == 429:
+                _trip_yahoo_cooldown()
+                return None, None
+            if res.status_code != 200:
+                continue
+            payload = res.json()
+            result = (payload.get("chart") or {}).get("result") or []
+            if not result:
+                continue
+            meta = result[0].get("meta") or {}
+            price = meta.get("regularMarketPrice")
+            prev = meta.get("chartPreviousClose")
+            if prev is None:
+                prev = meta.get("previousClose")
+            price_f = float(price) if price not in (None, 0, 0.0) else None
+            prev_f = float(prev) if prev not in (None, 0, 0.0) else None
+            if price_f is None:
+                quotes = (result[0].get("indicators") or {}).get("quote") or []
+                closes = (quotes[0].get("close") if quotes else None) or []
+                closes = [float(v) for v in closes if v is not None]
+                if closes:
+                    price_f = closes[-1]
+                    if len(closes) >= 2:
+                        prev_f = closes[-2]
+            if price_f is not None:
+                return price_f, prev_f
+        except Exception:
+            continue
+    return None, None
 
 
 def _yfinance_quote_one(local_symbol: str) -> tuple[str, float | None, float | None]:
-    """Live quote via Yahoo Finance (chart API first, yfinance library fallback)."""
-    global _last_quote_provider_error
+    """Live quote via Yahoo chart API only (no yfinance lib — it hangs under rate limits)."""
     yahoo = yahoo_quote_symbol(local_symbol)
-    price = None
-    prev_f = None
-
     price, prev_f = _yahoo_chart_quote(yahoo)
-
-    if price is None:
-        try:
-            import yfinance as yf
-
-            ticker = yf.Ticker(yahoo)
-            try:
-                fast = ticker.fast_info
-                last = getattr(fast, "last_price", None)
-                if last is None and isinstance(fast, dict):
-                    last = fast.get("last_price") or fast.get("lastPrice")
-                prev = getattr(fast, "previous_close", None)
-                if prev is None and isinstance(fast, dict):
-                    prev = fast.get("previous_close") or fast.get("previousClose")
-                if last not in (None, 0, 0.0):
-                    price = float(last)
-                if prev not in (None, 0, 0.0):
-                    prev_f = float(prev)
-            except Exception:
-                price = None
-                prev_f = None
-
-            if price is None:
-                hist = ticker.history(period="5d", interval="1d", auto_adjust=True)
-                if hist is not None and not getattr(hist, "empty", True) and "Close" in hist.columns:
-                    closes = [float(v) for v in hist["Close"].tolist() if v is not None]
-                    if closes:
-                        price = closes[-1]
-                        if len(closes) >= 2:
-                            prev_f = closes[-2]
-        except Exception as exc:
-            _last_quote_provider_error = f"yfinance: {exc}"
-            return local_symbol, None, None
 
     if price is None:
         return local_symbol, None, None
@@ -1814,6 +1984,27 @@ def _yfinance_quote_one(local_symbol: str) -> tuple[str, float | None, float | N
     return local_symbol, price, change_pct
 
 
+def _commodity_proxy_via_yahoo_etf(
+    local_symbol: str,
+) -> tuple[str, float | None, float | None]:
+    """When futures are blocked, price the Finnhub ETF on Yahoo and apply scale."""
+    if local_symbol not in COMMODITY_BY_TICKER or not commodity_etf_proxy_ok(local_symbol):
+        return local_symbol, None, None
+    feed = (COMMODITY_BY_TICKER[local_symbol].get("finnhub") or "").strip()
+    if not feed:
+        return local_symbol, None, None
+    price, prev_f = _yahoo_chart_quote(feed)
+    if price is None:
+        return local_symbol, None, None
+    price, prev_f = _apply_commodity_scale(local_symbol, price, prev_f)
+    if price is None or price <= 0:
+        return local_symbol, None, None
+    change_pct = None
+    if prev_f:
+        change_pct = ((price - prev_f) / prev_f) * 100
+    return local_symbol, price, change_pct
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1829,6 +2020,9 @@ def _load_disk_quotes() -> None:
                 float(row["fetched_at"]),
                 row.get("change_pct"),
             )
+            src = row.get("source")
+            if src:
+                _quote_source_by_ticker[ticker] = str(src)
     except Exception:
         pass
 
@@ -1849,7 +2043,7 @@ def _commodity_quote_from_feed_cache(
     scaled = float(price) * commodity_price_scale(local)
     src = _quote_cache.get(feed)
     if src:
-        _quote_cache[local] = (scaled, src[1], change_pct)
+        _remember_quote(local, scaled, src[1], change_pct, "proxy")
     return scaled, change_pct
 
 
@@ -1866,22 +2060,35 @@ def _seed_commodity_quotes_from_feeds() -> None:
         if not src or src[0] is None:
             continue
         scale = commodity_price_scale(local)
-        _quote_cache[local] = (float(src[0]) * scale, src[1], src[2])
+        _remember_quote(local, float(src[0]) * scale, src[1], src[2], "proxy")
 
 
 def _scrub_bad_commodity_proxy_cache() -> None:
-    """Drop classroom commodity quotes that must not come from unscaled ETF shares."""
+    """
+    Drop classroom commodity quotes that must not come from unscaled ETF shares.
+    Keep Yahoo futures prices (true $/bbl, $/bushel, …) — only scrub when we
+    have no futures path and Finnhub proxy is disallowed.
+
+    Also drop known-bad platinum marks from the old PPLT×10 bug (~$160/oz).
+    """
     changed = False
     for local, meta in COMMODITY_BY_TICKER.items():
         if commodity_etf_proxy_ok(local):
             continue
+        # Futures-backed commodities: a cached price is almost certainly from Yahoo.
+        if meta.get("yahoo"):
+            continue
         feed = meta.get("finnhub")
         if not feed or feed == local:
             continue
-        # OIL←USO etc.: never trust a cached "unit" price that tracks the ETF feed.
         if local in _quote_cache:
-            del _quote_cache[local]
+            _forget_quote(local)
             changed = True
+    # Legacy PLAT: Finnhub used PPLT×10 (~$160) while PL=F is ~$1,000+/oz.
+    plat = _quote_cache.get("PLAT")
+    if plat and plat[0] is not None and float(plat[0]) < 500:
+        _forget_quote("PLAT")
+        changed = True
     if changed:
         _save_disk_quotes()
 
@@ -1892,6 +2099,7 @@ def _save_disk_quotes() -> None:
             "price": price,
             "fetched_at": fetched_at,
             "change_pct": change_pct,
+            "source": _quote_source_by_ticker.get(ticker),
         }
         for ticker, (price, fetched_at, change_pct) in _quote_cache.items()
     }
@@ -2269,23 +2477,23 @@ def fetch_quotes_batch(
 
     now = datetime.now(timezone.utc).timestamp()
 
-    # Commodities: prefer Yahoo futures (true $/oz, $/bbl, …) when reachable.
+    # Commodities: prefer Yahoo futures when reachable; skip entirely while cooling
+    # so Finnhub proxies can answer within the frontend timeout.
     commodity_need = [s for s in need if s in COMMODITY_BY_TICKER]
-    if commodity_need:
-        workers = min(4, len(commodity_need))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_yfinance_quote_one, symbol) for symbol in commodity_need]
-            for fut in as_completed(futures):
-                try:
-                    local, price, change_pct = fut.result()
-                except Exception as exc:
-                    _last_quote_provider_error = f"yfinance: {exc}"
-                    continue
-                if price is None:
-                    continue
-                out[local] = (price, change_pct)
-                _quote_cache[local] = (price, now, change_pct)
-                sources_used.add("yfinance")
+    if commodity_need and not _yahoo_on_cooldown():
+        for symbol in commodity_need:
+            if _yahoo_on_cooldown():
+                break
+            try:
+                local, price, change_pct = _yfinance_quote_one(symbol)
+            except Exception as exc:
+                _last_quote_provider_error = f"yfinance: {exc}"
+                continue
+            if price is None:
+                continue
+            out[local] = (price, change_pct)
+            _remember_quote(local, price, now, change_pct, "yahoo")
+            sources_used.add("yfinance")
 
     # Finnhub for stocks/FX and commodity ETF proxies when futures missed.
     finnhub_need = [
@@ -2309,11 +2517,36 @@ def fetch_quotes_batch(
                 if price is None:
                     continue
                 out[local] = (price, change_pct)
-                _quote_cache[local] = (price, now, change_pct)
+                src_label = "proxy" if local in COMMODITY_BY_TICKER else "finnhub"
+                _remember_quote(local, price, now, change_pct, src_label)
                 sources_used.add("finnhub")
 
+    # Last resort for commodities: Yahoo-quote the ETF/ETN proxy (e.g. JO for coffee)
+    # when futures are rate-limited and Finnhub has no quote for that feed.
+    commodity_proxy_need = [
+        s for s in need if out[s][0] is None and s in COMMODITY_BY_TICKER
+    ]
+    if commodity_proxy_need:
+        workers = 1
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(_commodity_proxy_via_yahoo_etf, symbol)
+                for symbol in commodity_proxy_need
+            ]
+            for fut in as_completed(futures):
+                try:
+                    local, price, change_pct = fut.result()
+                except Exception as exc:
+                    _last_quote_provider_error = f"yahoo-etf-proxy: {exc}"
+                    continue
+                if price is None:
+                    continue
+                out[local] = (price, change_pct)
+                _remember_quote(local, price, now, change_pct, "proxy")
+                sources_used.add("yahoo-etf")
+
     still_need = [s for s in need if out[s][0] is None and s not in COMMODITY_BY_TICKER]
-    if still_need:
+    if still_need and not _yahoo_on_cooldown():
         workers = min(4, len(still_need))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(_yfinance_quote_one, symbol) for symbol in still_need]
@@ -2326,8 +2559,10 @@ def fetch_quotes_batch(
                 if price is None:
                     continue
                 out[local] = (price, change_pct)
-                _quote_cache[local] = (price, now, change_pct)
+                _remember_quote(local, price, now, change_pct, "yahoo")
                 sources_used.add("yfinance")
+                if _yahoo_on_cooldown():
+                    break
 
     if any(out[s][0] is not None for s in need):
         _save_disk_quotes()
@@ -2570,6 +2805,17 @@ def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
         and now - cached_cat[0] < CACHE_TTL_SECONDS
         and all(row.get("price") is not None for row in cached_cat[1])
     ):
+        if category == "commodities":
+            refreshed = []
+            for row in cached_cat[1]:
+                next_row = dict(row)
+                next_row["price_source"] = quote_source_for(next_row["ticker"])
+                next_row["buy_ok"] = bool(
+                    next_row.get("price") is not None
+                    and commodity_buy_allowed(next_row["ticker"])
+                )
+                refreshed.append(next_row)
+            return refreshed
         return cached_cat[1]
 
     _load_disk_quotes()
@@ -2604,6 +2850,11 @@ def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
             row["unit_label"] = item["unit_label"]
         if item.get("lot"):
             row["lot"] = item["lot"]
+        if category == "commodities":
+            src = quote_source_for(item["ticker"])
+            row["price_source"] = src
+            # Only allow buys on Yahoo futures unit prices (not ETF proxies).
+            row["buy_ok"] = bool(price is not None and commodity_buy_allowed(item["ticker"]))
         final.append(row)
 
     if any(row["price"] is not None for row in final):
@@ -2742,11 +2993,67 @@ def require_firestore_class_id():
 
 @app.get("/api/health")
 def health():
+    ledger = "firestore" if using_firestore() else "sqlite"
+    firestore_error = None if using_firestore() else fs_ledger.config_error()
+    firestore_ok = None
+    if using_firestore():
+        try:
+            # Prove credentials can actually read (health alone only checks SDK init).
+            next(fs_ledger.db().collection("classes").limit(1).stream(), None)
+            firestore_ok = True
+        except Exception as exc:
+            firestore_ok = False
+            firestore_error = str(exc)
+            ledger = "firestore-error"
     return jsonify({
-        "ok": True,
-        "ledger": "firestore" if using_firestore() else "sqlite",
-        "firestore_error": None if using_firestore() else fs_ledger.config_error(),
+        "ok": firestore_ok is not False,
+        "ledger": ledger,
+        "firestore_ok": firestore_ok,
+        "firestore_error": firestore_error,
     })
+
+
+@app.get("/api/fear-greed")
+def fear_greed():
+    """CNN Fear & Greed Index (0–100). Cached ~1 hour."""
+    force = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+    data = fetch_fear_greed(force_refresh=force)
+    if not data:
+        return jsonify({"error": "Fear & Greed index is unavailable right now."}), 503
+    return jsonify(data)
+
+
+@app.get("/api/class/popular-stocks")
+def class_popular_stocks():
+    """
+    Most-held classroom stocks from a cache on the class doc.
+    Rebuilds once if the cache is missing (existing classes); later buy/sell
+    updates keep it fresh with a single class-doc write.
+    """
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if not using_firestore():
+        return jsonify({"stocks": [], "className": ""})
+    if not class_id:
+        return jsonify({"error": "X-Class-Id header (or classId) is required"}), 400
+    stock_names = {item["ticker"]: item["name"] for item in MARKET_CATALOG.get("stocks", [])}
+    force = str(request.args.get("rebuild") or "").lower() in {"1", "true", "yes"}
+    try:
+        if force:
+            rows = fs_ledger.rebuild_popular_stocks(class_id, stock_names)
+        else:
+            rows = fs_ledger.ensure_popular_stocks(class_id, stock_names)
+    except Exception as exc:
+        return jsonify({"error": f"Could not load popular stocks: {exc}"}), 500
+    cls = fs_ledger.get_class(class_id) or {}
+    return jsonify(
+        {
+            "stocks": rows[:15],
+            "className": cls.get("name") or "",
+            "updatedAt": cls.get("popularStocksUpdatedAt"),
+        }
+    )
 
 
 @app.get("/api/standings")
@@ -2853,8 +3160,8 @@ def list_students():
     if using_firestore():
         rows = []
         for student in fs_ledger.list_students(class_id):
-            holdings = fs_ledger.list_holdings(class_id, student["id"]) if refresh else []
             if refresh:
+                holdings = fs_ledger.list_holdings(class_id, student["id"])
                 rows.append(
                     serialize_portfolio(
                         student,
@@ -2865,14 +3172,24 @@ def list_students():
                     )
                 )
             else:
+                # Light roster path: one student-doc read each — do NOT fan out into
+                # holdings subcollections (that burned Firestore free-tier quota in class).
+                holdings_count = int(student.get("holdings_count") or 0)
+                cash = float(student.get("cash") or 0)
                 rows.append(
-                    serialize_portfolio(
-                        student,
-                        fs_ledger.list_holdings(class_id, student["id"]),
-                        with_portfolio=False,
-                        realestate_by_ticker=REALESTATE_BY_TICKER,
-                        fetch_quotes_batch=fetch_quotes_batch,
-                    )
+                    {
+                        "id": student["id"],
+                        "name": student.get("name") or "Student",
+                        "cash": round(cash, 2),
+                        "portfolio_value": None,
+                        "mortgage_debt": None,
+                        "total_value": round(cash, 2),
+                        "holdings_count": holdings_count,
+                        "holdings": None,
+                        "created_at": student.get("created_at"),
+                        "class_id": student.get("class_id"),
+                        "ledger": "firestore",
+                    }
                 )
         return jsonify(rows)
 
@@ -2978,16 +3295,19 @@ def get_student(student_id: str):
             realestate_by_ticker=REALESTATE_BY_TICKER,
             fetch_quotes_batch=fetch_quotes_batch,
         )
-        record_fs_snapshot(
-            class_id,
-            student_id,
-            student,
-            holdings,
-            fetch_quotes_batch,
-            cash=payload["cash"],
-            portfolio_value=payload["portfolio_value"] or 0,
-            total_value=payload["total_value"],
-        )
+        # Cache standings totals only — do NOT write a history snapshot on every page load
+        # (that was burning Firestore free-tier quota during back-to-back classes).
+        try:
+            fs_ledger.set_last_totals(
+                class_id,
+                student_id,
+                cash=payload["cash"],
+                portfolio_value=payload["portfolio_value"] or 0,
+                total_value=payload["total_value"],
+                holdings_count=payload.get("holdings_count"),
+            )
+        except Exception:
+            pass
         return jsonify(payload)
 
     try:
@@ -3596,6 +3916,18 @@ def buy_shares(student_id: str):
         return jsonify({"error": f"Could not find a live price for {ticker}"}), 404
     if price <= 0:
         return jsonify({"error": f"Invalid price for {ticker}"}), 400
+    if ticker in COMMODITY_BY_TICKER and not commodity_buy_allowed(ticker):
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "Commodity buys are paused until live futures prices are back. "
+                        "You can still sell holdings."
+                    )
+                }
+            ),
+            503,
+        )
 
     cost = price * shares
     class_id, err = require_firestore_class_id()
@@ -3644,6 +3976,22 @@ def buy_shares(student_id: str):
         holdings = fs_ledger.list_holdings(class_id, student_id)
         fs_ledger.set_cash(class_id, student_id, cash - cost, holdings_count=len(holdings))
         student["cash"] = cash - cost
+        stock_names = {item["ticker"]: item["name"] for item in MARKET_CATALOG.get("stocks", [])}
+        if ticker in stock_names:
+            try:
+                cached = fs_ledger.get_popular_stocks(class_id)
+                if cached is None:
+                    fs_ledger.rebuild_popular_stocks(class_id, stock_names)
+                else:
+                    fs_ledger.adjust_popular_stock(
+                        class_id,
+                        ticker,
+                        name=stock_names[ticker],
+                        holders_delta=0 if existing else 1,
+                        shares_delta=shares,
+                    )
+            except Exception:
+                pass
         payload = serialize_portfolio(
             student,
             holdings,
@@ -3768,6 +4116,23 @@ def sell_shares(student_id: str):
         new_cash = float(student["cash"]) + proceeds
         fs_ledger.set_cash(class_id, student_id, new_cash, holdings_count=len(holdings))
         student["cash"] = new_cash
+        stock_names = {item["ticker"]: item["name"] for item in MARKET_CATALOG.get("stocks", [])}
+        if ticker in stock_names:
+            try:
+                cached = fs_ledger.get_popular_stocks(class_id)
+                if cached is None:
+                    fs_ledger.rebuild_popular_stocks(class_id, stock_names)
+                else:
+                    sold_all = remaining < 1e-9
+                    fs_ledger.adjust_popular_stock(
+                        class_id,
+                        ticker,
+                        name=stock_names[ticker],
+                        holders_delta=-1 if sold_all else 0,
+                        shares_delta=-shares,
+                    )
+            except Exception:
+                pass
         payload = serialize_portfolio(
             student,
             holdings,

@@ -94,6 +94,41 @@ export async function getClass(classId) {
   return { id: snap.id, ...snap.data() };
 }
 
+/** Live class-doc fields for the popular-stocks ticker (1 listener, no holdings fan-out). */
+export function subscribeClassPopularStocks(classId, onData, onError) {
+  if (!classId) {
+    onData?.({ className: "", stocks: [] });
+    return () => {};
+  }
+  return onSnapshot(
+    doc(db, "classes", classId),
+    (snap) => {
+      if (!snap.exists()) {
+        onData?.({ className: "", stocks: [] });
+        return;
+      }
+      const data = snap.data() || {};
+      const rows = Array.isArray(data.popularStocks) ? data.popularStocks : [];
+      const stocks = rows
+        .map((row) => ({
+          ticker: String(row?.ticker || "").toUpperCase(),
+          name: String(row?.name || row?.ticker || ""),
+          holders: Math.max(0, Number(row?.holders) || 0),
+          shares: Math.max(0, Number(row?.shares) || 0),
+        }))
+        .filter((row) => row.ticker && row.holders > 0)
+        .sort((a, b) => b.holders - a.holders || b.shares - a.shares || a.ticker.localeCompare(b.ticker))
+        .slice(0, 15);
+      onData?.({
+        className: String(data.name || ""),
+        stocks,
+        updatedAt: data.popularStocksUpdatedAt || null,
+      });
+    },
+    (err) => onError?.(err)
+  );
+}
+
 export async function getClassByInviteCode(inviteCode) {
   const code = String(inviteCode || "")
     .trim()
@@ -439,8 +474,257 @@ export async function updateClassStudent(classId, studentId, patch) {
   });
 }
 
+export async function getClassStudent(classId, studentId) {
+  if (!classId || !studentId) return null;
+  const snap = await getDoc(doc(db, "classes", classId, "students", studentId));
+  if (!snap.exists()) return null;
+  return { id: snap.id, ...snap.data() };
+}
+
 export async function deleteClassStudent(classId, studentId) {
   await deleteDoc(doc(db, "classes", classId, "students", studentId));
+}
+
+function messagesCol(classId) {
+  return collection(db, "classes", classId, "messages");
+}
+
+function threadsCol(classId) {
+  return collection(db, "classes", classId, "threads");
+}
+
+function threadPostsCol(classId, threadId) {
+  return collection(db, "classes", classId, "threads", threadId, "posts");
+}
+
+export const STARTER_THREADS = [
+  {
+    id: "starter-daily-investments",
+    title: "Daily Investments (Tell us Your Picks)",
+  },
+  {
+    id: "starter-long-term-strategy",
+    title: "Long Term Strategy Talk",
+  },
+];
+
+function tsToIso(value) {
+  if (!value) return null;
+  if (value?.toDate) return value.toDate().toISOString();
+  if (typeof value === "string") return value;
+  return null;
+}
+
+/** Ensure the two classroom starter threads exist (idempotent). */
+export async function ensureStarterThreads(classId) {
+  if (!classId) return;
+  await Promise.all(
+    STARTER_THREADS.map(async (starter) => {
+      const ref = doc(db, "classes", classId, "threads", starter.id);
+      const snap = await getDoc(ref);
+      if (snap.exists()) return;
+      await setDoc(ref, {
+        title: starter.title,
+        isStarter: true,
+        authorName: "Ledger Lab",
+        authorId: null,
+        authorRole: "teacher",
+        replyCount: 0,
+        lastPostPreview: "",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    })
+  );
+}
+
+/** Live thread list for a class (most recently active first). */
+export function subscribeClassThreads(classId, onChange, onError) {
+  if (!classId) {
+    onChange([]);
+    return () => {};
+  }
+  const q = query(threadsCol(classId), orderBy("updatedAt", "desc"), limit(60));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const rows = snap.docs.map((d) => {
+        const data = d.data() || {};
+        return {
+          id: d.id,
+          title: String(data.title || "Thread"),
+          isStarter: Boolean(data.isStarter),
+          authorName: String(data.authorName || "Someone"),
+          authorRole: data.authorRole === "teacher" ? "teacher" : "student",
+          authorId: data.authorId || null,
+          createdAt: tsToIso(data.createdAt),
+          updatedAt: tsToIso(data.updatedAt) || tsToIso(data.createdAt),
+          replyCount: Number(data.replyCount || 0),
+          lastPostPreview: String(data.lastPostPreview || ""),
+        };
+      });
+      onChange(rows);
+    },
+    (err) => {
+      onError?.(err);
+      onChange([]);
+    }
+  );
+}
+
+export function subscribeThreadPosts(classId, threadId, onChange, onError) {
+  if (!classId || !threadId) {
+    onChange([]);
+    return () => {};
+  }
+  const q = query(
+    threadPostsCol(classId, threadId),
+    orderBy("createdAt", "asc"),
+    limit(120)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const rows = snap.docs.map((d) => {
+        const data = d.data() || {};
+        return {
+          id: d.id,
+          body: String(data.body || ""),
+          authorName: String(data.authorName || "Someone"),
+          authorId: data.authorId || null,
+          authorRole: data.authorRole === "teacher" ? "teacher" : "student",
+          createdAt: tsToIso(data.createdAt),
+        };
+      });
+      onChange(rows);
+    },
+    (err) => {
+      onError?.(err);
+      onChange([]);
+    }
+  );
+}
+
+export async function getClassThread(classId, threadId) {
+  if (!classId || !threadId) return null;
+  const snap = await getDoc(doc(db, "classes", classId, "threads", threadId));
+  if (!snap.exists()) return null;
+  const data = snap.data() || {};
+  return {
+    id: snap.id,
+    title: String(data.title || "Thread"),
+    isStarter: Boolean(data.isStarter),
+    authorName: String(data.authorName || "Someone"),
+    authorRole: data.authorRole === "teacher" ? "teacher" : "student",
+    authorId: data.authorId || null,
+    createdAt: tsToIso(data.createdAt),
+    updatedAt: tsToIso(data.updatedAt) || tsToIso(data.createdAt),
+    replyCount: Number(data.replyCount || 0),
+    lastPostPreview: String(data.lastPostPreview || ""),
+  };
+}
+
+export async function createClassThread(
+  classId,
+  { title, body, authorName, authorId = null, authorRole = "student" }
+) {
+  if (!classId) throw new Error("Join a class to start a thread.");
+  const heading = String(title || "").trim();
+  const text = String(body || "").trim();
+  if (!heading) throw new Error("Give the thread a title.");
+  if (heading.length > 80) throw new Error("Keep titles under 80 characters.");
+  if (!text) throw new Error("Write the first message.");
+  if (text.length > 400) throw new Error("Keep messages under 400 characters.");
+  const name = (String(authorName || "").trim() || "Someone").slice(0, 48);
+  const threadRef = await addDoc(threadsCol(classId), {
+    title: heading.slice(0, 80),
+    isStarter: false,
+    authorName: name,
+    authorId: authorId || null,
+    authorRole: authorRole === "teacher" ? "teacher" : "student",
+    replyCount: 1,
+    lastPostPreview: text.slice(0, 120),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  await addDoc(threadPostsCol(classId, threadRef.id), {
+    body: text,
+    authorName: name,
+    authorId: authorId || null,
+    authorRole: authorRole === "teacher" ? "teacher" : "student",
+    createdAt: serverTimestamp(),
+  });
+  return threadRef.id;
+}
+
+export async function replyClassThread(
+  classId,
+  threadId,
+  { body, authorName, authorId = null, authorRole = "student" }
+) {
+  if (!classId || !threadId) throw new Error("Thread not found.");
+  const text = String(body || "").trim();
+  if (!text) throw new Error("Write a reply first.");
+  if (text.length > 400) throw new Error("Keep messages under 400 characters.");
+  const name = (String(authorName || "").trim() || "Someone").slice(0, 48);
+  const threadRef = doc(db, "classes", classId, "threads", threadId);
+  const threadSnap = await getDoc(threadRef);
+  if (!threadSnap.exists()) throw new Error("Thread not found.");
+  await addDoc(threadPostsCol(classId, threadId), {
+    body: text,
+    authorName: name,
+    authorId: authorId || null,
+    authorRole: authorRole === "teacher" ? "teacher" : "student",
+    createdAt: serverTimestamp(),
+  });
+  const prev = threadSnap.data() || {};
+  await updateDoc(threadRef, {
+    replyCount: Number(prev.replyCount || 0) + 1,
+    lastPostPreview: text.slice(0, 120),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function deleteClassThread(classId, threadId) {
+  if (!classId || !threadId) return;
+  const threadRef = doc(db, "classes", classId, "threads", threadId);
+  const threadSnap = await getDoc(threadRef);
+  if (!threadSnap.exists()) return;
+  if (threadSnap.data()?.isStarter) {
+    throw new Error("Starter threads can’t be deleted.");
+  }
+  const posts = await getDocs(threadPostsCol(classId, threadId));
+  await Promise.all(posts.docs.map((d) => deleteDoc(d.ref)));
+  await deleteDoc(threadRef);
+}
+
+export async function deleteClassThreadPost(classId, threadId, postId) {
+  if (!classId || !threadId || !postId) return;
+  await deleteDoc(doc(db, "classes", classId, "threads", threadId, "posts", postId));
+  const threadRef = doc(db, "classes", classId, "threads", threadId);
+  const threadSnap = await getDoc(threadRef);
+  if (!threadSnap.exists()) return;
+  const count = Math.max(0, Number(threadSnap.data()?.replyCount || 1) - 1);
+  await updateDoc(threadRef, {
+    replyCount: count,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** @deprecated Flat board — kept briefly for older clients; prefer threads. */
+export function subscribeClassMessages(classId, onChange, onError) {
+  return subscribeClassThreads(classId, onChange, onError);
+}
+
+/** @deprecated */
+export async function postClassMessage() {
+  throw new Error("Open a thread to post — the main board doesn’t take free-floating messages.");
+}
+
+/** @deprecated */
+export async function deleteClassMessage(classId, messageId) {
+  if (!classId || !messageId) return;
+  await deleteDoc(doc(db, "classes", classId, "messages", messageId));
 }
 
 function transfersCol(classId, studentId) {

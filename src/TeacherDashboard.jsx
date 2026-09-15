@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { deleteStudent, getStudent } from "./api";
 import ClassAggregatePanel from "./ClassAggregatePanel";
 import ClassInviteCard from "./ClassInviteCard";
+import ClassMessageBoard from "./ClassMessageBoard";
 import ClassView from "./ClassView";
 import SpinWheelModal, { SpinWheelFab } from "./SpinWheel";
 import {
@@ -18,6 +19,9 @@ import {
   setActiveClassId,
   updateClassSettings,
 } from "./classStore";
+
+/** Set true to restore class chat on the teacher dashboard. */
+const SHOW_CLASS_CHAT = false;
 
 const MARKET_OPTIONS = [
   { id: "stocks", label: "Stocks" },
@@ -587,6 +591,16 @@ export default function TeacherDashboard({
               Class settings
             </button>
           </div>
+
+          {SHOW_CLASS_CHAT && (
+            <ClassMessageBoard
+              classId={activeClass.id}
+              authorName="Teacher"
+              authorId={null}
+              authorRole="teacher"
+              compact
+            />
+          )}
 
           <div className="class-standings-preview">
             <div className="class-standings-preview-head">

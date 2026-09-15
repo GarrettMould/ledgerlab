@@ -62,6 +62,7 @@ export const TICKER_CATEGORY = {
   WBD: "stocks",
   EA: "stocks",
   TTWO: "stocks",
+  RBLX: "stocks",
   LYV: "stocks",
   ROKU: "stocks",
   SONY: "stocks",

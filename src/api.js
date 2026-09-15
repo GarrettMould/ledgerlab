@@ -100,6 +100,15 @@ export function getStandings(classId) {
   return request("/standings", { classId, timeoutMs: 12000 });
 }
 
+export function getFearGreed() {
+  return request("/fear-greed", { timeoutMs: 10000 });
+}
+
+export function getPopularStocks(classId, { rebuild = false } = {}) {
+  const q = rebuild ? "?rebuild=1" : "";
+  return request(`/class/popular-stocks${q}`, { classId, timeoutMs: 20000 });
+}
+
 export function adjustCash(id, amount, classId) {
   return request(`/students/${id}/adjust`, {
     method: "POST",
@@ -117,7 +126,10 @@ export function getMarket(category, refresh = false, { catalog = false } = {}) {
   if (refresh) params.set("refresh", "1");
   if (catalog) params.set("catalog", "1");
   const q = params.toString() ? `?${params}` : "";
-  return request(`/market/${encodeURIComponent(category)}${q}`);
+  // Live quotes can take a bit on cold cache; catalog stays on the default timeout.
+  return request(`/market/${encodeURIComponent(category)}${q}`, {
+    timeoutMs: catalog ? 12000 : 45000,
+  });
 }
 
 export function getChart(ticker, range = "1y") {
