@@ -106,27 +106,8 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
             strategyBio: String(seat.strategyBio || "").trim() || null,
           };
         });
-        // Include any ledger-only rows missing from the client roster.
-        for (const row of standingsPayload?.students || []) {
-          const already = rows.some(
-            (r) =>
-              String(r.id) === String(row.id) ||
-              String(r.seatId) === String(row.id)
-          );
-          if (already) continue;
-          rows.push({
-            id: String(row.id),
-            seatId: String(row.id),
-            name: row.name || "Student",
-            cash: Number(row.cash) || 0,
-            portfolio_value: Number(row.portfolio_value) || 0,
-            total_value: Number(row.total_value) || 0,
-            netWorth: Number(row.total_value) || 0,
-            outfit: null,
-            investmentGoal: null,
-            strategyBio: null,
-          });
-        }
+        // Roster (Firestore seats) is the source of truth — do not re-add orphaned
+        // ledger docs that are no longer on the class roster.
         if (!cancelled) setRoster(rows);
       } catch (err) {
         if (!cancelled) setError(err.message || "Could not load class standings");

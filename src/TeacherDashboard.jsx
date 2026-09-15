@@ -308,14 +308,19 @@ export default function TeacherDashboard({
     setBusy(true);
     setError("");
     try {
-      if (student.apiStudentId || student.id) {
+      const seatId = student.id;
+      const tradeId = student.apiStudentId || student.id;
+      // Cascade holdings/snapshots via API (Admin SDK). Prefer the seat doc id.
+      for (const id of [...new Set([seatId, tradeId].filter(Boolean))]) {
         try {
-          await deleteStudent(student.apiStudentId || student.id, activeClass.id);
+          await deleteStudent(id, activeClass.id);
         } catch {
-          // Local API student may already be gone.
+          // Local/API student may already be gone.
         }
       }
-      await deleteClassStudent(activeClass.id, student.id);
+      await deleteClassStudent(activeClass.id, seatId, {
+        authUid: student.authUid || null,
+      });
       await refreshRoster(activeClass.id);
     } catch (err) {
       setError(err.message);

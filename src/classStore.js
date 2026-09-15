@@ -481,8 +481,33 @@ export async function getClassStudent(classId, studentId) {
   return { id: snap.id, ...snap.data() };
 }
 
-export async function deleteClassStudent(classId, studentId) {
-  await deleteDoc(doc(db, "classes", classId, "students", studentId));
+export async function deleteClassStudent(classId, studentId, { authUid = null } = {}) {
+  const ref = doc(db, "classes", classId, "students", studentId);
+  let uid = authUid || null;
+  if (!uid) {
+    try {
+      const snap = await getDoc(ref);
+      if (snap.exists()) uid = snap.data()?.authUid || null;
+    } catch {
+      /* still attempt delete */
+    }
+  }
+  await deleteDoc(ref);
+  // Drop class membership so they don't keep resolving into this class.
+  if (uid) {
+    try {
+      const userRef = doc(db, "users", uid);
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists() && userSnap.data()?.primaryClassId === classId) {
+        await updateDoc(userRef, {
+          primaryClassId: null,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch {
+      /* non-fatal — seat is already gone */
+    }
+  }
 }
 
 function messagesCol(classId) {
