@@ -3,6 +3,7 @@ import { deleteStudent, getStudent } from "./api";
 import ClassAggregatePanel from "./ClassAggregatePanel";
 import ClassInviteCard from "./ClassInviteCard";
 import ClassView from "./ClassView";
+import SpinWheelModal, { SpinWheelFab } from "./SpinWheel";
 import {
   DEFAULT_MARKETS,
   createClass,
@@ -68,6 +69,7 @@ export default function TeacherDashboard({
   const [inviteCopied, setInviteCopied] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(null);
   const [showStandings, setShowStandings] = useState(false);
+  const [showSpinWheel, setShowSpinWheel] = useState(false);
 
   const activeClass = useMemo(
     () => classes.find((c) => c.id === activeClassId) || null,
@@ -845,6 +847,32 @@ export default function TeacherDashboard({
           </div>
         </div>
       )}
+
+      <SpinWheelFab onClick={() => setShowSpinWheel(true)} />
+      <SpinWheelModal
+        open={showSpinWheel}
+        onClose={() => setShowSpinWheel(false)}
+        students={roster}
+        onAward={
+          activeClass
+            ? async (student, amount) => {
+                if (!student?.apiStudentId) {
+                  throw new Error("That student hasn’t finished joining yet.");
+                }
+                setBusy(true);
+                setError("");
+                try {
+                  await createPendingTransfer(activeClass.id, student.id, {
+                    amount,
+                  });
+                  await refreshRoster(activeClass.id);
+                } finally {
+                  setBusy(false);
+                }
+              }
+            : undefined
+        }
+      />
     </section>
   );
 }

@@ -5083,3 +5083,303 @@ select:focus {
     display: grid;
   }
 }
+
+/* Teacher cash spin wheel */
+.spin-wheel-fab {
+  position: fixed;
+  right: -0.65rem;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  width: 3.35rem;
+  height: 3.35rem;
+  border-radius: 999px;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 45%, #fff);
+  background: linear-gradient(160deg, #fff 0%, #e8f5ec 100%);
+  color: var(--accent-deep);
+  box-shadow: 0 10px 28px rgba(8, 28, 18, 0.22);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, right 0.15s ease;
+}
+
+.spin-wheel-fab:hover {
+  right: 0.35rem;
+  transform: translateY(-50%) scale(1.05);
+  border-color: var(--accent);
+  box-shadow: 0 14px 32px rgba(8, 28, 18, 0.28);
+}
+
+.spin-wheel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(8, 28, 18, 0.45);
+  backdrop-filter: blur(3px);
+}
+
+.spin-wheel-modal {
+  width: min(100%, 24rem);
+  max-height: min(92vh, 44rem);
+  overflow: auto;
+  border-radius: 22px;
+  border: 1px solid var(--line-soft);
+  background:
+    radial-gradient(420px 180px at 50% 0%, rgba(159, 212, 168, 0.28), transparent 60%),
+    #fff;
+  box-shadow: var(--shadow);
+  padding: 1.1rem 1.15rem 1.25rem;
+  display: grid;
+  gap: 0.9rem;
+}
+
+.spin-wheel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.spin-wheel-kicker {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.spin-wheel-head h3 {
+  margin: 0.15rem 0 0;
+  font-size: 1.45rem;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.spin-wheel-stage {
+  position: relative;
+  width: 17rem;
+  height: 17rem;
+  margin: 0.35rem auto 0.15rem;
+}
+
+.spin-wheel-pointer {
+  position: absolute;
+  top: -0.15rem;
+  left: 50%;
+  z-index: 2;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 0.55rem solid transparent;
+  border-right: 0.55rem solid transparent;
+  border-top: 1rem solid var(--ink);
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.18));
+}
+
+.spin-wheel-disc {
+  position: absolute;
+  inset: 0.55rem;
+  border-radius: 50%;
+  border: 4px solid #fff;
+  box-shadow:
+    inset 0 0 0 3px rgba(26, 46, 36, 0.12),
+    0 10px 24px rgba(8, 28, 18, 0.18);
+  transition: transform 4.2s cubic-bezier(0.12, 0.75, 0.08, 1);
+}
+
+.spin-wheel-disc.is-spinning {
+  transition: transform 4.2s cubic-bezier(0.12, 0.75, 0.08, 1);
+}
+
+.spin-wheel-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4.2rem;
+  margin-left: -2.1rem;
+  margin-top: -0.55rem;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  transform-origin: 50% 50%;
+}
+
+.spin-wheel-hub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.7rem;
+  height: 1.7rem;
+  margin: -0.85rem 0 0 -0.85rem;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff, #e8f0ea 70%, #c5d9cc);
+  border: 2px solid rgba(26, 46, 36, 0.2);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.spin-wheel-actions {
+  display: flex;
+  justify-content: center;
+}
+
+.spin-wheel-actions .primary-btn {
+  min-width: 8.5rem;
+}
+
+.spin-wheel-result {
+  text-align: center;
+  padding: 0.65rem 0.8rem;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 10%, #fff);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.spin-wheel-result-label {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.spin-wheel-result strong {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 1.55rem;
+  font-weight: 800;
+  color: var(--accent-deep);
+}
+
+.spin-wheel-award {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.spin-wheel-award label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.spin-wheel-award select {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border-radius: 12px;
+  border: 1px solid var(--line-soft);
+  background: #fff;
+  color: var(--ink);
+}
+
+.spin-wheel-roster {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.spin-wheel-roster-label {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.spin-wheel-roster-empty {
+  margin: 0;
+  padding: 0.7rem 0.8rem;
+  border-radius: 12px;
+  border: 1px dashed var(--line-soft);
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.spin-wheel-student-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+  max-height: 12rem;
+  overflow: auto;
+}
+
+.spin-wheel-student-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  text-align: left;
+  padding: 0.7rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid var(--line-soft);
+  background: #fff;
+  color: var(--ink);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.spin-wheel-student-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, #fff);
+}
+
+.spin-wheel-student-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.spin-wheel-student-name {
+  font-weight: 800;
+  font-size: 0.95rem;
+}
+
+.spin-wheel-student-action {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--accent-deep);
+}
+
+.spin-wheel-note {
+  margin: 0;
+  text-align: center;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--accent-deep);
+}
+
+@media (max-width: 640px) {
+  .spin-wheel-fab {
+    right: -0.55rem;
+    top: auto;
+    bottom: 5.5rem;
+    transform: none;
+  }
+
+  .spin-wheel-fab:hover {
+    right: 0.35rem;
+    transform: scale(1.05);
+  }
+
+  .spin-wheel-stage {
+    width: 15rem;
+    height: 15rem;
+  }
+
+  .spin-wheel-label {
+    font-size: 0.72rem;
+  }
+}
+
