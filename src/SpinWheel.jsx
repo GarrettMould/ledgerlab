@@ -21,9 +21,25 @@ function money(n) {
 
 function prizeAtRotation(deg) {
   const normalized = ((deg % 360) + 360) % 360;
-  // Pointer is fixed at top; map wheel rotation back to a slice index.
+  // Pointer is fixed at top; disc rotates clockwise. Slice i spans
+  // [i*SLICE, (i+1)*SLICE) clockwise from top (matches conic from -90deg).
   const local = (360 - normalized) % 360;
   return SEGMENTS[Math.floor(local / SLICE) % SEGMENTS.length];
+}
+
+/** Absolute disc rotation that centers segment `index` under the top pointer. */
+function rotationForSegment(index, fromRotation) {
+  const extraTurns = 5 + Math.floor(Math.random() * 4);
+  // Center of slice i is at i*SLICE + SLICE/2 from top; after rotate(R)
+  // that point sits at top when R ≡ 360 - center (mod 360).
+  const center = index * SLICE + SLICE / 2;
+  // Small jitter inside the slice so it doesn't always stop dead-center.
+  const jitter = (Math.random() - 0.5) * SLICE * 0.55;
+  const targetMod = (360 - (center + jitter) + 360) % 360;
+  const currentMod = ((fromRotation % 360) + 360) % 360;
+  let delta = targetMod - currentMod;
+  if (delta <= 0) delta += 360;
+  return fromRotation + extraTurns * 360 + delta;
 }
 
 function wheelBackground() {
@@ -120,14 +136,15 @@ export default function SpinWheelModal({
     setAwardingId("");
     setSpinning(true);
 
-    const extraTurns = 5 + Math.floor(Math.random() * 4);
-    const landing = Math.random() * 360;
-    const next = rotation + extraTurns * 360 + landing;
+    const index = Math.floor(Math.random() * SEGMENTS.length);
+    const prize = SEGMENTS[index];
+    const next = rotationForSegment(index, rotation);
     setRotation(next);
 
     spinTimeout.current = setTimeout(() => {
-      const prize = prizeAtRotation(next);
-      setResult(prize);
+      // Prefer the chosen prize; fall back to geometry if anything drifts.
+      const landed = prizeAtRotation(next);
+      setResult(landed.amount === prize.amount ? prize : landed);
       setSpinning(false);
     }, 4200);
   }
@@ -187,7 +204,8 @@ export default function SpinWheelModal({
             }}
           >
             {SEGMENTS.map((seg, i) => {
-              const mid = -90 + i * SLICE + SLICE / 2;
+              // Place label at slice center; 0deg = top (same as conic from -90deg).
+              const mid = i * SLICE + SLICE / 2;
               return (
                 <span
                   key={seg.amount}
