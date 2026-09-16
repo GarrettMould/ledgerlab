@@ -10,6 +10,10 @@ import NewsFeed from "./NewsFeed";
 import TeacherDashboard from "./TeacherDashboard";
 import TeacherGate from "./TeacherGate";
 import CashTransferAlert from "./CashTransferAlert";
+import HeadToHeadModal, {
+  HeadToHeadBattleModal,
+  HeadToHeadLiveMatchups,
+} from "./HeadToHeadModal";
 import TradeSuccessModal from "./TradeSuccessModal";
 import {
   DEFAULT_MARKETS,
@@ -373,6 +377,9 @@ function StudentPortfolio({
   const [showClass, setShowClass] = useState(false);
   const [showNews, setShowNews] = useState(false);
   const [showBoard, setShowBoard] = useState(false);
+  const [showH2HBattle, setShowH2HBattle] = useState(false);
+  const [h2hFocusMatchId, setH2hFocusMatchId] = useState("");
+  const [h2hResumeToken, setH2hResumeToken] = useState(0);
   const [marketItems, setMarketItems] = useState([]);
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketPricesPending, setMarketPricesPending] = useState(false);
@@ -693,7 +700,7 @@ function StudentPortfolio({
       item.buy_ok === false
     ) {
       setError(
-        "Commodity buys need live futures prices. Try again in a few minutes — selling still works."
+        "Commodity price unavailable right now. Try again shortly — selling still works."
       );
       return;
     }
@@ -753,6 +760,14 @@ function StudentPortfolio({
           item.asset_type === "bond" && tradeDraft?.mode === "bond"
             ? snapBondFace(tradeDraft.faceUsd)
             : undefined,
+        fillPrice:
+          Number(item.price) > 0 ? Number(item.price) : undefined,
+        approximateFill:
+          action === "buy" &&
+          item.asset_type === "commodity" &&
+          item.price_quality === "approximate",
+        fillLocked:
+          action === "buy" && item.asset_type === "commodity",
       });
       if (action === "buy") {
         setChartTicker((prev) => (prev === item.ticker ? null : prev));
@@ -803,7 +818,7 @@ function StudentPortfolio({
       item.buy_ok === false
     ) {
       setError(
-        "Commodity buys need live futures prices. Try again in a few minutes — selling still works."
+        "Commodity price unavailable right now. Try again shortly — selling still works."
       );
       return;
     }
@@ -1085,6 +1100,22 @@ function StudentPortfolio({
 
           {!category && !showClass && !showNews && !(SHOW_CLASS_CHAT && showBoard) && (
             <div className="home-menu">
+              {classId && firestoreStudentId && (
+                <HeadToHeadLiveMatchups
+                  classId={classId}
+                  firestoreStudentId={firestoreStudentId}
+                  studentName={portfolio?.name}
+                  onOpenMatch={(matchId) => {
+                    setH2hFocusMatchId(matchId || "");
+                    setShowH2HBattle(true);
+                    setShowClass(false);
+                    setShowNews(false);
+                    setShowBoard(false);
+                    setSelectedAsset(null);
+                    setTradeDraft(null);
+                  }}
+                />
+              )}
               <div className="home-tools" aria-label="Classroom">
                 <button
                   type="button"
@@ -1258,10 +1289,9 @@ function StudentPortfolio({
 
               {category === "commodities" && (
                 <p className="bond-note currency-explain">
-                  These are raw commodity futures prices (not ETFs) — gold per ounce, oil per
-                  barrel, corn per bushel, and so on. Buying 1 unit means 1 of that measure.
-                  If futures prices are temporarily unavailable, buying pauses (selling still
-                  works) so portfolios don’t jump when the real price returns.
+                  Per-unit classroom prices (e.g. gold per ounce). Your buy locks in at the
+                  price shown — we don’t rewrite past fills. Live futures when available;
+                  otherwise a labeled approximate ETF proxy.
                 </p>
               )}
 
@@ -1386,6 +1416,10 @@ function StudentPortfolio({
                       !(Number(item.price) > 0);
                     const futuresOffline =
                       item.asset_type === "commodity" && item.buy_ok === false;
+                    const approxCommodity =
+                      item.asset_type === "commodity" &&
+                      item.price_quality === "approximate" &&
+                      !futuresOffline;
                     const buyBlocked =
                       draftOpen &&
                       tradeDraft.action === "buy" &&
@@ -1535,8 +1569,22 @@ function StudentPortfolio({
                             </span>
                           )}
                           {item.asset_type === "commodity" && (
-                            <span className="bond-meta commodity-meta">
-                              {[item.kind, item.unit_label ? `per ${item.unit_label}` : null]
+                            <span
+                              className={
+                                approxCommodity
+                                  ? "bond-meta commodity-meta commodity-meta-approx"
+                                  : "bond-meta commodity-meta"
+                              }
+                            >
+                              {[
+                                item.kind,
+                                item.unit_label ? `per ${item.unit_label}` : null,
+                                approxCommodity
+                                  ? "approx. price · fill locks at buy"
+                                  : item.price_quality === "futures"
+                                    ? "live futures"
+                                    : null,
+                              ]
                                 .filter(Boolean)
                                 .join(" · ")}
                             </span>
@@ -1595,7 +1643,7 @@ function StudentPortfolio({
                                     noPrice
                                       ? "Price unavailable"
                                       : futuresOffline
-                                        ? "Futures price unavailable — buying paused"
+                                        ? "Commodity price unavailable — buying paused"
                                       : draftOpen && tradeDraft.action === "buy"
                                       ? buyBlocked
                                         ? "Not enough cash"
@@ -1610,7 +1658,7 @@ function StudentPortfolio({
                                     }
                                     if (futuresOffline) {
                                       setError(
-                                        "Commodity buys need live futures prices. Try again in a few minutes — selling still works."
+                                        "Commodity price unavailable right now. Try again shortly — selling still works."
                                       );
                                       return;
                                     }
@@ -1847,6 +1895,11 @@ function StudentPortfolio({
                                             ? money(shareCost)
                                             : "—"}
                                       </span>
+                                      {approxCommodity && (
+                                        <span className="commodity-fill-lock-note">
+                                          Fill locks at {money(item.price)} — not rewritten later
+                                        </span>
+                                      )}
                                     </div>
                                   )
                                 )}
@@ -2796,6 +2849,37 @@ function StudentPortfolio({
         </>
       )}
       <TradeSuccessModal trade={tradeSuccess} onClose={closeTradeSuccess} />
+      {classId && firestoreStudentId && (
+        <>
+          <HeadToHeadModal
+            classId={classId}
+            firestoreStudentId={firestoreStudentId}
+            studentName={portfolio?.name}
+            apiStudentId={portfolio?.id || selectedId}
+            portfolioHoldings={portfolio?.holdings || []}
+            resumeToken={h2hResumeToken}
+            onPortfolioRefresh={() => {
+              if (selectedId) loadPortfolio(selectedId).catch(() => {});
+            }}
+            onPicksLocked={(matchId) => {
+              setH2hFocusMatchId(matchId || "");
+              setShowH2HBattle(true);
+            }}
+          />
+          <HeadToHeadBattleModal
+            open={showH2HBattle}
+            onClose={() => {
+              setShowH2HBattle(false);
+              setH2hFocusMatchId("");
+            }}
+            onResumePicks={() => setH2hResumeToken((n) => n + 1)}
+            classId={classId}
+            firestoreStudentId={firestoreStudentId}
+            studentName={portfolio?.name}
+            focusMatchId={h2hFocusMatchId}
+          />
+        </>
+      )}
     </section>
   );
 }
@@ -3056,6 +3140,7 @@ export default function App() {
         }}
         setError={setError}
         setBusy={setBusy}
+        busy={busy}
       />
     );
   } else if (studentSession) {
@@ -3193,15 +3278,17 @@ export default function App() {
         studentSession?.apiStudentId &&
         !joinCode &&
         !teacher && (
-          <CashTransferAlert
-            classId={studentSession.classId}
-            firestoreStudentId={studentSession.firestoreStudentId}
-            apiStudentId={studentSession.apiStudentId}
-            onAccepted={() => {
-              refreshApiStudents();
-              setPortfolioRefreshToken((n) => n + 1);
-            }}
-          />
+          <>
+            <CashTransferAlert
+              classId={studentSession.classId}
+              firestoreStudentId={studentSession.firestoreStudentId}
+              apiStudentId={studentSession.apiStudentId}
+              onAccepted={() => {
+                refreshApiStudents();
+                setPortfolioRefreshToken((n) => n + 1);
+              }}
+            />
+          </>
         )}
 
       <main>{mainContent}</main>

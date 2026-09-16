@@ -12,6 +12,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -19,6 +20,7 @@ import { db } from "./firebase";
 
 const ACTIVE_CLASS_KEY = "ledgerlab.activeClassId";
 const STUDENT_SESSION_KEY = "ledgerlab.studentSession";
+const H2H_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const DEFAULT_MARKETS = {
   stocks: true,
@@ -188,6 +190,392 @@ export async function updateClassSettings(classId, patch) {
     ...patch,
     updatedAt: serverTimestamp(),
   });
+}
+
+function toJsDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value?.toDate === "function") return value.toDate();
+  if (typeof value?.seconds === "number") return new Date(value.seconds * 1000);
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed) : null;
+}
+
+/** Normalize headToHead field from a class doc for UI use. */
+export function normalizeHeadToHead(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const id = String(raw.id || "").trim();
+  const status = String(raw.status || "").trim() || "open";
+  if (!id || status === "ended" || status === "cancelled") return null;
+  const createdAt = toJsDate(raw.createdAt);
+  const endsAt = toJsDate(raw.endsAt);
+  return {
+    id,
+    status,
+    createdAt,
+    endsAt,
+    createdAtMs: createdAt?.getTime?.() || 0,
+    endsAtMs: endsAt?.getTime?.() || 0,
+  };
+}
+
+/**
+ * Teacher starts a class-wide head-to-head challenge.
+ * Starts now; ends exactly one week later.
+ */
+export async function createHeadToHeadChallenge(classId) {
+  if (!classId) throw new Error("No class selected");
+  const now = new Date();
+  const ends = new Date(now.getTime() + H2H_WEEK_MS);
+  const id = `h2h_${now.getTime()}`;
+  const challenge = {
+    id,
+    status: "open",
+    createdAt: Timestamp.fromDate(now),
+    endsAt: Timestamp.fromDate(ends),
+  };
+  await updateDoc(doc(db, "classes", classId), {
+    headToHead: challenge,
+    updatedAt: serverTimestamp(),
+  });
+  return normalizeHeadToHead(challenge);
+}
+
+export async function endHeadToHeadChallenge(classId) {
+  if (!classId) throw new Error("No class selected");
+  const snap = await getDoc(doc(db, "classes", classId));
+  const current = snap.exists() ? snap.data()?.headToHead : null;
+  if (!current?.id) {
+    await updateDoc(doc(db, "classes", classId), {
+      headToHead: null,
+      updatedAt: serverTimestamp(),
+    });
+    return;
+  }
+  await updateDoc(doc(db, "classes", classId), {
+    headToHead: {
+      ...current,
+      status: "ended",
+      endedAt: serverTimestamp(),
+    },
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Live listener for the class head-to-head challenge. */
+export function subscribeHeadToHead(classId, onChange, onError) {
+  if (!classId) {
+    onChange?.(null);
+    return () => {};
+  }
+  return onSnapshot(
+    doc(db, "classes", classId),
+    (snap) => {
+      if (!snap.exists()) {
+        onChange?.(null);
+        return;
+      }
+      onChange?.(normalizeHeadToHead((snap.data() || {}).headToHead));
+    },
+    (err) => {
+      onError?.(err);
+      onChange?.(null);
+    }
+  );
+}
+
+/**
+ * Student skips challenging this season — hides them from classmates' opponent lists.
+ */
+export async function skipHeadToHeadSeason(classId, studentId, seasonId) {
+  if (!classId || !studentId || !seasonId) {
+    throw new Error("Missing class, student, or season");
+  }
+  await updateDoc(doc(db, "classes", classId, "students", studentId), {
+    h2hOptOutSeasonId: String(seasonId),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+function h2hMatchesCol(classId) {
+  return collection(db, "classes", classId, "h2hMatches");
+}
+
+function normalizeH2hPick(raw) {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    const ticker = raw.trim().toUpperCase();
+    return ticker ? { ticker, name: ticker, startPrice: null } : null;
+  }
+  if (typeof raw !== "object") return null;
+  const ticker = String(raw.ticker || "").trim().toUpperCase();
+  if (!ticker) return null;
+  const start = Number(raw.startPrice);
+  return {
+    ticker,
+    name: String(raw.name || ticker),
+    startPrice: Number.isFinite(start) && start > 0 ? start : null,
+  };
+}
+
+function normalizeH2hPicks(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map(normalizeH2hPick).filter(Boolean);
+}
+
+function normalizeH2hMatch(id, raw = {}) {
+  return {
+    id,
+    seasonId: String(raw.seasonId || ""),
+    fromId: String(raw.fromId || ""),
+    fromName: String(raw.fromName || "Classmate"),
+    toId: String(raw.toId || ""),
+    toName: String(raw.toName || "Classmate"),
+    status: String(raw.status || "pending"),
+    tickersFrom: normalizeH2hPicks(raw.tickersFrom),
+    tickersTo: normalizeH2hPicks(raw.tickersTo),
+    testMirror: Boolean(raw.testMirror),
+    createdAt: toJsDate(raw.createdAt),
+    updatedAt: toJsDate(raw.updatedAt),
+  };
+}
+
+/**
+ * Create a head-to-head match request (from → to).
+ * For solo testing, pass invertTest:true to store it as if the classmate challenged you.
+ * Blocks duplicate pending/accepted pairs for the same contest.
+ */
+export async function createH2hMatchRequest({
+  classId,
+  seasonId,
+  fromId,
+  fromName,
+  toId,
+  toName,
+  invertTest = false,
+}) {
+  if (!classId || !seasonId) throw new Error("Missing challenge season");
+  if (!fromId || !toId) throw new Error("Pick a classmate");
+  if (fromId === toId) throw new Error("You can’t challenge yourself");
+
+  const a = invertTest ? toId : fromId;
+  const b = invertTest ? fromId : toId;
+  const actorId = fromId; // student initiating the action on this device
+  const existing = await getDocs(h2hMatchesCol(classId));
+  for (const d of existing.docs) {
+    const m = normalizeH2hMatch(d.id, d.data() || {});
+    if (m.seasonId !== seasonId) continue;
+    if (m.status !== "pending" && m.status !== "accepted") continue;
+    if (
+      !invertTest &&
+      (m.fromId === actorId || m.toId === actorId)
+    ) {
+      throw new Error(
+        m.status === "accepted"
+          ? "You’re already in a match for this contest"
+          : "You already have a pending challenge this contest"
+      );
+    }
+    const pair =
+      (m.fromId === a && m.toId === b) || (m.fromId === b && m.toId === a);
+    if (pair) {
+      throw new Error(
+        m.status === "accepted"
+          ? "You’re already matched with this classmate"
+          : "A challenge with this classmate is already pending"
+      );
+    }
+  }
+
+  // Testing shortcut: store as if `to` challenged `from` so the picker sees an inbox.
+  const payload = invertTest
+    ? {
+        seasonId,
+        fromId: toId,
+        fromName: toName || "Classmate",
+        toId: fromId,
+        toName: fromName || "You",
+        status: "pending",
+        tickersFrom: [],
+        tickersTo: [],
+        testMirror: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }
+    : {
+        seasonId,
+        fromId,
+        fromName: fromName || "Student",
+        toId,
+        toName: toName || "Student",
+        status: "pending",
+        tickersFrom: [],
+        tickersTo: [],
+        testMirror: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+  const ref = await addDoc(h2hMatchesCol(classId), payload);
+  return normalizeH2hMatch(ref.id, {
+    ...payload,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+}
+
+export async function respondH2hMatch(classId, matchId, status) {
+  if (!classId || !matchId) throw new Error("Missing match");
+  if (status !== "accepted" && status !== "declined") {
+    throw new Error("Invalid response");
+  }
+  await updateDoc(doc(db, "classes", classId, "h2hMatches", matchId), {
+    status,
+    updatedAt: serverTimestamp(),
+    respondedAt: serverTimestamp(),
+  });
+}
+
+/**
+ * Accept one pending match and decline every other pending match this student
+ * is in for the contest (incoming + outgoing). One active battle per student.
+ */
+export async function acceptH2hMatchAndClearOthers({
+  classId,
+  seasonId,
+  matchId,
+  studentId,
+}) {
+  if (!classId || !seasonId || !matchId || !studentId) {
+    throw new Error("Missing match details");
+  }
+  const snap = await getDocs(h2hMatchesCol(classId));
+  const updates = [];
+  for (const d of snap.docs) {
+    const m = normalizeH2hMatch(d.id, d.data() || {});
+    if (m.seasonId !== seasonId) continue;
+    const involvesMe = m.fromId === studentId || m.toId === studentId;
+    if (!involvesMe) continue;
+    if (m.status === "accepted" && d.id !== matchId) {
+      throw new Error("You’re already locked into a match this contest");
+    }
+    if (d.id === matchId) {
+      if (m.status !== "pending") {
+        throw new Error("That challenge is no longer pending");
+      }
+      updates.push(
+        updateDoc(d.ref, {
+          status: "accepted",
+          updatedAt: serverTimestamp(),
+          respondedAt: serverTimestamp(),
+        })
+      );
+      continue;
+    }
+    if (m.status === "pending") {
+      updates.push(
+        updateDoc(d.ref, {
+          status: "declined",
+          updatedAt: serverTimestamp(),
+          respondedAt: serverTimestamp(),
+        })
+      );
+    }
+  }
+  await Promise.all(updates);
+}
+
+/** Decline every pending match involving this student for the contest. */
+export async function declineAllPendingH2hForStudent({
+  classId,
+  seasonId,
+  studentId,
+}) {
+  if (!classId || !seasonId || !studentId) {
+    throw new Error("Missing class, season, or student");
+  }
+  const snap = await getDocs(h2hMatchesCol(classId));
+  const updates = [];
+  for (const d of snap.docs) {
+    const m = normalizeH2hMatch(d.id, d.data() || {});
+    if (m.seasonId !== seasonId) continue;
+    if (m.status !== "pending") continue;
+    if (m.fromId !== studentId && m.toId !== studentId) continue;
+    updates.push(
+      updateDoc(d.ref, {
+        status: "declined",
+        updatedAt: serverTimestamp(),
+        respondedAt: serverTimestamp(),
+      })
+    );
+  }
+  await Promise.all(updates);
+}
+
+/**
+ * Lock one side's 3 stock picks (with start prices for % tracking).
+ * side: "from" | "to"
+ */
+export async function setH2hMatchPicks(classId, matchId, side, picks) {
+  if (!classId || !matchId) throw new Error("Missing match");
+  if (side !== "from" && side !== "to") throw new Error("Invalid side");
+  const cleaned = normalizeH2hPicks(picks);
+  if (cleaned.length !== 3) throw new Error("Pick exactly 3 stocks");
+  if (cleaned.some((p) => !p.startPrice)) {
+    throw new Error("Missing a starting price for one of your picks");
+  }
+  const field = side === "from" ? "tickersFrom" : "tickersTo";
+  await updateDoc(doc(db, "classes", classId, "h2hMatches", matchId), {
+    [field]: cleaned.map((p) => ({
+      ticker: p.ticker,
+      name: p.name,
+      startPrice: p.startPrice,
+    })),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Equal-weight average % change across picks vs startPrice. */
+export function h2hBasketReturnPct(picks, liveByTicker = {}) {
+  const rows = normalizeH2hPicks(picks);
+  if (!rows.length) return null;
+  const pcts = [];
+  for (const p of rows) {
+    const live = Number(liveByTicker[p.ticker]);
+    if (!(p.startPrice > 0) || !(live > 0)) continue;
+    pcts.push(((live - p.startPrice) / p.startPrice) * 100);
+  }
+  if (!pcts.length) return null;
+  return pcts.reduce((a, b) => a + b, 0) / pcts.length;
+}
+
+/** All class matchups (small classroom — filter client-side). */
+export function subscribeH2hMatches(classId, onChange, onError) {
+  if (!classId) {
+    onChange?.([]);
+    return () => {};
+  }
+  return onSnapshot(
+    h2hMatchesCol(classId),
+    (snap) => {
+      const rows = snap.docs.map((d) => normalizeH2hMatch(d.id, d.data() || {}));
+      rows.sort((a, b) => (b.createdAt?.getTime?.() || 0) - (a.createdAt?.getTime?.() || 0));
+      onChange?.(rows);
+    },
+    (err) => {
+      onError?.(err);
+      onChange?.([]);
+    }
+  );
+}
+
+/** One-shot list of head-to-head matches for a class (teacher overview). */
+export async function listH2hMatches(classId) {
+  if (!classId) return [];
+  const snap = await getDocs(h2hMatchesCol(classId));
+  const rows = snap.docs.map((d) => normalizeH2hMatch(d.id, d.data() || {}));
+  rows.sort((a, b) => (b.createdAt?.getTime?.() || 0) - (a.createdAt?.getTime?.() || 0));
+  return rows;
 }
 
 export async function deleteClass(classId) {

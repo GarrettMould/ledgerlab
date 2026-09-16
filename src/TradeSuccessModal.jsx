@@ -44,7 +44,7 @@ function describeTrade(trade) {
 
 /**
  * PayPal-style success confirmation after a completed trade.
- * trade: { action, ticker, name?, qty?, assetType?, faceUsd?, total? }
+ * trade: { action, ticker, name?, qty?, assetType?, faceUsd?, total?, fillPrice?, approximateFill?, fillLocked? }
  */
 export default function TradeSuccessModal({ trade, onClose }) {
   const close = useCallback(() => onClose?.(), [onClose]);
@@ -55,7 +55,8 @@ export default function TradeSuccessModal({ trade, onClose }) {
       if (e.key === "Escape" || e.key === "Enter") close();
     };
     document.addEventListener("keydown", onKey);
-    const timer = window.setTimeout(close, 3200);
+    const linger = trade.fillLocked || trade.approximateFill ? 4800 : 3200;
+    const timer = window.setTimeout(close, linger);
     return () => {
       document.removeEventListener("keydown", onKey);
       window.clearTimeout(timer);
@@ -69,6 +70,10 @@ export default function TradeSuccessModal({ trade, onClose }) {
   const total =
     trade.total != null && Number.isFinite(Number(trade.total))
       ? money(trade.total)
+      : null;
+  const fillPrice =
+    trade.fillPrice != null && Number.isFinite(Number(trade.fillPrice))
+      ? money(trade.fillPrice)
       : null;
 
   const modal = (
@@ -98,6 +103,17 @@ export default function TradeSuccessModal({ trade, onClose }) {
         <h3 id="trade-success-title">{isBuy ? "Success!" : "Sold!"}</h3>
         <p className="trade-success-detail">{detail}</p>
         {total && <p className="trade-success-amount">{total}</p>}
+        {isBuy && trade.fillLocked && (
+          <p className="trade-success-fill-note">
+            {trade.approximateFill
+              ? `Filled at approximate classroom price${
+                  fillPrice ? ` (${fillPrice})` : ""
+                }. This cost basis is locked — it won’t be rewritten if a live futures quote returns later.`
+              : `Filled at the classroom price shown${
+                  fillPrice ? ` (${fillPrice})` : ""
+                }. This cost basis is locked in historically.`}
+          </p>
+        )}
 
         <button
           type="button"

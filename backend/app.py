@@ -43,6 +43,7 @@ _DATA_DIR = (
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = _DATA_DIR / "classroom.db"
 QUOTE_CACHE_PATH = _DATA_DIR / "quote_cache.json"
+COMMODITY_SCALE_CACHE_PATH = _DATA_DIR / "commodity_scales.json"
 CHART_CACHE_PATH = _DATA_DIR / "chart_cache.json"
 NEWS_CACHE_PATH = _DATA_DIR / "news_cache.json"
 CLASSROOM_NEWS_CACHE_PATH = _DATA_DIR / "classroom_news_cache.json"
@@ -91,8 +92,12 @@ CACHE_TTL_SECONDS = 60 * 10  # 10 minutes — classroom quotes don't need second
 # Keep showing last-known prices for a week if live providers fail (classroom continuity).
 STALE_OK_SECONDS = 60 * 60 * 24 * 7
 
-# Commodity buys only when the unit price came from Yahoo futures (not ETF proxies).
+# Preferred commodity marks: Yahoo futures. Proxies (Finnhub ETF × scale) are
+# also buyable — otherwise a classroom Yahoo 429 storm pauses buys permanently.
 COMMODITY_BUY_SOURCES = frozenset({"yahoo", "yfinance"})
+COMMODITY_PROXY_BUY_SOURCES = frozenset(
+    {"proxy", "finnhub", "derived", "yahoo-etf", "cache", "stale"}
+)
 
 
 def _remember_quote(
@@ -116,13 +121,34 @@ def quote_source_for(ticker: str) -> str | None:
     return _quote_source_by_ticker.get(ticker)
 
 
+def commodity_price_quality(ticker: str) -> str | None:
+    """How classroom commodity marks should be labeled for students."""
+    symbol = (ticker or "").upper()
+    if symbol not in COMMODITY_BY_TICKER:
+        return None
+    src = (quote_source_for(symbol) or "").strip().lower()
+    if src in COMMODITY_BUY_SOURCES:
+        return "futures"
+    if commodity_buy_allowed(symbol):
+        return "approximate"
+    return None
+
+
 def commodity_buy_allowed(ticker: str) -> bool:
-    """Stocks/FX always OK; commodities need a Yahoo futures-sourced unit price."""
+    """Allow commodity buys on Yahoo futures or a catalog ETF proxy with a price."""
     symbol = (ticker or "").strip().upper()
     if symbol not in COMMODITY_BY_TICKER:
         return True
+    if _cache_get(symbol, allow_stale=True)[0] is None:
+        # No usable mark yet — buy endpoint will 404 on missing price anyway.
+        return False
     src = (quote_source_for(symbol) or "").strip().lower()
-    return src in COMMODITY_BUY_SOURCES
+    if src in COMMODITY_BUY_SOURCES:
+        return True
+    # Trusted scaled/unit/approx ETF→unit conversions (see commodity_etf_proxy_ok).
+    if src in COMMODITY_PROXY_BUY_SOURCES or not src:
+        return commodity_etf_proxy_ok(symbol)
+    return False
 
 FINNHUB_API_KEY = (os.environ.get("FINNHUB_API_KEY") or "").strip()
 FINNHUB_BASE = "https://finnhub.io/api/v1"
@@ -138,6 +164,11 @@ FINNHUB_COOLDOWN_SECONDS = 65
 # Yahoo chart/futures 429s — skip Yahoo for a bit so Finnhub can answer fast.
 _yahoo_cooldown_until = 0.0
 YAHOO_COOLDOWN_SECONDS = 90
+# Live ETF→unit scales, calibrated whenever Yahoo futures succeed.
+_commodity_live_scales: dict[str, float] = {}
+_commodity_scale_at: dict[str, float] = {}
+COMMODITY_SCALE_TTL_SECONDS = 60 * 60  # recalibrate at most hourly per commodity
+MAX_YAHOO_CALIBRATIONS_PER_BATCH = 2
 _last_quote_provider_error: str | None = None
 _last_quote_source: str | None = None
 
@@ -1519,12 +1550,156 @@ def yahoo_quote_symbol(local_ticker: str) -> str:
 
 
 def commodity_price_scale(local_ticker: str) -> float:
+    """ETF→unit multiplier. Prefers live calibration over the catalog default."""
+    live = _commodity_live_scales.get(local_ticker)
+    if live is not None and live > 0:
+        return float(live)
     meta = COMMODITY_BY_TICKER.get(local_ticker) or {}
     try:
         scale = float(meta.get("scale") or 1)
     except (TypeError, ValueError):
         return 1.0
     return scale if scale > 0 else 1.0
+
+
+def _catalog_commodity_scale(local_ticker: str) -> float:
+    meta = COMMODITY_BY_TICKER.get(local_ticker) or {}
+    try:
+        scale = float(meta.get("scale") or 1)
+    except (TypeError, ValueError):
+        return 1.0
+    return scale if scale > 0 else 1.0
+
+
+def _load_commodity_scales() -> None:
+    if not COMMODITY_SCALE_CACHE_PATH.exists():
+        return
+    try:
+        data = json.loads(COMMODITY_SCALE_CACHE_PATH.read_text())
+        for ticker, row in (data or {}).items():
+            scale = float(row.get("scale") or 0)
+            at = float(row.get("calibrated_at") or 0)
+            if scale > 0 and ticker in COMMODITY_BY_TICKER:
+                _commodity_live_scales[ticker] = scale
+                _commodity_scale_at[ticker] = at
+    except Exception:
+        pass
+
+
+def _save_commodity_scales() -> None:
+    payload = {
+        ticker: {
+            "scale": scale,
+            "calibrated_at": _commodity_scale_at.get(ticker, 0),
+            "catalog_scale": _catalog_commodity_scale(ticker),
+        }
+        for ticker, scale in _commodity_live_scales.items()
+    }
+    try:
+        COMMODITY_SCALE_CACHE_PATH.write_text(json.dumps(payload, indent=2))
+    except Exception:
+        pass
+
+
+def _ensure_etf_feed_price(feed: str) -> float | None:
+    """Return a cached or freshly fetched ETF/share price for calibration."""
+    symbol = (feed or "").strip().upper()
+    if not symbol:
+        return None
+    hit, _ = _cache_get(symbol, allow_stale=True)
+    if hit is not None and float(hit) > 0:
+        return float(hit)
+    now = time.time()
+    if finnhub_configured() and not _finnhub_on_cooldown():
+        payload, _err = _finnhub_get("/quote", {"symbol": symbol})
+        if isinstance(payload, dict):
+            current = payload.get("c")
+            prev = payload.get("pc")
+            try:
+                price = float(current) if current not in (None, 0, 0.0) else None
+                if price is None and prev not in (None, 0, 0.0):
+                    price = float(prev)
+            except (TypeError, ValueError):
+                price = None
+            if price is not None and price > 0:
+                pct = payload.get("dp")
+                try:
+                    change_pct = float(pct) if pct is not None else None
+                except (TypeError, ValueError):
+                    change_pct = None
+                _remember_quote(symbol, price, now, change_pct, "finnhub")
+                return price
+    if not _yahoo_on_cooldown():
+        price, _prev = _yahoo_chart_quote(symbol)
+        if price is not None and float(price) > 0:
+            _remember_quote(symbol, float(price), now, None, "yahoo")
+            return float(price)
+    return None
+
+
+def _calibrate_commodity_scale(local: str, futures_price: float) -> bool:
+    """
+    When Yahoo futures and the ETF are both known:
+      live_scale = futures_unit_price / etf_share_price
+    Later Finnhub proxy fills use ETF × live_scale ≈ real futures.
+    """
+    meta = COMMODITY_BY_TICKER.get(local) or {}
+    feed = (meta.get("finnhub") or "").strip()
+    if not feed or futures_price is None or float(futures_price) <= 0:
+        return False
+    etf_price = _ensure_etf_feed_price(feed)
+    if etf_price is None or float(etf_price) <= 0:
+        return False
+    raw = float(futures_price) / float(etf_price)
+    catalog = _catalog_commodity_scale(local)
+    # Reject poison ticks; keep near the catalog relationship.
+    if catalog == 1.0:
+        lo, hi = 0.25, 4.0
+    else:
+        lo, hi = catalog * 0.5, catalog * 2.0
+    if raw < lo or raw > hi:
+        return False
+    _commodity_live_scales[local] = raw
+    _commodity_scale_at[local] = time.time()
+    _save_commodity_scales()
+    return True
+
+
+def _commodity_scale_due(local: str) -> bool:
+    if local not in COMMODITY_BY_TICKER:
+        return False
+    if not commodity_etf_proxy_ok(local):
+        return False
+    if not (COMMODITY_BY_TICKER[local].get("yahoo") and COMMODITY_BY_TICKER[local].get("finnhub")):
+        return False
+    at = _commodity_scale_at.get(local, 0.0)
+    return (time.time() - at) >= COMMODITY_SCALE_TTL_SECONDS
+
+
+def _maybe_calibrate_commodity_scales(
+    symbols: list[str],
+    out: dict[str, tuple[float | None, float | None]] | None = None,
+) -> None:
+    """Sparse Yahoo futures samples so live ETF scales track the real market."""
+    if _yahoo_on_cooldown():
+        return
+    due = [s for s in symbols if _commodity_scale_due(s)]
+    if not due:
+        return
+    now = datetime.now(timezone.utc).timestamp()
+    for symbol in due[:MAX_YAHOO_CALIBRATIONS_PER_BATCH]:
+        if _yahoo_on_cooldown():
+            break
+        try:
+            local, price, change_pct = _yfinance_quote_one(symbol)
+        except Exception:
+            continue
+        if price is None:
+            continue
+        _remember_quote(local, float(price), now, change_pct, "yahoo")
+        _calibrate_commodity_scale(local, float(price))
+        if out is not None:
+            out[local] = (float(price), change_pct)
 
 
 def commodity_etf_proxy_ok(local_ticker: str) -> bool:
@@ -1885,6 +2060,18 @@ def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | No
         # Finnhub uses ETF/proxy feeds; only accept intentional proxy modes.
         if not commodity_etf_proxy_ok(local_symbol):
             return local_symbol, None, None
+        # Keep the raw ETF mark so we can calibrate scale = futures / ETF.
+        if provider and str(provider).upper() != local_symbol:
+            try:
+                _remember_quote(
+                    str(provider).upper(),
+                    float(price),
+                    time.time(),
+                    float(pct) if pct is not None else None,
+                    "finnhub",
+                )
+            except (TypeError, ValueError):
+                pass
         price, prev_f = _apply_commodity_scale(local_symbol, price, prev_f)
         if price is None or price <= 0:
             return local_symbol, None, None
@@ -2110,6 +2297,7 @@ def _save_disk_quotes() -> None:
 
 
 _load_disk_quotes()
+_load_commodity_scales()
 _scrub_bad_commodity_proxy_cache()
 _seed_commodity_quotes_from_feeds()
 
@@ -2477,25 +2665,9 @@ def fetch_quotes_batch(
 
     now = datetime.now(timezone.utc).timestamp()
 
-    # Commodities: prefer Yahoo futures when reachable; skip entirely while cooling
-    # so Finnhub proxies can answer within the frontend timeout.
+    # Commodities: Finnhub ETF proxies first (stable under classroom load). Yahoo
+    # futures are a nicety — one 429 trips a global cooldown and used to block buys.
     commodity_need = [s for s in need if s in COMMODITY_BY_TICKER]
-    if commodity_need and not _yahoo_on_cooldown():
-        for symbol in commodity_need:
-            if _yahoo_on_cooldown():
-                break
-            try:
-                local, price, change_pct = _yfinance_quote_one(symbol)
-            except Exception as exc:
-                _last_quote_provider_error = f"yfinance: {exc}"
-                continue
-            if price is None:
-                continue
-            out[local] = (price, change_pct)
-            _remember_quote(local, price, now, change_pct, "yahoo")
-            sources_used.add("yfinance")
-
-    # Finnhub for stocks/FX and commodity ETF proxies when futures missed.
     finnhub_need = [
         s
         for s in need
@@ -2519,6 +2691,50 @@ def fetch_quotes_batch(
                 out[local] = (price, change_pct)
                 src_label = "proxy" if local in COMMODITY_BY_TICKER else "finnhub"
                 _remember_quote(local, price, now, change_pct, src_label)
+                sources_used.add("finnhub")
+
+    # Yahoo futures only for commodities still missing (or when forced), and never
+    # while cooling down after a 429.
+    yahoo_commodity_need = [
+        s for s in commodity_need if out[s][0] is None
+    ]
+    if yahoo_commodity_need and not _yahoo_on_cooldown():
+        for symbol in yahoo_commodity_need:
+            if _yahoo_on_cooldown():
+                break
+            try:
+                local, price, change_pct = _yfinance_quote_one(symbol)
+            except Exception as exc:
+                _last_quote_provider_error = f"yfinance: {exc}"
+                continue
+            if price is None:
+                continue
+            out[local] = (price, change_pct)
+            _remember_quote(local, price, now, change_pct, "yahoo")
+            _calibrate_commodity_scale(local, float(price))
+            sources_used.add("yfinance")
+
+    # Finnhub for any non-commodity still missing after the first pass.
+    finnhub_need = [
+        s
+        for s in need
+        if out[s][0] is None
+        and s not in COMMODITY_BY_TICKER
+    ]
+    if finnhub_configured() and not _finnhub_on_cooldown() and finnhub_need:
+        workers = min(4, len(finnhub_need))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_finnhub_quote_one, symbol) for symbol in finnhub_need]
+            for fut in as_completed(futures):
+                try:
+                    local, price, change_pct = fut.result()
+                except Exception as exc:
+                    _last_quote_provider_error = str(exc)
+                    continue
+                if price is None:
+                    continue
+                out[local] = (price, change_pct)
+                _remember_quote(local, price, now, change_pct, "finnhub")
                 sources_used.add("finnhub")
 
     # Last resort for commodities: Yahoo-quote the ETF/ETN proxy (e.g. JO for coffee)
@@ -2563,6 +2779,15 @@ def fetch_quotes_batch(
                 sources_used.add("yfinance")
                 if _yahoo_on_cooldown():
                     break
+
+    # Sparse futures samples → live ETF scales stay aligned with real $/unit.
+    if commodity_need:
+        before = len(_commodity_live_scales)
+        _maybe_calibrate_commodity_scales(commodity_need, out)
+        if len(_commodity_live_scales) > before or any(
+            quote_source_for(s) == "yahoo" for s in commodity_need
+        ):
+            sources_used.add("scale-cal")
 
     if any(out[s][0] is not None for s in need):
         _save_disk_quotes()
@@ -2809,11 +3034,23 @@ def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
             refreshed = []
             for row in cached_cat[1]:
                 next_row = dict(row)
-                next_row["price_source"] = quote_source_for(next_row["ticker"])
+                ticker = next_row["ticker"]
+                quality = commodity_price_quality(ticker)
+                next_row["price_source"] = quote_source_for(ticker)
+                next_row["price_quality"] = quality
                 next_row["buy_ok"] = bool(
                     next_row.get("price") is not None
-                    and commodity_buy_allowed(next_row["ticker"])
+                    and commodity_buy_allowed(ticker)
                 )
+                if quality == "approximate":
+                    next_row["price_note"] = (
+                        "Approximate classroom price (ETF proxy). "
+                        "Your buy locks in at this price — it won’t be rewritten later."
+                    )
+                elif quality == "futures":
+                    next_row["price_note"] = "Live futures-based classroom price."
+                else:
+                    next_row.pop("price_note", None)
                 refreshed.append(next_row)
             return refreshed
         return cached_cat[1]
@@ -2853,8 +3090,16 @@ def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
         if category == "commodities":
             src = quote_source_for(item["ticker"])
             row["price_source"] = src
-            # Only allow buys on Yahoo futures unit prices (not ETF proxies).
+            quality = commodity_price_quality(item["ticker"])
+            row["price_quality"] = quality
             row["buy_ok"] = bool(price is not None and commodity_buy_allowed(item["ticker"]))
+            if quality == "approximate":
+                row["price_note"] = (
+                    "Approximate classroom price (ETF proxy). "
+                    "Your buy locks in at this price — it won’t be rewritten later."
+                )
+            elif quality == "futures":
+                row["price_note"] = "Live futures-based classroom price."
         final.append(row)
 
     if any(row["price"] is not None for row in final):
@@ -3921,8 +4166,8 @@ def buy_shares(student_id: str):
             jsonify(
                 {
                     "error": (
-                        "Commodity buys are paused until live futures prices are back. "
-                        "You can still sell holdings."
+                        "No usable commodity price right now. "
+                        "Try again in a moment — selling still works."
                     )
                 }
             ),

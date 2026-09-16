@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { deleteStudent, getStudent } from "./api";
 import ClassAggregatePanel from "./ClassAggregatePanel";
 import ClassInviteCard from "./ClassInviteCard";
@@ -8,17 +9,21 @@ import SpinWheelModal, { SpinWheelFab } from "./SpinWheel";
 import {
   DEFAULT_MARKETS,
   createClass,
+  createHeadToHeadChallenge,
   createPendingTransfer,
   deleteClass,
   deleteClassStudent,
+  endHeadToHeadChallenge,
   ensureInviteCode,
   getActiveClassId,
   inviteUrlForCode,
   listClassStudents,
   listClasses,
   setActiveClassId,
+  subscribeHeadToHead,
   updateClassSettings,
 } from "./classStore";
+import TeacherHeadToHeadModal from "./TeacherHeadToHeadModal";
 
 /** Set true to restore class chat on the teacher dashboard. */
 const SHOW_CLASS_CHAT = false;
@@ -58,6 +63,7 @@ export default function TeacherDashboard({
   onRosterChange,
   setError,
   setBusy,
+  busy = false,
 }) {
   const [classes, setClasses] = useState([]);
   const [view, setView] = useState("list"); // list | create | class | roster | settings
@@ -74,6 +80,9 @@ export default function TeacherDashboard({
   const [pendingRemove, setPendingRemove] = useState(null);
   const [showStandings, setShowStandings] = useState(false);
   const [showSpinWheel, setShowSpinWheel] = useState(false);
+  const [headToHead, setHeadToHead] = useState(null);
+  const [confirmH2H, setConfirmH2H] = useState(false);
+  const [showH2HMatchups, setShowH2HMatchups] = useState(false);
 
   const activeClass = useMemo(
     () => classes.find((c) => c.id === activeClassId) || null,
@@ -173,6 +182,44 @@ export default function TeacherDashboard({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, activeClassId]);
+
+  useEffect(() => {
+    if (!activeClassId) {
+      setHeadToHead(null);
+      return;
+    }
+    return subscribeHeadToHead(activeClassId, setHeadToHead);
+  }, [activeClassId]);
+
+  async function startHeadToHead() {
+    if (!activeClass) return;
+    setBusy(true);
+    setError("");
+    try {
+      const challenge = await createHeadToHeadChallenge(activeClass.id);
+      setHeadToHead(challenge);
+      setConfirmH2H(false);
+    } catch (err) {
+      setError(err.message || "Could not start head-to-head");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function stopHeadToHead() {
+    if (!activeClass) return;
+    setBusy(true);
+    setError("");
+    try {
+      await endHeadToHeadChallenge(activeClass.id);
+      setHeadToHead(null);
+      setShowH2HMatchups(false);
+    } catch (err) {
+      setError(err.message || "Could not end head-to-head");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function toggleMarket(id) {
     setMarkets((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -579,6 +626,25 @@ export default function TeacherDashboard({
             >
               Class standings
             </button>
+            {headToHead ? (
+              <button
+                type="button"
+                className="ghost-btn"
+                data-click="select"
+                onClick={() => setShowH2HMatchups(true)}
+              >
+                View matchups
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="ghost-btn"
+                data-click="select"
+                onClick={() => setConfirmH2H(true)}
+              >
+                Head to head
+              </button>
+            )}
             <button
               type="button"
               className="ghost-btn"
@@ -596,6 +662,31 @@ export default function TeacherDashboard({
               Class settings
             </button>
           </div>
+
+          {headToHead && (
+            <button
+              type="button"
+              className="h2h-teacher-status"
+              data-click="select"
+              onClick={() => setShowH2HMatchups(true)}
+            >
+              Head to head is live
+              {headToHead.endsAt &&
+              typeof headToHead.endsAt.toLocaleString === "function"
+                ? ` · ends ${headToHead.endsAt.toLocaleString(undefined, {
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}`
+                : ""}
+              . Students see the challenge modal now.
+              <span className="h2h-teacher-status-go" aria-hidden="true">
+                View matchups →
+              </span>
+            </button>
+          )}
 
           {SHOW_CLASS_CHAT && (
             <ClassMessageBoard
@@ -820,52 +911,118 @@ export default function TeacherDashboard({
         />
       )}
 
-      {pendingRemove && activeClass && (
-        <div
-          className="confirm-overlay"
-          role="presentation"
-          onClick={() => setPendingRemove(null)}
-        >
-          <div
-            className="confirm-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="remove-student-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <p className="confirm-kicker">Remove student</p>
-            <h3 id="remove-student-title">Remove {pendingRemove.name}?</h3>
-            <p className="confirm-body">
-              They’ll be taken off <strong>{activeClass.name}</strong>
-              {pendingRemove.email ? (
-                <>
-                  {" "}
-                  (<span className="confirm-email">{pendingRemove.email}</span>)
-                </>
-              ) : null}
-              . Their portfolio on this computer will be deleted. This can’t be undone.
-            </p>
-            <div className="confirm-actions">
-              <button
-                type="button"
-                className="ghost-btn"
-                data-click="select"
-                onClick={() => setPendingRemove(null)}
+      {pendingRemove && activeClass
+        ? createPortal(
+            <div
+              className="confirm-overlay"
+              role="presentation"
+              onClick={() => setPendingRemove(null)}
+            >
+              <div
+                className="confirm-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="remove-student-title"
+                onClick={(e) => e.stopPropagation()}
               >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="primary-btn confirm-danger-btn"
-                data-click="confirm"
-                onClick={confirmRemoveStudent}
+                <p className="confirm-kicker">Remove student</p>
+                <h3 id="remove-student-title">
+                  Remove {pendingRemove.name}?
+                </h3>
+                <p className="confirm-body">
+                  They’ll be taken off <strong>{activeClass.name}</strong>
+                  {pendingRemove.email ? (
+                    <>
+                      {" "}
+                      (
+                      <span className="confirm-email">
+                        {pendingRemove.email}
+                      </span>
+                      )
+                    </>
+                  ) : null}
+                  . Their portfolio on this computer will be deleted. This can’t
+                  be undone.
+                </p>
+                <div className="confirm-actions">
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    data-click="select"
+                    onClick={() => setPendingRemove(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-btn confirm-danger-btn"
+                    data-click="confirm"
+                    onClick={confirmRemoveStudent}
+                  >
+                    Remove student
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+
+      {confirmH2H && activeClass
+        ? createPortal(
+            <div
+              className="confirm-overlay"
+              role="presentation"
+              onClick={() => setConfirmH2H(false)}
+            >
+              <div
+                className="confirm-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="h2h-start-title"
+                onClick={(e) => e.stopPropagation()}
               >
-                Remove student
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+                <p className="confirm-kicker">Head to head</p>
+                <h3 id="h2h-start-title">Start a class challenge?</h3>
+                <p className="confirm-body">
+                  Every student in <strong>{activeClass.name}</strong> will get
+                  a challenge modal right away. The battle runs for{" "}
+                  <strong>one week</strong> from now.
+                </p>
+                <div className="confirm-actions">
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    data-click="select"
+                    onClick={() => setConfirmH2H(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    data-click="confirm"
+                    onClick={startHeadToHead}
+                  >
+                    Start challenge
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+
+      {showH2HMatchups && activeClass && headToHead ? (
+        <TeacherHeadToHeadModal
+          open
+          onClose={() => setShowH2HMatchups(false)}
+          classId={activeClass.id}
+          challenge={headToHead}
+          onEndContest={stopHeadToHead}
+          ending={busy}
+        />
+      ) : null}
 
       <SpinWheelFab onClick={() => setShowSpinWheel(true)} />
       <SpinWheelModal

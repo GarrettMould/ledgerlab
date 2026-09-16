@@ -93,6 +93,25 @@ service cloud.firestore {
           allow delete: if isTeacher();
         }
       }
+
+      // Head-to-head match requests / accepted battles for a class season.
+      match /h2hMatches/{matchId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.keys().hasAll([
+            'seasonId', 'fromId', 'toId', 'status'
+          ])
+          && request.resource.data.seasonId is string
+          && request.resource.data.fromId is string
+          && request.resource.data.toId is string
+          && request.resource.data.fromId != request.resource.data.toId
+          && request.resource.data.status == 'pending';
+        allow update: if signedIn()
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'updatedAt', 'respondedAt', 'tickersFrom', 'tickersTo'])
+          && request.resource.data.status in ['pending', 'accepted', 'declined'];
+        allow delete: if isTeacher();
+      }
     }
   }
 }
