@@ -5,8 +5,6 @@ import {
   deleteStudent,
   getStudent,
   listClosetAiReviews,
-  listMarketExtras,
-  removeMarketExtra,
   reviewClosetAiJob,
   searchMarketTickers,
 } from "./api";
@@ -105,8 +103,6 @@ export default function TeacherDashboard({
   const [marketSearchResults, setMarketSearchResults] = useState([]);
   const [marketSearchBusy, setMarketSearchBusy] = useState(false);
   const [marketAddBusy, setMarketAddBusy] = useState("");
-  const [marketExtras, setMarketExtras] = useState([]);
-  const [marketExtrasBusy, setMarketExtrasBusy] = useState(false);
   const [marketSearchError, setMarketSearchError] = useState("");
 
   const activeClass = useMemo(
@@ -275,77 +271,6 @@ export default function TeacherDashboard({
     }
   }
 
-  async function handleAddStockRequest(row) {
-    if (!activeClassId || !teacher?.uid || !row?.id || stockRequestBusyId) return;
-    const queryText = String(row.query || "").trim();
-    if (!queryText) {
-      setError?.("This request has no ticker or company name.");
-      return;
-    }
-    setStockRequestBusyId(row.id);
-    setError?.("");
-    try {
-      const data = await searchMarketTickers(activeClassId, queryText);
-      const results = Array.isArray(data?.results) ? data.results : [];
-      const needle = queryText.toUpperCase().replace(/[^A-Z.]/g, "");
-      const exact =
-        results.find((r) => String(r.ticker || "").toUpperCase() === needle) ||
-        results.find(
-          (r) => String(r.ticker || "").toUpperCase() === queryText.toUpperCase()
-        );
-      const pick = exact || results[0];
-      if (!pick?.ticker) {
-        throw new Error(
-          `Couldn’t find a US stock for “${queryText}”. Try searching above and add it manually.`
-        );
-      }
-      await addMarketExtra(activeClassId, teacher.uid, {
-        ticker: pick.ticker,
-        name: pick.name || pick.ticker,
-        category: pick.category === "etfs" ? "etfs" : "stocks",
-        industry: "Custom",
-      });
-      await resolveStockRequest(activeClassId, row.id, "done");
-      await refreshMarketExtras(activeClassId);
-    } catch (err) {
-      setError?.(err.message || "Could not add stock from request");
-    } finally {
-      setStockRequestBusyId(null);
-    }
-  }
-
-  async function refreshMarketExtras(classId = activeClassId) {
-    if (!classId) {
-      setMarketExtras([]);
-      return [];
-    }
-    setMarketExtrasBusy(true);
-    try {
-      const data = await listMarketExtras(classId);
-      const rows = Array.isArray(data?.items) ? data.items : [];
-      setMarketExtras(rows);
-      return rows;
-    } catch (err) {
-      setMarketExtras([]);
-      setError?.(err.message || "Could not load class market tickers");
-      return [];
-    } finally {
-      setMarketExtrasBusy(false);
-    }
-  }
-
-  useEffect(() => {
-    if (view !== "class" || !activeClassId) {
-      setMarketExtras([]);
-      setMarketSearchResults([]);
-      setMarketSearchError("");
-      return undefined;
-    }
-    refreshMarketExtras(activeClassId);
-    return undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, activeClassId]);
-
   async function handleMarketSearch(e) {
     e?.preventDefault?.();
     const q = marketSearch.trim();
@@ -384,28 +309,8 @@ export default function TeacherDashboard({
           r.ticker === row.ticker ? { ...r, alreadyOnMarket: true } : r
         )
       );
-      await refreshMarketExtras(activeClassId);
     } catch (err) {
       setMarketSearchError(err.message || `Could not add ${row.ticker}`);
-    } finally {
-      setMarketAddBusy("");
-    }
-  }
-
-  async function handleRemoveMarketTicker(ticker) {
-    if (!activeClassId || !teacher?.uid || !ticker || marketAddBusy) return;
-    setMarketAddBusy(ticker);
-    setError?.("");
-    try {
-      await removeMarketExtra(activeClassId, teacher.uid, ticker);
-      await refreshMarketExtras(activeClassId);
-      setMarketSearchResults((prev) =>
-        prev.map((r) =>
-          r.ticker === ticker ? { ...r, alreadyOnMarket: false } : r
-        )
-      );
-    } catch (err) {
-      setError?.(err.message || `Could not remove ${ticker}`);
     } finally {
       setMarketAddBusy("");
     }
@@ -897,44 +802,6 @@ export default function TeacherDashboard({
                 ))}
               </div>
             ) : null}
-            <div className="market-extras-block">
-              <div className="market-extras-head">
-                <strong>Shared custom stocks</strong>
-                <button
-                  type="button"
-                  className="ghost-btn"
-                  data-click="select"
-                  disabled={marketExtrasBusy}
-                  onClick={() => refreshMarketExtras(activeClass.id)}
-                >
-                  {marketExtrasBusy ? "…" : "Refresh"}
-                </button>
-              </div>
-              {marketExtras.length === 0 ? (
-                <p className="empty">No custom tickers yet — search above to add some for every class.</p>
-              ) : (
-                <ul className="market-extras-list">
-                  {marketExtras.map((row) => (
-                    <li key={row.ticker}>
-                      <span>
-                        <strong>{row.ticker}</strong>
-                        {row.name && row.name !== row.ticker ? ` · ${row.name}` : ""}
-                        {row.category === "etfs" ? " · ETF" : ""}
-                      </span>
-                      <button
-                        type="button"
-                        className="ghost-btn"
-                        data-click="select"
-                        disabled={marketAddBusy === row.ticker || !teacher?.uid}
-                        onClick={() => handleRemoveMarketTicker(row.ticker)}
-                      >
-                        {marketAddBusy === row.ticker ? "…" : "Remove"}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
           </div>
 
           <div className="closet-review-panel">
@@ -969,12 +836,10 @@ export default function TeacherDashboard({
                         type="button"
                         className="primary-btn"
                         data-click="confirm"
-                        disabled={
-                          stockRequestBusyId === row.id || !teacher?.uid
-                        }
-                        onClick={() => handleAddStockRequest(row)}
+                        disabled={stockRequestBusyId === row.id}
+                        onClick={() => handleResolveStockRequest(row.id, "done")}
                       >
-                        {stockRequestBusyId === row.id ? "…" : "Add"}
+                        {stockRequestBusyId === row.id ? "…" : "Done"}
                       </button>
                       <button
                         type="button"
