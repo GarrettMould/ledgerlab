@@ -1,16 +1,16 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { createStockRequest } from "./classStore";
+import { createBugReport, createStockRequest } from "./classStore";
 
 const TAB_KEY = "ledgerlab.stockSuggestTabOpen";
 
 /**
- * Left-edge page tab for “Suggest a Stock” + PayPal-style request modal.
- * Collapses to a slim caret tab; expands to show the + / label.
- * On success, the modal swaps to the same green-check confirmation as trades.
+ * Left-edge page tab: Suggest a Stock + Report a Bug.
+ * Collapses to a slim caret tab; expands to show both actions.
  */
 export default function StockRequestForm({
   classId,
+  className = "",
   studentId = "",
   studentName = "",
 }) {
@@ -24,7 +24,7 @@ export default function StockRequestForm({
     }
     return true;
   });
-  const [modalOpen, setModalOpen] = useState(false);
+  const [modalKind, setModalKind] = useState(null); // "stock" | "bug" | null
   const [succeeded, setSucceeded] = useState(false);
   const [sentQuery, setSentQuery] = useState("");
   const [query, setQuery] = useState("");
@@ -32,6 +32,8 @@ export default function StockRequestForm({
   const [error, setError] = useState("");
   const inputRef = useRef(null);
   const titleId = useId();
+
+  const modalOpen = Boolean(modalKind);
 
   useEffect(() => {
     try {
@@ -68,17 +70,18 @@ export default function StockRequestForm({
   if (!classId) return null;
 
   function closeModal() {
-    setModalOpen(false);
+    setModalKind(null);
     setSucceeded(false);
     setSentQuery("");
     setQuery("");
     setError("");
   }
 
-  function openModal() {
-    setModalOpen(true);
+  function openModal(kind) {
+    setModalKind(kind);
     setSucceeded(false);
     setSentQuery("");
+    setQuery("");
     setError("");
   }
 
@@ -89,24 +92,45 @@ export default function StockRequestForm({
   async function handleSubmit(e) {
     e?.preventDefault?.();
     const text = query.trim();
-    if (!text || busy) return;
+    if (!text || busy || !modalKind) return;
     setBusy(true);
     setError("");
     try {
-      await createStockRequest(classId, {
-        query: text,
-        studentId: studentId || null,
-        studentName,
-      });
+      if (modalKind === "bug") {
+        await createBugReport(classId, {
+          message: text,
+          studentId: studentId || null,
+          studentName,
+          className,
+        });
+      } else {
+        await createStockRequest(classId, {
+          query: text,
+          studentId: studentId || null,
+          studentName,
+          className,
+        });
+      }
       setSentQuery(text);
       setQuery("");
       setSucceeded(true);
     } catch (err) {
-      setError(err.message || "Could not send request");
+      setError(err.message || "Could not send");
     } finally {
       setBusy(false);
     }
   }
+
+  const isBug = modalKind === "bug";
+  const successDetail = succeeded
+    ? isBug
+      ? sentQuery
+        ? `Reported: “${sentQuery.length > 72 ? `${sentQuery.slice(0, 72)}…` : sentQuery}”`
+        : "Bug report sent to your teacher."
+      : sentQuery
+        ? `Suggested “${sentQuery}” to your teacher.`
+        : "Sent to your teacher."
+    : "";
 
   const modal =
     modalOpen && typeof document !== "undefined"
@@ -153,11 +177,7 @@ export default function StockRequestForm({
                   <h2 id={titleId} className="stock-suggest-success-title">
                     Success!
                   </h2>
-                  <p className="trade-success-detail">
-                    {sentQuery
-                      ? `Suggested “${sentQuery}” to your teacher.`
-                      : "Sent to your teacher."}
-                  </p>
+                  <p className="trade-success-detail">{successDetail}</p>
                   <button
                     type="button"
                     className="primary-btn trade-success-btn"
@@ -179,13 +199,16 @@ export default function StockRequestForm({
                   >
                     ×
                   </button>
-                  <p className="stock-suggest-kicker">Class market</p>
+                  <p className="stock-suggest-kicker">
+                    {isBug ? "Feedback" : "Class market"}
+                  </p>
                   <h2 id={titleId} className="stock-suggest-title">
-                    Suggest a stock
+                    {isBug ? "Report a bug" : "Suggest a stock"}
                   </h2>
                   <p className="stock-suggest-sub">
-                    Tell your teacher a ticker or company you’d like added to the
-                    classroom list.
+                    {isBug
+                      ? "Tell your teacher what went wrong — they’ll see it on the dashboard."
+                      : "Tell your teacher a ticker or company you’d like added to the classroom list."}
                   </p>
                   <form
                     className="stock-suggest-modal-form"
@@ -195,19 +218,33 @@ export default function StockRequestForm({
                       className="stock-suggest-field-label"
                       htmlFor="stock-suggest-input"
                     >
-                      Symbol or company name
+                      {isBug ? "What’s the issue?" : "Symbol or company name"}
                     </label>
-                    <input
-                      id="stock-suggest-input"
-                      ref={inputRef}
-                      type="text"
-                      value={query}
-                      maxLength={80}
-                      placeholder="e.g. NVDA or Nvidia"
-                      autoComplete="off"
-                      disabled={busy}
-                      onChange={(e) => setQuery(e.target.value)}
-                    />
+                    {isBug ? (
+                      <textarea
+                        id="stock-suggest-input"
+                        ref={inputRef}
+                        value={query}
+                        maxLength={400}
+                        rows={4}
+                        placeholder="e.g. Industrials prices won’t load when I refresh"
+                        autoComplete="off"
+                        disabled={busy}
+                        onChange={(e) => setQuery(e.target.value)}
+                      />
+                    ) : (
+                      <input
+                        id="stock-suggest-input"
+                        ref={inputRef}
+                        type="text"
+                        value={query}
+                        maxLength={80}
+                        placeholder="e.g. NVDA or Nvidia"
+                        autoComplete="off"
+                        disabled={busy}
+                        onChange={(e) => setQuery(e.target.value)}
+                      />
+                    )}
                     {error ? (
                       <p className="stock-suggest-modal-error">{error}</p>
                     ) : null}
@@ -215,9 +252,17 @@ export default function StockRequestForm({
                       type="submit"
                       className="stock-suggest-submit"
                       data-click="confirm"
-                      disabled={busy || !query.trim()}
+                      disabled={
+                        busy ||
+                        !query.trim() ||
+                        (isBug && query.trim().length < 3)
+                      }
                     >
-                      {busy ? "Sending…" : "Send suggestion"}
+                      {busy
+                        ? "Sending…"
+                        : isBug
+                          ? "Send report"
+                          : "Send suggestion"}
                     </button>
                     <button
                       type="button"
@@ -245,7 +290,7 @@ export default function StockRequestForm({
             ? "stock-suggest-tab is-expanded"
             : "stock-suggest-tab is-collapsed"
         }
-        aria-label="Suggest a stock"
+        aria-label="Student feedback"
       >
         <div className="stock-suggest-tab-sheet">
           <div className="stock-suggest-tab-body">
@@ -253,12 +298,26 @@ export default function StockRequestForm({
               type="button"
               className="stock-suggest-toggle"
               data-click="select"
-              onClick={openModal}
+              onClick={() => openModal("stock")}
             >
               <span className="stock-suggest-orb" aria-hidden="true">
                 +
               </span>
               <span className="stock-suggest-caption">Suggest a Stock</span>
+            </button>
+            <button
+              type="button"
+              className="stock-suggest-toggle stock-suggest-toggle--bug"
+              data-click="select"
+              onClick={() => openModal("bug")}
+            >
+              <span
+                className="stock-suggest-orb stock-suggest-orb--bug"
+                aria-hidden="true"
+              >
+                !
+              </span>
+              <span className="stock-suggest-caption">Report a Bug</span>
             </button>
           </div>
           <button
@@ -266,7 +325,9 @@ export default function StockRequestForm({
             className="stock-suggest-carets"
             data-click="select"
             aria-expanded={tabOpen}
-            aria-label={tabOpen ? "Hide suggest a stock" : "Show suggest a stock"}
+            aria-label={
+              tabOpen ? "Hide feedback tab" : "Show feedback tab"
+            }
             onClick={toggleTab}
           >
             <span aria-hidden="true">{tabOpen ? "‹‹" : "››"}</span>

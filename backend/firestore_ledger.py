@@ -532,7 +532,7 @@ def _normalize_extra_market_row(row: dict) -> dict | None:
     return {
         "ticker": ticker,
         "name": name,
-        "industry": str(row.get("industry") or "Custom").strip()[:40] or "Custom",
+        "industry": str(row.get("industry") or "Consumer").strip()[:40] or "Consumer",
         "category": cat,
         "addedBy": row.get("addedBy"),
         "addedAtMs": int(row.get("addedAtMs") or 0),
@@ -635,7 +635,7 @@ def add_extra_market_item(
     ticker: str,
     name: str,
     category: str = "stocks",
-    industry: str = "Custom",
+    industry: str = "Consumer",
     added_by: str | None = None,
 ) -> dict:
     from firebase_admin import firestore as fs
@@ -648,10 +648,11 @@ def add_extra_market_item(
     if cat not in ("stocks", "etfs"):
         cat = "stocks"
     display_name = str(name or ticker_u).strip()[:80] or ticker_u
+    industry_s = str(industry or "Consumer").strip()[:40] or "Consumer"
     item = {
         "ticker": ticker_u,
         "name": display_name,
-        "industry": str(industry or "Custom").strip()[:40] or "Custom",
+        "industry": industry_s,
         "category": cat,
         "addedBy": (added_by or "").strip() or None,
         "addedAtMs": int(_time.time() * 1000),
@@ -720,6 +721,45 @@ def remove_extra_market_item(class_id: str | None, ticker: str) -> bool:
         merge=True,
     )
     return True
+
+
+def update_extra_market_industries(updates: dict[str, str]) -> int:
+    """Patch industry labels on global extras (e.g. remap legacy Custom)."""
+    from firebase_admin import firestore as fs
+
+    if not updates:
+        return 0
+    normalized = {
+        str(ticker or "").strip().upper(): str(industry or "").strip()[:40]
+        for ticker, industry in updates.items()
+        if str(ticker or "").strip() and str(industry or "").strip()
+    }
+    if not normalized:
+        return 0
+    _ensure_global_extra_market()
+    ref = _global_market_ref()
+    snap = ref.get()
+    if not snap.exists:
+        return 0
+    rows = list((snap.to_dict() or {}).get("extraMarketItems") or [])
+    changed = 0
+    next_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if ticker in normalized and row.get("industry") != normalized[ticker]:
+            next_rows.append({**row, "industry": normalized[ticker]})
+            changed += 1
+        else:
+            next_rows.append(row)
+    if not changed:
+        return 0
+    ref.set(
+        {"extraMarketItems": next_rows, "updatedAt": fs.SERVER_TIMESTAMP},
+        merge=True,
+    )
+    return changed
 
 
 def _rank_popular_stocks(rows: list[dict]) -> list[dict]:

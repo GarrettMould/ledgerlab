@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -164,6 +165,20 @@ HTTP_HEADERS = {
 # Free tier is ~60 calls/min — pause briefly if we get throttled.
 _finnhub_cooldown_until = 0.0
 FINNHUB_COOLDOWN_SECONDS = 65
+# Cap live Finnhub fetches per enrich so one classroom load can't burn the minute
+# on Technology→Autos and leave Industrials (last in catalog) with no price.
+FINNHUB_MAX_QUOTES_PER_BATCH = 48
+# Classroom stock filter tags — teacher-added tickers map into these (no "Custom" tab).
+CLASSROOM_INDUSTRIES = (
+    "Technology",
+    "Consumer",
+    "Finance",
+    "Healthcare",
+    "Energy",
+    "Entertainment",
+    "Autos",
+    "Industrials",
+)
 # Free Finnhub keys often 403 on forex (OANDA:*) — skip Finnhub FX after first denial.
 _finnhub_fx_blocked_until = 0.0
 FINNHUB_FX_BLOCK_SECONDS = 6 * 60 * 60
@@ -2088,6 +2103,154 @@ def _finnhub_get(path: str, params: dict | None = None) -> tuple[dict | list | N
         return None, str(exc)
 
 
+def _industry_from_text(*parts: str | None) -> str | None:
+    """Map free-text sector/industry labels onto classroom filter tags."""
+    blob = " ".join(str(p or "") for p in parts).strip().lower()
+    if not blob:
+        return None
+    # Exact-ish Finnhub sector aliases first.
+    aliases = {
+        "technology": "Technology",
+        "semiconductors": "Technology",
+        "software": "Technology",
+        "it services": "Technology",
+        "electronic technology": "Technology",
+        "communications": "Technology",
+        "retail": "Consumer",
+        "consumer cyclical": "Consumer",
+        "consumer defensive": "Consumer",
+        "consumer staples": "Consumer",
+        "consumer discretionary": "Consumer",
+        "food": "Consumer",
+        "tobacco": "Consumer",
+        "apparel": "Consumer",
+        "textiles": "Consumer",
+        "financial": "Finance",
+        "financial services": "Finance",
+        "insurance": "Finance",
+        "banks": "Finance",
+        "healthcare": "Healthcare",
+        "health care": "Healthcare",
+        "biotechnology": "Healthcare",
+        "pharmaceuticals": "Healthcare",
+        "energy": "Energy",
+        "oil": "Energy",
+        "utilities": "Energy",
+        "media": "Entertainment",
+        "communication services": "Entertainment",
+        "entertainment": "Entertainment",
+        "leisure": "Entertainment",
+        "hotels": "Entertainment",
+        "restaurants": "Entertainment",
+        "automobiles": "Autos",
+        "auto manufacturers": "Autos",
+        "auto parts": "Autos",
+        "industrials": "Industrials",
+        "industrial": "Industrials",
+        "aerospace": "Industrials",
+        "defense": "Industrials",
+        "basic materials": "Industrials",
+        "real estate": "Finance",
+    }
+    for key, industry in aliases.items():
+        if key in blob:
+            return industry
+    rules = (
+        ("Autos", ("auto", "vehicle", "ev ", "automobile")),
+        (
+            "Technology",
+            (
+                "software",
+                "semiconductor",
+                "technology",
+                "internet",
+                "chip",
+                "computer",
+                "electronic",
+                "cyber",
+            ),
+        ),
+        (
+            "Healthcare",
+            ("health", "pharma", "biotech", "medical", "drug", "therapeutics"),
+        ),
+        (
+            "Finance",
+            ("bank", "insurance", "financial", "capital market", "asset management"),
+        ),
+        ("Energy", ("oil", "gas", "energy", "petroleum", "renewable", "utility")),
+        (
+            "Entertainment",
+            (
+                "entertainment",
+                "media",
+                "gaming",
+                "streaming",
+                "broadcast",
+                "leisure",
+                "hotel",
+                "casino",
+            ),
+        ),
+        (
+            "Consumer",
+            (
+                "retail",
+                "consumer",
+                "apparel",
+                "food",
+                "beverage",
+                "restaurant",
+                "tobacco",
+                "household",
+            ),
+        ),
+        (
+            "Industrials",
+            (
+                "industrial",
+                "aerospace",
+                "defense",
+                "machinery",
+                "airline",
+                "railroad",
+                "logistics",
+                "shipping",
+                "construction",
+            ),
+        ),
+    )
+    for industry, needles in rules:
+        if any(n in blob for n in needles):
+            return industry
+    return None
+
+
+def classify_classroom_industry(
+    ticker: str, *, name: str | None = None, hint: str | None = None
+) -> str:
+    """Place a teacher-added ticker into an existing classroom industry (never Custom)."""
+    hint_s = str(hint or "").strip()
+    if hint_s in CLASSROOM_INDUSTRIES:
+        return hint_s
+    mapped = _industry_from_text(hint_s, name)
+    if mapped:
+        return mapped
+    symbol = str(ticker or "").strip().upper()
+    if symbol and finnhub_configured() and not _finnhub_on_cooldown():
+        payload, _err = _finnhub_get("/stock/profile2", {"symbol": symbol})
+        if isinstance(payload, dict):
+            mapped = _industry_from_text(
+                payload.get("finnhubIndustry"),
+                payload.get("name"),
+                name,
+            )
+            if mapped:
+                return mapped
+    mapped = _industry_from_text(name)
+    return mapped or "Consumer"
+
+
 def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | None]:
     provider, is_fx = finnhub_symbol_for(local_symbol)
     if is_fx and _finnhub_fx_blocked():
@@ -2686,6 +2849,50 @@ def _cache_get(symbol: str, *, allow_stale: bool = False) -> tuple[float | None,
     return None, None
 
 
+def _equity_industry_map() -> dict[str, str]:
+    """Ticker → industry for fair quote scheduling across catalog sectors."""
+    out: dict[str, str] = {}
+    for cat in ("stocks", "etfs"):
+        for item in MARKET_CATALOG.get(cat, []):
+            ticker = str(item.get("ticker") or "").strip().upper()
+            if ticker:
+                out[ticker] = str(item.get("industry") or "Other")
+    return out
+
+
+def _fair_quote_order(tickers: list[str]) -> list[str]:
+    """Round-robin by industry so Industrials (last in catalog) aren't starved."""
+    if not tickers:
+        return []
+    industry_of = _equity_industry_map()
+    buckets: dict[str, deque[str]] = {}
+    for symbol in tickers:
+        key = industry_of.get(symbol, "Other")
+        buckets.setdefault(key, deque()).append(symbol)
+    order: list[str] = []
+    queues = list(buckets.values())
+    while any(queues):
+        for q in queues:
+            if q:
+                order.append(q.popleft())
+    return order
+
+
+def _prioritize_finnhub_symbols(symbols: list[str], *, max_n: int) -> list[str]:
+    """Never-cached first, industry-fair, capped under free-tier Finnhub limits."""
+    if not symbols:
+        return []
+    never: list[str] = []
+    have_stale: list[str] = []
+    for symbol in symbols:
+        if _cache_get(symbol, allow_stale=True)[0] is None:
+            never.append(symbol)
+        else:
+            have_stale.append(symbol)
+    ordered = _fair_quote_order(never) + _fair_quote_order(have_stale)
+    return ordered[: max(0, int(max_n))]
+
+
 def fetch_quotes_batch(
     tickers: list[str], *, force_refresh: bool = False
 ) -> dict[str, tuple[float | None, float | None]]:
@@ -2728,6 +2935,7 @@ def fetch_quotes_batch(
         return out
 
     now = datetime.now(timezone.utc).timestamp()
+    finnhub_budget = FINNHUB_MAX_QUOTES_PER_BATCH
 
     # Currencies: Yahoo FX first. Free Finnhub keys usually 403 on OANDA forex.
     currency_need = [s for s in need if s in CURRENCY_BY_TICKER and out[s][0] is None]
@@ -2767,7 +2975,7 @@ def fetch_quotes_batch(
     # Commodities: Finnhub ETF proxies first (stable under classroom load). Yahoo
     # futures are a nicety — one 429 trips a global cooldown and used to block buys.
     commodity_need = [s for s in need if s in COMMODITY_BY_TICKER]
-    finnhub_need = [
+    finnhub_candidates = [
         s
         for s in need
         if out[s][0] is None
@@ -2777,6 +2985,14 @@ def fetch_quotes_batch(
         # Skip FX on Finnhub when free-tier access was denied.
         and not (s in CURRENCY_BY_TICKER and _finnhub_fx_blocked())
     ]
+    commodity_finnhub = [s for s in finnhub_candidates if s in COMMODITY_BY_TICKER]
+    equity_finnhub = [s for s in finnhub_candidates if s not in COMMODITY_BY_TICKER]
+    # Commodities first (small set), then industry-fair equities under the remaining budget.
+    take_cmd = commodity_finnhub[:finnhub_budget]
+    take_eq = _prioritize_finnhub_symbols(
+        equity_finnhub, max_n=max(0, finnhub_budget - len(take_cmd))
+    )
+    finnhub_need = take_cmd + take_eq
     if finnhub_configured() and not _finnhub_on_cooldown() and finnhub_need:
         workers = min(4, len(finnhub_need))
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -2793,6 +3009,7 @@ def fetch_quotes_batch(
                 src_label = "proxy" if local in COMMODITY_BY_TICKER else "finnhub"
                 _remember_quote(local, price, now, change_pct, src_label)
                 sources_used.add("finnhub")
+        finnhub_budget = max(0, finnhub_budget - len(finnhub_need))
 
     # Yahoo futures only for commodities still missing (or when forced), and never
     # while cooling down after a 429.
@@ -2824,6 +3041,7 @@ def fetch_quotes_batch(
         and s not in COMMODITY_BY_TICKER
         and not (s in CURRENCY_BY_TICKER and _finnhub_fx_blocked())
     ]
+    finnhub_need = _prioritize_finnhub_symbols(finnhub_need, max_n=finnhub_budget)
     if finnhub_configured() and not _finnhub_on_cooldown() and finnhub_need:
         workers = min(4, len(finnhub_need))
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -2864,24 +3082,25 @@ def fetch_quotes_batch(
                 _remember_quote(local, price, now, change_pct, "proxy")
                 sources_used.add("yahoo-etf")
 
-    still_need = [s for s in need if out[s][0] is None and s not in COMMODITY_BY_TICKER]
+    # Sequential Yahoo fallback — parallel fan-out trips a global 429 cooldown and
+    # leaves late catalog sectors (Industrials) with no mark.
+    still_need = _fair_quote_order(
+        [s for s in need if out[s][0] is None and s not in COMMODITY_BY_TICKER]
+    )
     if still_need and not _yahoo_on_cooldown():
-        workers = min(4, len(still_need))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_yfinance_quote_one, symbol) for symbol in still_need]
-            for fut in as_completed(futures):
-                try:
-                    local, price, change_pct = fut.result()
-                except Exception as exc:
-                    _last_quote_provider_error = f"yfinance: {exc}"
-                    continue
-                if price is None:
-                    continue
-                out[local] = (price, change_pct)
-                _remember_quote(local, price, now, change_pct, "yahoo")
-                sources_used.add("yfinance")
-                if _yahoo_on_cooldown():
-                    break
+        for symbol in still_need:
+            if _yahoo_on_cooldown():
+                break
+            try:
+                local, price, change_pct = _yfinance_quote_one(symbol)
+            except Exception as exc:
+                _last_quote_provider_error = f"yfinance: {exc}"
+                continue
+            if price is None:
+                continue
+            out[local] = (price, change_pct)
+            _remember_quote(local, price, now, change_pct, "yahoo")
+            sources_used.add("yfinance")
 
     # Sparse futures samples → live ETF scales stay aligned with real $/unit.
     if commodity_need:
@@ -3779,6 +3998,44 @@ def quote(ticker: str):
     )
 
 
+@app.get("/api/quotes")
+def quotes_many():
+    """Hydrate a small set of tickers (e.g. Industrials filter) without re-quoting all stocks."""
+    raw = request.args.get("symbols") or ""
+    symbols = []
+    seen: set[str] = set()
+    for part in raw.split(","):
+        sym = part.strip().upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        symbols.append(sym)
+        if len(symbols) >= 40:
+            break
+    if not symbols:
+        return jsonify({"quotes": {}})
+    batch = fetch_quotes_batch(symbols, force_refresh=False)
+    quotes = {}
+    for sym in symbols:
+        price, change_pct = batch.get(sym, (None, None))
+        if price is None:
+            continue
+        quotes[sym] = {
+            "ticker": sym,
+            "price": round(float(price), 2),
+            "change_pct": round(change_pct, 2) if change_pct is not None else None,
+        }
+    return jsonify(
+        {
+            "quotes": quotes,
+            "priced": len(quotes),
+            "requested": len(symbols),
+            "source": _last_quote_source,
+            "error": _last_quote_provider_error,
+        }
+    )
+
+
 def class_extra_market_tickers(class_id: str | None = None) -> set[str]:
     """Tickers teachers added to the shared classroom market (stocks / etfs)."""
     _ = class_id
@@ -3818,12 +4075,40 @@ def append_class_extra_market(
         for row in items
         if row.get("ticker")
     }
-    pending = [e for e in extras if e["ticker"] not in existing]
-    if not pending:
-        return items
+
+    pending: list[dict] = []
+    industry_updates: dict[str, str] = {}
+    for extra in extras:
+        ticker = str(extra.get("ticker") or "").strip().upper()
+        if not ticker or ticker in existing:
+            continue
+        row = dict(extra)
+        industry = str(row.get("industry") or "").strip()
+        classified = industry
+        if industry not in CLASSROOM_INDUSTRIES or industry.lower() == "custom":
+            classified = classify_classroom_industry(
+                ticker, name=row.get("name"), hint=None
+            )
+        elif industry == "Consumer":
+            # Upgrade weak first-pass defaults using the company name (no API call).
+            upgraded = _industry_from_text(row.get("name"))
+            if upgraded and upgraded != "Consumer":
+                classified = upgraded
+        if classified not in CLASSROOM_INDUSTRIES:
+            classified = "Consumer"
+        if classified != industry:
+            industry_updates[ticker] = classified
+        row["industry"] = classified
+        pending.append(row)
+
+    if industry_updates:
+        try:
+            fs_ledger.update_extra_market_industries(industry_updates)
+        except Exception:
+            pass
 
     quotes: dict[str, tuple[float | None, float | None]] = {}
-    if not catalog_only:
+    if not catalog_only and pending:
         quotes = fetch_quotes_batch(
             [e["ticker"] for e in pending], force_refresh=force_refresh
         )
@@ -3834,11 +4119,14 @@ def append_class_extra_market(
         price, change_pct = (None, None) if catalog_only else quotes.get(
             ticker, (None, None)
         )
+        industry = extra.get("industry") or "Consumer"
+        if industry not in CLASSROOM_INDUSTRIES:
+            industry = "Consumer"
         out.append(
             {
                 "ticker": ticker,
                 "name": extra.get("name") or ticker,
-                "industry": extra.get("industry") or "Custom",
+                "industry": industry,
                 "price": round(price, 2) if price is not None else None,
                 "change_pct": round(change_pct, 2) if change_pct is not None else None,
                 "asset_type": "equity",
@@ -3977,6 +4265,21 @@ def market_category(category: str):
             }
         )
 
+    # Teacher-added tickers first — small set, otherwise catalog Finnhub spend
+    # leaves extras with no mark under free-tier limits.
+    if key in {"stocks", "etfs"} and using_firestore():
+        try:
+            extras = fs_ledger.get_extra_market_items(None, category=key)
+            extra_tickers = [
+                str(row.get("ticker") or "").strip().upper()
+                for row in extras
+                if row.get("ticker")
+            ]
+            if extra_tickers:
+                fetch_quotes_batch(extra_tickers, force_refresh=force)
+        except Exception:
+            pass
+
     items = enrich_catalog(key, force_refresh=force)
     items = append_class_extra_market(
         items, key, catalog_only=False, force_refresh=force
@@ -4054,7 +4357,7 @@ def add_market_extra():
     ticker = (data.get("ticker") or "").strip().upper()
     name = (data.get("name") or ticker).strip()
     category = (data.get("category") or "stocks").strip().lower()
-    industry = (data.get("industry") or "Custom").strip() or "Custom"
+    industry_hint = (data.get("industry") or "").strip()
     if category not in ("stocks", "etfs"):
         category = "stocks"
     if not ticker:
@@ -4082,6 +4385,10 @@ def add_market_extra():
             ),
             404,
         )
+
+    industry = classify_classroom_industry(
+        ticker, name=name, hint=industry_hint or None
+    )
 
     try:
         existing = fs_ledger.get_extra_market_items(class_id)

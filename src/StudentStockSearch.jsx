@@ -13,6 +13,7 @@ const INITIAL_VISIBLE = 5;
  */
 export default function StudentStockSearch({
   classId,
+  className = "",
   studentId = "",
   studentName = "",
   cash = 0,
@@ -103,6 +104,7 @@ export default function StudentStockSearch({
         query: row.ticker,
         studentId: studentId || null,
         studentName,
+        className,
       });
       setResults((prev) =>
         prev.map((r) =>

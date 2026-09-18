@@ -121,6 +121,21 @@ export function getQuote(ticker) {
   return request(`/quote/${encodeURIComponent(ticker)}`);
 }
 
+export function getQuotes(tickers = []) {
+  const symbols = [
+    ...new Set(
+      (Array.isArray(tickers) ? tickers : [])
+        .map((t) => String(t || "").trim().toUpperCase())
+        .filter(Boolean)
+    ),
+  ].slice(0, 40);
+  if (!symbols.length) {
+    return Promise.resolve({ quotes: {} });
+  }
+  const params = new URLSearchParams({ symbols: symbols.join(",") });
+  return request(`/quotes?${params}`, { timeoutMs: 45000 });
+}
+
 export function getMarket(category, refresh = false, { catalog = false } = {}) {
   const params = new URLSearchParams();
   if (refresh) params.set("refresh", "1");
@@ -301,19 +316,20 @@ export function listMarketExtras(classId) {
 export function addMarketExtra(
   classId,
   teacherUid,
-  { ticker, name, category = "stocks", industry = "Custom" } = {}
+  { ticker, name, category = "stocks", industry } = {}
 ) {
+  const body = {
+    teacherUid,
+    ticker,
+    name,
+    category,
+  };
+  if (industry) body.industry = industry;
   return request("/teacher/market/extras", {
     method: "POST",
     classId,
     timeoutMs: 20000,
-    body: JSON.stringify({
-      teacherUid,
-      ticker,
-      name,
-      category,
-      industry,
-    }),
+    body: JSON.stringify(body),
   });
 }
 

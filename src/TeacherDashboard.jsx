@@ -30,7 +30,9 @@ import {
   setActiveClassId,
   subscribeHeadToHead,
   subscribeStockRequests,
+  subscribeBugReports,
   resolveStockRequest,
+  resolveBugReport,
   updateClassSettings,
 } from "./classStore";
 import TeacherHeadToHeadModal from "./TeacherHeadToHeadModal";
@@ -99,6 +101,8 @@ export default function TeacherDashboard({
   const [reviewBusyId, setReviewBusyId] = useState(null);
   const [stockRequests, setStockRequests] = useState([]);
   const [stockRequestBusyId, setStockRequestBusyId] = useState(null);
+  const [bugReports, setBugReports] = useState([]);
+  const [bugReportBusyId, setBugReportBusyId] = useState(null);
   const [marketSearch, setMarketSearch] = useState("");
   const [marketSearchResults, setMarketSearchResults] = useState([]);
   const [marketSearchBusy, setMarketSearchBusy] = useState(false);
@@ -248,26 +252,46 @@ export default function TeacherDashboard({
   }, [activeClassId]);
 
   useEffect(() => {
-    if (view !== "class" || !activeClassId) {
+    if (view !== "class") {
       setStockRequests([]);
+      setBugReports([]);
       return undefined;
     }
-    return subscribeStockRequests(
-      activeClassId,
+    const unsubStock = subscribeStockRequests(
       (rows) => setStockRequests(rows.filter((r) => r.status === "pending")),
       (err) => setError?.(err.message || "Could not load stock requests")
     );
-  }, [view, activeClassId, setError]);
+    const unsubBugs = subscribeBugReports(
+      (rows) => setBugReports(rows.filter((r) => r.status === "pending")),
+      (err) => setError?.(err.message || "Could not load bug reports")
+    );
+    return () => {
+      unsubStock?.();
+      unsubBugs?.();
+    };
+  }, [view, setError]);
 
   async function handleResolveStockRequest(requestId, status = "done") {
-    if (!activeClassId || !requestId || stockRequestBusyId) return;
+    if (!requestId || stockRequestBusyId) return;
     setStockRequestBusyId(requestId);
     try {
-      await resolveStockRequest(activeClassId, requestId, status);
+      await resolveStockRequest(requestId, status);
     } catch (err) {
       setError?.(err.message || "Could not update request");
     } finally {
       setStockRequestBusyId(null);
+    }
+  }
+
+  async function handleResolveBugReport(reportId, status = "done") {
+    if (!reportId || bugReportBusyId) return;
+    setBugReportBusyId(reportId);
+    try {
+      await resolveBugReport(reportId, status);
+    } catch (err) {
+      setError?.(err.message || "Could not update bug report");
+    } finally {
+      setBugReportBusyId(null);
     }
   }
 
@@ -302,7 +326,6 @@ export default function TeacherDashboard({
         ticker: row.ticker,
         name: row.name || row.ticker,
         category: row.category === "etfs" ? "etfs" : "stocks",
-        industry: "Custom",
       });
       setMarketSearchResults((prev) =>
         prev.map((r) =>
@@ -807,7 +830,7 @@ export default function TeacherDashboard({
           <div className="closet-review-panel">
             <div className="closet-review-head">
               <div>
-                <p className="closet-kicker">Market</p>
+                <p className="closet-kicker">All classes</p>
                 <strong>Stock requests</strong>
               </div>
             </div>
@@ -821,6 +844,7 @@ export default function TeacherDashboard({
                       <strong>{row.query}</strong>
                       <span>
                         requested by {row.studentName || "Student"}
+                        {row.className ? ` · ${row.className}` : ""}
                         {row.createdAt
                           ? ` · ${row.createdAt.toLocaleString?.(undefined, {
                               month: "short",
@@ -848,6 +872,62 @@ export default function TeacherDashboard({
                         disabled={stockRequestBusyId === row.id}
                         onClick={() =>
                           handleResolveStockRequest(row.id, "dismissed")
+                        }
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="closet-review-panel">
+            <div className="closet-review-head">
+              <div>
+                <p className="closet-kicker">All classes</p>
+                <strong>Bug reports</strong>
+              </div>
+            </div>
+            {bugReports.length === 0 ? (
+              <p className="empty">No pending bug reports from students.</p>
+            ) : (
+              <div className="closet-review-list">
+                {bugReports.map((row) => (
+                  <article key={row.id} className="closet-review-card">
+                    <div className="closet-review-card-main">
+                      <strong>{row.message}</strong>
+                      <span>
+                        reported by {row.studentName || "Student"}
+                        {row.className ? ` · ${row.className}` : ""}
+                        {row.createdAt
+                          ? ` · ${row.createdAt.toLocaleString?.(undefined, {
+                              month: "short",
+                              day: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            }) || ""}`
+                          : ""}
+                      </span>
+                    </div>
+                    <div className="closet-review-actions">
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        data-click="confirm"
+                        disabled={bugReportBusyId === row.id}
+                        onClick={() => handleResolveBugReport(row.id, "done")}
+                      >
+                        {bugReportBusyId === row.id ? "…" : "Done"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        data-click="select"
+                        disabled={bugReportBusyId === row.id}
+                        onClick={() =>
+                          handleResolveBugReport(row.id, "dismissed")
                         }
                       >
                         Dismiss

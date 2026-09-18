@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { buyHome, buyShares, createStudent, getMarket, getQuote, getStudent, listStudents, sellShares } from "./api";
+import { buyHome, buyShares, createStudent, getMarket, getQuote, getQuotes, getStudent, listStudents, sellShares } from "./api";
 import PriceChart from "./PriceChart";
 import PortfolioHistoryChart from "./PortfolioHistoryChart";
 import CommodityInfoTip from "./CommodityInfoTip";
@@ -622,6 +622,53 @@ function StudentPortfolio({
     };
   }, [category, setError]);
 
+  // Fill missing equity prices (Industrials used to starve under Finnhub limits).
+  useEffect(() => {
+    if (category !== "stocks" || marketLoading || marketPricesPending) return undefined;
+    const visible =
+      stockIndustry !== "All"
+        ? marketItems.filter((item) => item.industry === stockIndustry)
+        : marketItems;
+    const missing = visible
+      .filter((item) => !(Number(item.price) > 0))
+      .map((item) => String(item.ticker || "").toUpperCase())
+      .filter(Boolean);
+    if (!missing.length) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getQuotes(missing);
+        if (cancelled) return;
+        const quotes = data?.quotes || {};
+        if (!Object.keys(quotes).length) return;
+        setMarketItems((prev) =>
+          prev.map((row) => {
+            const q = quotes[String(row.ticker || "").toUpperCase()];
+            if (!q || !(Number(q.price) > 0) || Number(row.price) > 0) return row;
+            return {
+              ...row,
+              price: Number(q.price),
+              change_pct:
+                q.change_pct != null ? Number(q.change_pct) : row.change_pct,
+            };
+          })
+        );
+      } catch {
+        /* keep catalog rows; buy still blocked until a price arrives */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    category,
+    stockIndustry,
+    marketLoading,
+    marketPricesPending,
+    marketItems,
+  ]);
+
   async function refreshAll() {
     if (!selectedId) return;
     setRefreshing(true);
@@ -699,7 +746,11 @@ function StudentPortfolio({
       new Set(
         marketItems
           .map((item) => item.industry)
-          .filter(Boolean)
+          .filter(
+            (ind) =>
+              ind &&
+              String(ind).toLowerCase() !== "custom"
+          )
       )
     ).sort((a, b) => a.localeCompare(b)),
   ];
@@ -1395,6 +1446,7 @@ function StudentPortfolio({
                   {selectedId ? (
                     <StudentStockSearch
                       classId={classId}
+                      className={className || ""}
                       studentId={selectedId}
                       studentName={portfolio?.name || ""}
                       cash={portfolio?.cash ?? 0}
@@ -3442,6 +3494,7 @@ export default function App() {
       {studentSession && !joinCode && !teacher && studentSession.classId ? (
         <StockRequestForm
           classId={studentSession.classId}
+          className={studentSession.className || ""}
           studentId={
             studentSession.firestoreStudentId ||
             studentSession.apiStudentId ||

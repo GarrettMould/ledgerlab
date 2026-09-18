@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { buyShares, getMarket, getQuote, getStudent } from "./api";
+import { buyShares, getMarket, getQuote, getQuotes, getStudent } from "./api";
 import {
   AvatarCanvas,
   loadSavedOutfit,
@@ -385,7 +385,13 @@ export default function HeadToHeadModal({
     return [
       "All",
       ...Array.from(
-        new Set(shopItems.map((item) => item.industry).filter(Boolean))
+        new Set(
+          shopItems
+            .map((item) => item.industry)
+            .filter(
+              (ind) => ind && String(ind).toLowerCase() !== "custom"
+            )
+        )
       ).sort((a, b) => a.localeCompare(b)),
     ];
   }, [shopItems, shopKind]);
@@ -459,6 +465,48 @@ export default function HeadToHeadModal({
       cancelled = true;
     };
   }, [showPick, pickPane, shopKind]);
+
+  useEffect(() => {
+    if (!showPick || pickPane !== "shop" || shopLoading || shopKind !== "stocks") {
+      return undefined;
+    }
+    const visible =
+      shopIndustry !== "All"
+        ? shopItems.filter((item) => item.industry === shopIndustry)
+        : shopItems;
+    const missing = visible
+      .filter((item) => !(Number(item.price) > 0))
+      .map((item) => String(item.ticker || "").toUpperCase())
+      .filter(Boolean);
+    if (!missing.length) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getQuotes(missing);
+        if (cancelled) return;
+        const quotes = data?.quotes || {};
+        if (!Object.keys(quotes).length) return;
+        setShopItems((prev) =>
+          prev.map((row) => {
+            const q = quotes[String(row.ticker || "").toUpperCase()];
+            if (!q || !(Number(q.price) > 0) || Number(row.price) > 0) return row;
+            return {
+              ...row,
+              price: Number(q.price),
+              change_pct:
+                q.change_pct != null ? Number(q.change_pct) : row.change_pct,
+            };
+          })
+        );
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showPick, pickPane, shopKind, shopIndustry, shopLoading, shopItems]);
 
   async function exitContestBeforeFinalize() {
     if (!challenge?.id || !firestoreStudentId || busy) return;

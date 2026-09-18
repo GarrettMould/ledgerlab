@@ -154,7 +154,7 @@ export function subscribeClassExtraMarketItems(_classId, onData, onError) {
             ticker,
             name: String(row.name || ticker).slice(0, 80),
             category: cat === "etfs" ? "etfs" : "stocks",
-            industry: String(row.industry || "Custom").slice(0, 40),
+            industry: String(row.industry || "Consumer").slice(0, 40),
             addedAtMs: Math.max(0, Number(row.addedAtMs) || 0),
           };
         })
@@ -1378,23 +1378,28 @@ export function clearJoinFromUrl() {
   window.history.replaceState({}, "", url.pathname + url.search + url.hash);
 }
 
-function stockRequestsCol(classId) {
-  return collection(db, "classes", classId, "stockRequests");
+function stockRequestsCol() {
+  return collection(db, "stockRequests");
 }
 
-/** Student asks the teacher to add a ticker / company to the class market. */
+function bugReportsCol() {
+  return collection(db, "bugReports");
+}
+
+/** Student asks teachers to add a ticker / company (shared across all classes). */
 export async function createStockRequest(
   classId,
-  { query: rawQuery, studentId = null, studentName = "" } = {}
+  { query: rawQuery, studentId = null, studentName = "", className = "" } = {}
 ) {
-  if (!classId) throw new Error("Class not found.");
   const text = String(rawQuery || "").trim().slice(0, 80);
   if (text.length < 1) throw new Error("Enter a stock symbol or company name.");
   const name = (String(studentName || "").trim() || "Student").slice(0, 48);
-  const ref = await addDoc(stockRequestsCol(classId), {
+  const ref = await addDoc(stockRequestsCol(), {
     query: text,
     studentId: studentId || null,
     studentName: name,
+    classId: classId || null,
+    className: String(className || "").trim().slice(0, 80) || null,
     status: "pending",
     createdAt: serverTimestamp(),
     createdAtMs: Date.now(),
@@ -1402,12 +1407,8 @@ export async function createStockRequest(
   return { id: ref.id, query: text, studentName: name, status: "pending" };
 }
 
-export function subscribeStockRequests(classId, onData, onError) {
-  if (!classId) {
-    onData?.([]);
-    return () => {};
-  }
-  const q = query(stockRequestsCol(classId), orderBy("createdAt", "desc"), limit(40));
+export function subscribeStockRequests(onData, onError) {
+  const q = query(stockRequestsCol(), orderBy("createdAt", "desc"), limit(60));
   return onSnapshot(
     q,
     (snap) => {
@@ -1418,6 +1419,8 @@ export function subscribeStockRequests(classId, onData, onError) {
           query: String(data.query || "").slice(0, 80),
           studentId: data.studentId || null,
           studentName: String(data.studentName || "Student").slice(0, 48),
+          classId: data.classId || null,
+          className: String(data.className || "").slice(0, 80),
           status: String(data.status || "pending"),
           createdAt: data.createdAt?.toDate?.() || null,
           createdAtMs: Number(data.createdAtMs) || data.createdAt?.toMillis?.() || 0,
@@ -1432,10 +1435,68 @@ export function subscribeStockRequests(classId, onData, onError) {
   );
 }
 
-export async function resolveStockRequest(classId, requestId, status = "done") {
-  if (!classId || !requestId) return;
+export async function resolveStockRequest(requestId, status = "done") {
+  if (!requestId) return;
   const next = status === "dismissed" ? "dismissed" : "done";
-  await updateDoc(doc(db, "classes", classId, "stockRequests", requestId), {
+  await updateDoc(doc(db, "stockRequests", requestId), {
+    status: next,
+    resolvedAt: serverTimestamp(),
+  });
+}
+
+/** Student reports a product / classroom bug (shared across all classes). */
+export async function createBugReport(
+  classId,
+  { message: rawMessage, studentId = null, studentName = "", className = "" } = {}
+) {
+  const text = String(rawMessage || "").trim().slice(0, 400);
+  if (text.length < 3) throw new Error("Describe the issue in a few words.");
+  const name = (String(studentName || "").trim() || "Student").slice(0, 48);
+  const ref = await addDoc(bugReportsCol(), {
+    message: text,
+    studentId: studentId || null,
+    studentName: name,
+    classId: classId || null,
+    className: String(className || "").trim().slice(0, 80) || null,
+    status: "pending",
+    createdAt: serverTimestamp(),
+    createdAtMs: Date.now(),
+  });
+  return { id: ref.id, message: text, studentName: name, status: "pending" };
+}
+
+export function subscribeBugReports(onData, onError) {
+  const q = query(bugReportsCol(), orderBy("createdAt", "desc"), limit(60));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const rows = snap.docs.map((d) => {
+        const data = d.data() || {};
+        return {
+          id: d.id,
+          message: String(data.message || "").slice(0, 400),
+          studentId: data.studentId || null,
+          studentName: String(data.studentName || "Student").slice(0, 48),
+          classId: data.classId || null,
+          className: String(data.className || "").slice(0, 80),
+          status: String(data.status || "pending"),
+          createdAt: data.createdAt?.toDate?.() || null,
+          createdAtMs: Number(data.createdAtMs) || data.createdAt?.toMillis?.() || 0,
+        };
+      });
+      onData?.(rows);
+    },
+    (err) => {
+      onError?.(err);
+      onData?.([]);
+    }
+  );
+}
+
+export async function resolveBugReport(reportId, status = "done") {
+  if (!reportId) return;
+  const next = status === "dismissed" ? "dismissed" : "done";
+  await updateDoc(doc(db, "bugReports", reportId), {
     status: next,
     resolvedAt: serverTimestamp(),
   });
