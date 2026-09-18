@@ -376,9 +376,8 @@ export function watchAccountAuth(onChange) {
         onChange({ type: "teacher", profile: teacher });
         return;
       }
-      const { buildStudentSessionFromAuth, getStudentSession } = await import(
-        "./classStore"
-      );
+      const { buildStudentSessionFromAuth, getStudentSession, recordStudentLogin } =
+        await import("./classStore");
       const profileSnap = await getDoc(doc(db, "users", user.uid));
       const profile = profileSnap.exists() ? profileSnap.data() : {};
       let session = await buildStudentSessionFromAuth(user.uid, {
@@ -388,7 +387,17 @@ export function watchAccountAuth(onChange) {
       });
       if (!session) {
         const local = getStudentSession();
-        if (local?.authUid === user.uid) session = local;
+        if (local?.authUid === user.uid) {
+          session = local;
+          const seatId = session.firestoreStudentId || session.apiStudentId;
+          if (session.classId && seatId) {
+            recordStudentLogin(session.classId, seatId, {
+              name: session.name,
+              email: session.email || user.email,
+              authUid: user.uid,
+            }).catch(() => {});
+          }
+        }
       }
       if (session) {
         onChange({ type: "student", session });

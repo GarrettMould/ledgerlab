@@ -9,6 +9,7 @@ import {
   linkUserToClass,
   setActiveClassId,
   setStudentSession,
+  recordStudentLogin,
   tradingStudentId,
   updateClassStudent,
 } from "./classStore";
@@ -306,6 +307,11 @@ export default function StudentJoin({
       email: authUser?.email || null,
       investmentGoal: null,
     });
+    recordStudentLogin(classInfo.id, firestoreStudentId, {
+      name: displayName,
+      email: authUser?.email || null,
+      authUid: authUser?.uid || null,
+    }).catch(() => {});
     clearJoinFromUrl();
     onComplete?.({
       classId: classInfo.id,

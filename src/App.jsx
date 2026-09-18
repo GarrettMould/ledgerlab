@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { buyHome, buyShares, createStudent, getMarket, getStudent, listStudents, sellShares } from "./api";
+import { buyHome, buyShares, createStudent, getMarket, getQuote, getStudent, listStudents, sellShares } from "./api";
 import PriceChart from "./PriceChart";
 import PortfolioHistoryChart from "./PortfolioHistoryChart";
 import CommodityInfoTip from "./CommodityInfoTip";
@@ -7,14 +7,17 @@ import BondGlossaryTip from "./BondGlossaryTip";
 import ClassView from "./ClassView";
 import ClassMessageBoard from "./ClassMessageBoard";
 import NewsFeed from "./NewsFeed";
+import JobBoard from "./JobBoard";
 import TeacherDashboard from "./TeacherDashboard";
 import TeacherGate from "./TeacherGate";
 import CashTransferAlert from "./CashTransferAlert";
+import PartnershipInviteAlert from "./PartnershipInviteAlert";
 import HeadToHeadModal, {
   HeadToHeadBattleModal,
   HeadToHeadLiveMatchups,
 } from "./HeadToHeadModal";
 import TradeSuccessModal from "./TradeSuccessModal";
+import { AvatarCanvas, CLASS_FISH_OUTFIT, loadSavedOutfit } from "./StudentCharacter";
 import {
   DEFAULT_MARKETS,
   clearStudentSession,
@@ -34,6 +37,8 @@ import { setClickMuted } from "./clickSounds";
 import FloridaRealEstateMap from "./FloridaRealEstateMap";
 import MarketGlyph from "./MarketGlyph";
 import PopularStocksTicker from "./PopularStocksTicker";
+import StockRequestForm from "./StockRequestForm";
+import StudentStockSearch from "./StudentStockSearch";
 import FearGreedMeter from "./FearGreedMeter";
 import { groupHoldingsByCategory } from "./portfolioAllocation";
 import "./App.css";
@@ -353,6 +358,7 @@ function StudentPortfolio({
   classId = "",
   className = "",
   firestoreStudentId = "",
+  studentEmail = "",
   portfolioRefreshToken = 0,
   busy,
   setError,
@@ -376,6 +382,7 @@ function StudentPortfolio({
   const [marketPage, setMarketPage] = useState(0);
   const [showClass, setShowClass] = useState(false);
   const [showNews, setShowNews] = useState(false);
+  const [showJobs, setShowJobs] = useState(false);
   const [showBoard, setShowBoard] = useState(false);
   const [showH2HBattle, setShowH2HBattle] = useState(false);
   const [h2hFocusMatchId, setH2hFocusMatchId] = useState("");
@@ -392,6 +399,7 @@ function StudentPortfolio({
   const [tradeDraft, setTradeDraft] = useState(null);
   const [selectedHolding, setSelectedHolding] = useState(null);
   const [tradePulse, setTradePulse] = useState(null); // { ticker, action }
+  const [stockBuyTarget, setStockBuyTarget] = useState(null);
   const [tradeSuccess, setTradeSuccess] = useState(null);
   const tradePulseTimer = useRef(null);
   const closeTradeSuccess = useCallback(() => setTradeSuccess(null), []);
@@ -399,6 +407,46 @@ function StudentPortfolio({
     () => groupHoldingsByCategory(portfolio?.holdings),
     [portfolio?.holdings]
   );
+  const holdingsTotals = useMemo(() => {
+    const rows = portfolio?.holdings || [];
+    let invested = 0;
+    let value = 0;
+    for (const h of rows) {
+      const cost =
+        h.cost_basis != null
+          ? Number(h.cost_basis)
+          : (Number(h.avg_cost) || 0) * (Number(h.shares) || 0);
+      const item = holdingAsTradeItem(h);
+      const mv =
+        item.asset_type === "realestate" && h.equity != null
+          ? Number(h.equity)
+          : Number(h.market_value) ||
+            (Number(h.shares) || 0) * (Number(h.price) || 0);
+      if (Number.isFinite(cost)) invested += cost;
+      if (Number.isFinite(mv)) value += mv;
+    }
+    const gain = value - invested;
+    const gainPct = invested > 0 ? (gain / invested) * 100 : null;
+    return { invested, value, gain, gainPct };
+  }, [portfolio?.holdings]);
+
+  const holdingsAvatarOutfit = useMemo(
+    () =>
+      loadSavedOutfit(
+        firestoreStudentId || portfolio?.id || selectedId,
+        portfolio?.name || "Student"
+      ),
+    [firestoreStudentId, portfolio?.id, portfolio?.name, selectedId]
+  );
+
+  // Class fruit-fly benchmark: fixed paper portfolio for comparison.
+  const fruitFlyBenchmark = useMemo(() => {
+    const invested = 100000;
+    const gainPct = 4.32;
+    const value = invested * (1 + gainPct / 100);
+    const gain = value - invested;
+    return { invested, value, gain, gainPct };
+  }, []);
 
   useEffect(() => {
     // Prefer Firestore seat id over leftover numeric SQLite trading ids.
@@ -445,6 +493,7 @@ function StudentPortfolio({
       setSelectedAsset(null);
       setChartTicker(null);
       setShowNews(false);
+      setShowJobs(false);
       setShowClass(false);
       setSelectedHolding(null);
       setTradeDraft(null);
@@ -639,6 +688,10 @@ function StudentPortfolio({
   const availableCategories = categoriesForGoal(investmentGoal).filter(
     (c) => (enabledMarkets || DEFAULT_MARKETS)[c.id] !== false
   );
+  const jobBoardUnlocked =
+    String(studentEmail || "")
+      .trim()
+      .toLowerCase() === "test@gmail.com";
   const heldTickers = new Set((portfolio?.holdings || []).map((h) => h.ticker));
   const stockIndustries = [
     "All",
@@ -1038,11 +1091,11 @@ function StudentPortfolio({
         <>
           <div
             className={
-              category || showClass || showNews || showBoard
+              category || showClass || showNews || showJobs || showBoard
                 ? "student-dash collapsed"
                 : "student-dash"
             }
-            aria-hidden={Boolean(category || showClass || showNews || showBoard)}
+            aria-hidden={Boolean(category || showClass || showNews || showJobs || showBoard)}
           >
             <div className="student-dash-inner">
               <div className="balance-strip">
@@ -1077,13 +1130,21 @@ function StudentPortfolio({
             />
           )}
 
-          {showNews && !showClass && !showBoard && (
+          {showNews && !showClass && !showJobs && !showBoard && (
             <NewsFeed
               onBack={() => setShowNews(false)}
             />
           )}
 
-          {SHOW_CLASS_CHAT && showBoard && !showClass && !showNews && (classId || import.meta.env.DEV) && (
+          {showJobs && jobBoardUnlocked && !showClass && !showNews && !showBoard && (
+            <JobBoard
+              classId={classId}
+              studentId={firestoreStudentId || portfolio?.id || ""}
+              onBack={() => setShowJobs(false)}
+            />
+          )}
+
+          {SHOW_CLASS_CHAT && showBoard && !showClass && !showNews && !showJobs && (classId || import.meta.env.DEV) && (
             <ClassMessageBoard
               classId={classId}
               authorName={
@@ -1098,7 +1159,7 @@ function StudentPortfolio({
             />
           )}
 
-          {!category && !showClass && !showNews && !(SHOW_CLASS_CHAT && showBoard) && (
+          {!category && !showClass && !showNews && !showJobs && !(SHOW_CLASS_CHAT && showBoard) && (
             <div className="home-menu">
               {classId && firestoreStudentId && (
                 <HeadToHeadLiveMatchups
@@ -1110,6 +1171,7 @@ function StudentPortfolio({
                     setShowH2HBattle(true);
                     setShowClass(false);
                     setShowNews(false);
+                    setShowJobs(false);
                     setShowBoard(false);
                     setSelectedAsset(null);
                     setTradeDraft(null);
@@ -1125,6 +1187,7 @@ function StudentPortfolio({
                   onClick={() => {
                     setShowClass(true);
                     setShowNews(false);
+                    setShowJobs(false);
                     setShowBoard(false);
                     setSelectedAsset(null);
                     setTradeDraft(null);
@@ -1145,6 +1208,7 @@ function StudentPortfolio({
                   onClick={() => {
                     setShowBoard(true);
                     setShowNews(false);
+                    setShowJobs(false);
                     setShowClass(false);
                     setSelectedAsset(null);
                     setTradeDraft(null);
@@ -1163,6 +1227,7 @@ function StudentPortfolio({
                   data-click="select"
                   onClick={() => {
                     setShowNews(true);
+                    setShowJobs(false);
                     setShowClass(false);
                     setShowBoard(false);
                     setSelectedAsset(null);
@@ -1175,6 +1240,48 @@ function StudentPortfolio({
                     →
                   </span>
                 </button>
+                {jobBoardUnlocked ? (
+                  <button
+                    type="button"
+                    className="home-tool home-tool-jobs"
+                    data-click="select"
+                    title="Job board"
+                    onClick={() => {
+                      setShowJobs(true);
+                      setShowNews(false);
+                      setShowClass(false);
+                      setShowBoard(false);
+                      setSelectedAsset(null);
+                      setTradeDraft(null);
+                    }}
+                  >
+                    <span className="home-tool-kicker">Classroom</span>
+                    <strong>Job board</strong>
+                    <span className="home-tool-go" aria-hidden="true">
+                      →
+                    </span>
+                  </button>
+                ) : (
+                  <span
+                    className="home-tool-locked-wrap"
+                    title="Coming soon"
+                  >
+                    <button
+                      type="button"
+                      className="home-tool home-tool-jobs is-locked"
+                      data-click="select"
+                      disabled
+                      aria-disabled="true"
+                      aria-label="Job board — Coming soon"
+                    >
+                      <span className="home-tool-kicker">Classroom</span>
+                      <strong>Job board</strong>
+                      <span className="home-tool-go" aria-hidden="true">
+                        Soon
+                      </span>
+                    </button>
+                  </span>
+                )}
               </div>
 
               <div className="market-menu">
@@ -1221,7 +1328,7 @@ function StudentPortfolio({
             </div>
           )}
 
-          {category && !showClass && !showNews && !showBoard && (
+          {category && !showClass && !showNews && !showJobs && !showBoard && (
             <div className="market-view">
               <div className="market-toolbar">
                 <button
@@ -1233,6 +1340,7 @@ function StudentPortfolio({
                     setSelectedAsset(null);
                     setChartTicker(null);
                     setTradeDraft(null);
+                    setStockBuyTarget(null);
                     setStockIndustry("All");
                   }}
                 >
@@ -1245,18 +1353,65 @@ function StudentPortfolio({
               </div>
 
               {category === "stocks" && (
-                <PopularStocksTicker
-                  classId={classId}
-                  className={className}
-                  onPickTicker={(ticker) => {
-                    const item = marketItems.find((m) => m.ticker === ticker);
-                    if (!item) return;
-                    setStockIndustry("All");
-                    setSelectedAsset(item);
-                    setChartTicker(null);
-                    setTradeDraft(null);
-                  }}
-                />
+                <>
+                  <PopularStocksTicker
+                    classId={classId}
+                    className={className}
+                    onPickTicker={async (row) => {
+                      const ticker = String(row?.ticker || row || "").toUpperCase();
+                      if (!ticker) return;
+                      const item = marketItems.find(
+                        (m) => String(m.ticker).toUpperCase() === ticker
+                      );
+                      let price = item?.price != null ? Number(item.price) : null;
+                      let name = item?.name || row?.name || ticker;
+                      if (!(price > 0)) {
+                        try {
+                          const q = await getQuote(ticker);
+                          price = q?.price != null ? Number(q.price) : null;
+                          if (q?.name) name = q.name;
+                        } catch {
+                          /* ignore — show error below */
+                        }
+                      }
+                      if (!(price > 0)) {
+                        setError?.(
+                          `Couldn’t load a live price for ${ticker} yet — try again in a moment.`
+                        );
+                        return;
+                      }
+                      setStockBuyTarget({
+                        ticker,
+                        name,
+                        price,
+                        change_pct: item?.change_pct ?? null,
+                        asset_type: item?.asset_type || "equity",
+                      });
+                      setSelectedAsset(null);
+                      setChartTicker(null);
+                      setTradeDraft(null);
+                    }}
+                  />
+                  {selectedId ? (
+                    <StudentStockSearch
+                      classId={classId}
+                      studentId={selectedId}
+                      studentName={portfolio?.name || ""}
+                      cash={portfolio?.cash ?? 0}
+                      marketItems={marketItems}
+                      buyTarget={stockBuyTarget}
+                      onBuyTargetChange={setStockBuyTarget}
+                      setError={setError}
+                      onBought={(data, trade) => {
+                        if (data) setPortfolio(data);
+                        if (trade) {
+                          setTradePulse({ ticker: trade.ticker, action: "buy" });
+                          setTradeSuccess(trade);
+                        }
+                      }}
+                    />
+                  ) : null}
+                </>
               )}
 
               {category === "stocks" && stockIndustries.length > 1 && (
@@ -2329,7 +2484,7 @@ function StudentPortfolio({
             </div>
           )}
 
-          {!showClass && !showNews && !showBoard && (
+          {!showClass && !showNews && !showJobs && !showBoard && (
           <section className="holdings" aria-label="Your holdings">
             <div className="holdings-head">
               <h3>Your holdings</h3>
@@ -2338,6 +2493,99 @@ function StudentPortfolio({
             {(!portfolio.holdings || portfolio.holdings.length === 0) && (
               <p className="empty">No shares yet. Pick a market above to start.</p>
             )}
+            {portfolio.holdings?.length > 0 && (
+              <>
+                <div
+                  className="holdings-summary-row"
+                  aria-label="Your holdings totals"
+                >
+                  <div className="holdings-summary-avatar" aria-hidden="true">
+                    <Suspense
+                      fallback={
+                        <div className="standings-profile-avatar-fallback">
+                          <span className="busy-spinner" />
+                        </div>
+                      }
+                    >
+                      <AvatarCanvas
+                        outfit={holdingsAvatarOutfit}
+                        mode="bust"
+                        className="holdings-summary-stage"
+                      />
+                    </Suspense>
+                  </div>
+                  <div className="holdings-totals holdings-totals-inline">
+                    <div className="holdings-total">
+                      <span>Invested</span>
+                      <strong>{money(holdingsTotals.invested)}</strong>
+                    </div>
+                    <div className="holdings-total">
+                      <span>Value now</span>
+                      <strong>{money(holdingsTotals.value)}</strong>
+                    </div>
+                    <div className="holdings-total">
+                      <span>Return</span>
+                      <strong
+                        className={
+                          holdingsTotals.gainPct == null
+                            ? ""
+                            : holdingsTotals.gainPct >= 0
+                              ? "up"
+                              : "down"
+                        }
+                      >
+                        {holdingsTotals.gainPct == null
+                          ? "—"
+                          : `${holdingsTotals.gainPct >= 0 ? "+" : ""}${holdingsTotals.gainPct.toFixed(2)}%`}
+                      </strong>
+                      <em
+                        className={
+                          holdingsTotals.gain >= 0 ? "up" : "down"
+                        }
+                      >
+                        {`${holdingsTotals.gain >= 0 ? "+" : ""}${money(holdingsTotals.gain)}`}
+                      </em>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+            <div className="holdings-summary-row holdings-fly-row" aria-label="Fruit fly benchmark">
+              <div className="holdings-summary-avatar" aria-hidden="true">
+                <Suspense
+                  fallback={
+                    <div className="standings-profile-avatar-fallback">
+                      <span className="busy-spinner" />
+                    </div>
+                  }
+                >
+                  <AvatarCanvas
+                    outfit={CLASS_FISH_OUTFIT}
+                    mode="bust"
+                    className="holdings-summary-stage"
+                  />
+                </Suspense>
+              </div>
+              <div className="holdings-totals holdings-totals-inline">
+                <div className="holdings-total">
+                  <span>Invested</span>
+                  <strong>{money(fruitFlyBenchmark.invested)}</strong>
+                </div>
+                <div className="holdings-total">
+                  <span>Value now</span>
+                  <strong>{money(fruitFlyBenchmark.value)}</strong>
+                </div>
+                <div className="holdings-total">
+                  <span>Return</span>
+                  <strong className="up">
+                    +{fruitFlyBenchmark.gainPct.toFixed(2)}%
+                  </strong>
+                  <em className="up">
+                    +{money(fruitFlyBenchmark.gain)}
+                  </em>
+                </div>
+              </div>
+            </div>
             {portfolio.holdings?.length > 0 && (
               <div className="holdings-cols" aria-hidden="true">
                 <span>Holding</span>
@@ -3131,6 +3379,7 @@ export default function App() {
   } else if (teacher) {
     mainContent = (
       <TeacherDashboard
+        teacher={teacher}
         students={apiStudents}
         activeClassId={activeClassId}
         onActiveClassChange={handleActiveClassChange}
@@ -3153,6 +3402,7 @@ export default function App() {
         classId={studentSession.classId || ""}
         className={studentSession.className || ""}
         firestoreStudentId={studentSession.firestoreStudentId || ""}
+        studentEmail={studentSession.email || ""}
         portfolioRefreshToken={portfolioRefreshToken}
         busy={busy}
         setError={setError}
@@ -3189,6 +3439,17 @@ export default function App() {
   return (
     <div className="app-shell">
       <div className="bg-glow" aria-hidden="true" />
+      {studentSession && !joinCode && !teacher && studentSession.classId ? (
+        <StockRequestForm
+          classId={studentSession.classId}
+          studentId={
+            studentSession.firestoreStudentId ||
+            studentSession.apiStudentId ||
+            ""
+          }
+          studentName={studentSession.name || ""}
+        />
+      ) : null}
       <header className="topbar">
         <div className="brand">
           <p className="brand-mark">Ledger Lab</p>
@@ -3287,6 +3548,14 @@ export default function App() {
                 refreshApiStudents();
                 setPortfolioRefreshToken((n) => n + 1);
               }}
+            />
+            <PartnershipInviteAlert
+              classId={studentSession.classId}
+              studentId={
+                studentSession.firestoreStudentId ||
+                studentSession.apiStudentId ||
+                ""
+              }
             />
           </>
         )}

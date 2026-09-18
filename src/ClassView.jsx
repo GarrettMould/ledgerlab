@@ -1,13 +1,14 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { getStandings, getStudent } from "./api";
-import { listClassStudents } from "./classStore";
+import { listClassStudents, subscribeClassClosetItems } from "./classStore";
 import {
   AvatarCanvas,
   ClassWalkingStage,
   classFishWalker,
   loadSavedOutfit,
   outfitForStudent,
+  setClassClosetAccessories,
   stripPlayerFishForm,
 } from "./StudentCharacter";
 
@@ -118,6 +119,14 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
     return () => {
       cancelled = true;
     };
+  }, [classId]);
+
+  useEffect(() => {
+    if (!classId) {
+      setClassClosetAccessories([]);
+      return undefined;
+    }
+    return subscribeClassClosetItems(classId, setClassClosetAccessories);
   }, [classId]);
 
   useEffect(() => {

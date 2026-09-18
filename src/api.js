@@ -171,3 +171,159 @@ export function getNews() {
 export function getHealth() {
   return request("/health");
 }
+
+export function getClosetAiStatus(studentId, classId) {
+  const q = new URLSearchParams({ studentId: String(studentId || "") });
+  return request(`/closet/ai/status?${q}`, { classId });
+}
+
+export function startClosetAiDraft(studentId, prompt, classId) {
+  return request("/closet/ai/draft", {
+    method: "POST",
+    classId,
+    timeoutMs: 90000,
+    body: JSON.stringify({ studentId, prompt }),
+  });
+}
+
+export function pollClosetAiJob(studentId, jobId, classId) {
+  const q = new URLSearchParams({ studentId: String(studentId || "") });
+  return request(`/closet/ai/jobs/${encodeURIComponent(jobId)}?${q}`, {
+    classId,
+    timeoutMs: 180000,
+  });
+}
+
+export function publishClosetAiJob(studentId, jobId, classId, price, crewSlots = 0) {
+  const body = { studentId, jobId, crewSlots: Number(crewSlots) || 0 };
+  if (price != null && price !== "") body.price = Number(price);
+  return request("/closet/ai/publish", {
+    method: "POST",
+    classId,
+    timeoutMs: 180000,
+    body: JSON.stringify(body),
+  });
+}
+
+export function listCrewJobs(classId, studentId = "") {
+  const q = studentId
+    ? `?${new URLSearchParams({ studentId: String(studentId) })}`
+    : "";
+  return request(`/closet/crew/jobs${q}`, { classId, timeoutMs: 60000 });
+}
+
+export function inviteCrewPartner(classId, studentId, partnerId, crewJobId = "") {
+  return request("/closet/crew/invite", {
+    method: "POST",
+    classId,
+    timeoutMs: 60000,
+    body: JSON.stringify({
+      studentId,
+      partnerId,
+      ...(crewJobId ? { crewJobId } : {}),
+    }),
+  });
+}
+
+export function declineCrewInvite(classId, studentId, crewJobId) {
+  return request("/closet/crew/decline", {
+    method: "POST",
+    classId,
+    timeoutMs: 60000,
+    body: JSON.stringify({ studentId, crewJobId }),
+  });
+}
+
+export function joinCrewJob(classId, studentId, crewJobId) {
+  return request("/closet/crew/join", {
+    method: "POST",
+    classId,
+    timeoutMs: 60000,
+    body: JSON.stringify({ studentId, crewJobId }),
+  });
+}
+
+export function leaveCrewJob(classId, studentId, crewJobId) {
+  return request("/closet/crew/leave", {
+    method: "POST",
+    classId,
+    timeoutMs: 60000,
+    body: JSON.stringify({ studentId, crewJobId }),
+  });
+}
+
+export function activateClosetAiJob(studentId, jobId, classId, answers) {
+  return request("/closet/ai/activate", {
+    method: "POST",
+    classId,
+    timeoutMs: 60000,
+    body: JSON.stringify({ studentId, jobId, answers }),
+  });
+}
+
+/** Dev-only: seed a fake pending_review item for the teacher dashboard UI. */
+export function seedClosetAiTestReview(studentId, classId, answers) {
+  return request("/closet/ai/test-review", {
+    method: "POST",
+    classId,
+    timeoutMs: 60000,
+    body: JSON.stringify({ studentId, answers }),
+  });
+}
+
+export function listClosetAiReviews(classId, teacherUid) {
+  const q = new URLSearchParams({ teacherUid: String(teacherUid || "") });
+  return request(`/closet/ai/reviews?${q}`, { classId, timeoutMs: 60000 });
+}
+
+export function reviewClosetAiJob(classId, teacherUid, jobId, action, note) {
+  return request("/closet/ai/review", {
+    method: "POST",
+    classId,
+    timeoutMs: 60000,
+    body: JSON.stringify({ teacherUid, jobId, action, note: note || "" }),
+  });
+}
+
+/** Teacher Finnhub search — find stocks/ETFs to add to the class market. */
+export function searchMarketTickers(classId, query) {
+  const q = new URLSearchParams({ q: String(query || "").trim() });
+  return request(`/teacher/market/search?${q}`, {
+    classId,
+    timeoutMs: 15000,
+  });
+}
+
+export function listMarketExtras(classId) {
+  return request("/teacher/market/extras", { classId });
+}
+
+export function addMarketExtra(
+  classId,
+  teacherUid,
+  { ticker, name, category = "stocks", industry = "Custom" } = {}
+) {
+  return request("/teacher/market/extras", {
+    method: "POST",
+    classId,
+    timeoutMs: 20000,
+    body: JSON.stringify({
+      teacherUid,
+      ticker,
+      name,
+      category,
+      industry,
+    }),
+  });
+}
+
+export function removeMarketExtra(classId, teacherUid, ticker) {
+  const q = new URLSearchParams({ teacherUid: String(teacherUid || "") });
+  return request(
+    `/teacher/market/extras/${encodeURIComponent(ticker)}?${q}`,
+    {
+      method: "DELETE",
+      classId,
+    }
+  );
+}

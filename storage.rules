@@ -1,0 +1,15 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Class closet GLBs — public read so AvatarCanvas / useGLTF can load them.
+    // Writes go through the Admin SDK only.
+    match /classes/{classId}/closet/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

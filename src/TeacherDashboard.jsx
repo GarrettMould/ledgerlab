@@ -1,10 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { deleteStudent, getStudent } from "./api";
+import {
+  addMarketExtra,
+  deleteStudent,
+  getStudent,
+  listClosetAiReviews,
+  listMarketExtras,
+  removeMarketExtra,
+  reviewClosetAiJob,
+  searchMarketTickers,
+} from "./api";
 import ClassAggregatePanel from "./ClassAggregatePanel";
 import ClassInviteCard from "./ClassInviteCard";
 import ClassMessageBoard from "./ClassMessageBoard";
 import ClassView from "./ClassView";
+import ClosetReviewPreview from "./ClosetReviewPreview";
 import SpinWheelModal, { SpinWheelFab } from "./SpinWheel";
 import {
   DEFAULT_MARKETS,
@@ -21,6 +31,8 @@ import {
   listClasses,
   setActiveClassId,
   subscribeHeadToHead,
+  subscribeStockRequests,
+  resolveStockRequest,
   updateClassSettings,
 } from "./classStore";
 import TeacherHeadToHeadModal from "./TeacherHeadToHeadModal";
@@ -57,6 +69,7 @@ function parseStartingCash(raw) {
 }
 
 export default function TeacherDashboard({
+  teacher = null,
   students: apiStudents,
   activeClassId,
   onActiveClassChange,
@@ -83,6 +96,18 @@ export default function TeacherDashboard({
   const [headToHead, setHeadToHead] = useState(null);
   const [confirmH2H, setConfirmH2H] = useState(false);
   const [showH2HMatchups, setShowH2HMatchups] = useState(false);
+  const [closetReviews, setClosetReviews] = useState([]);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
+  const [reviewBusyId, setReviewBusyId] = useState(null);
+  const [stockRequests, setStockRequests] = useState([]);
+  const [stockRequestBusyId, setStockRequestBusyId] = useState(null);
+  const [marketSearch, setMarketSearch] = useState("");
+  const [marketSearchResults, setMarketSearchResults] = useState([]);
+  const [marketSearchBusy, setMarketSearchBusy] = useState(false);
+  const [marketAddBusy, setMarketAddBusy] = useState("");
+  const [marketExtras, setMarketExtras] = useState([]);
+  const [marketExtrasBusy, setMarketExtrasBusy] = useState(false);
+  const [marketSearchError, setMarketSearchError] = useState("");
 
   const activeClass = useMemo(
     () => classes.find((c) => c.id === activeClassId) || null,
@@ -93,6 +118,40 @@ export default function TeacherDashboard({
     const rows = await listClasses();
     setClasses(rows);
     return rows;
+  }
+
+  async function refreshClosetReviews(classId = activeClassId) {
+    if (!classId || !teacher?.uid) {
+      setClosetReviews([]);
+      return [];
+    }
+    setReviewsLoading(true);
+    try {
+      const data = await listClosetAiReviews(classId, teacher.uid);
+      const rows = Array.isArray(data?.reviews) ? data.reviews : [];
+      setClosetReviews(rows);
+      return rows;
+    } catch (err) {
+      setClosetReviews([]);
+      setError?.(err.message || "Could not load closet reviews");
+      return [];
+    } finally {
+      setReviewsLoading(false);
+    }
+  }
+
+  async function handleClosetReview(jobId, action) {
+    if (!activeClassId || !teacher?.uid || !jobId || reviewBusyId) return;
+    setReviewBusyId(jobId);
+    setError?.("");
+    try {
+      await reviewClosetAiJob(activeClassId, teacher.uid, jobId, action);
+      setClosetReviews((prev) => prev.filter((r) => r.jobId !== jobId));
+    } catch (err) {
+      setError?.(err.message || `Could not ${action} submission`);
+    } finally {
+      setReviewBusyId(null);
+    }
   }
 
   async function refreshRoster(classId = activeClassId) {
@@ -171,6 +230,7 @@ export default function TeacherDashboard({
         const rosterRows = await refreshRoster(activeClassId);
         if (cancelled) return;
         await loadClassAggregates(activeClassId, rosterRows);
+        if (!cancelled) await refreshClosetReviews(activeClassId);
       } catch (err) {
         if (!cancelled) setError(err.message);
       } finally {
@@ -181,7 +241,7 @@ export default function TeacherDashboard({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, activeClassId]);
+  }, [view, activeClassId, teacher?.uid]);
 
   useEffect(() => {
     if (!activeClassId) {
@@ -190,6 +250,166 @@ export default function TeacherDashboard({
     }
     return subscribeHeadToHead(activeClassId, setHeadToHead);
   }, [activeClassId]);
+
+  useEffect(() => {
+    if (view !== "class" || !activeClassId) {
+      setStockRequests([]);
+      return undefined;
+    }
+    return subscribeStockRequests(
+      activeClassId,
+      (rows) => setStockRequests(rows.filter((r) => r.status === "pending")),
+      (err) => setError?.(err.message || "Could not load stock requests")
+    );
+  }, [view, activeClassId, setError]);
+
+  async function handleResolveStockRequest(requestId, status = "done") {
+    if (!activeClassId || !requestId || stockRequestBusyId) return;
+    setStockRequestBusyId(requestId);
+    try {
+      await resolveStockRequest(activeClassId, requestId, status);
+    } catch (err) {
+      setError?.(err.message || "Could not update request");
+    } finally {
+      setStockRequestBusyId(null);
+    }
+  }
+
+  async function handleAddStockRequest(row) {
+    if (!activeClassId || !teacher?.uid || !row?.id || stockRequestBusyId) return;
+    const queryText = String(row.query || "").trim();
+    if (!queryText) {
+      setError?.("This request has no ticker or company name.");
+      return;
+    }
+    setStockRequestBusyId(row.id);
+    setError?.("");
+    try {
+      const data = await searchMarketTickers(activeClassId, queryText);
+      const results = Array.isArray(data?.results) ? data.results : [];
+      const needle = queryText.toUpperCase().replace(/[^A-Z.]/g, "");
+      const exact =
+        results.find((r) => String(r.ticker || "").toUpperCase() === needle) ||
+        results.find(
+          (r) => String(r.ticker || "").toUpperCase() === queryText.toUpperCase()
+        );
+      const pick = exact || results[0];
+      if (!pick?.ticker) {
+        throw new Error(
+          `Couldn’t find a US stock for “${queryText}”. Try searching above and add it manually.`
+        );
+      }
+      await addMarketExtra(activeClassId, teacher.uid, {
+        ticker: pick.ticker,
+        name: pick.name || pick.ticker,
+        category: pick.category === "etfs" ? "etfs" : "stocks",
+        industry: "Custom",
+      });
+      await resolveStockRequest(activeClassId, row.id, "done");
+      await refreshMarketExtras(activeClassId);
+    } catch (err) {
+      setError?.(err.message || "Could not add stock from request");
+    } finally {
+      setStockRequestBusyId(null);
+    }
+  }
+
+  async function refreshMarketExtras(classId = activeClassId) {
+    if (!classId) {
+      setMarketExtras([]);
+      return [];
+    }
+    setMarketExtrasBusy(true);
+    try {
+      const data = await listMarketExtras(classId);
+      const rows = Array.isArray(data?.items) ? data.items : [];
+      setMarketExtras(rows);
+      return rows;
+    } catch (err) {
+      setMarketExtras([]);
+      setError?.(err.message || "Could not load class market tickers");
+      return [];
+    } finally {
+      setMarketExtrasBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (view !== "class" || !activeClassId) {
+      setMarketExtras([]);
+      setMarketSearchResults([]);
+      setMarketSearchError("");
+      return undefined;
+    }
+    refreshMarketExtras(activeClassId);
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, activeClassId]);
+
+  async function handleMarketSearch(e) {
+    e?.preventDefault?.();
+    const q = marketSearch.trim();
+    if (!activeClassId || !q || marketSearchBusy) return;
+    setMarketSearchBusy(true);
+    setMarketSearchError("");
+    setError?.("");
+    try {
+      const data = await searchMarketTickers(activeClassId, q);
+      setMarketSearchResults(Array.isArray(data?.results) ? data.results : []);
+      if (!(data?.results || []).length) {
+        setMarketSearchError("No matches — try a ticker or company name.");
+      }
+    } catch (err) {
+      setMarketSearchResults([]);
+      setMarketSearchError(err.message || "Search failed");
+    } finally {
+      setMarketSearchBusy(false);
+    }
+  }
+
+  async function handleAddMarketTicker(row) {
+    if (!activeClassId || !teacher?.uid || !row?.ticker || marketAddBusy) return;
+    setMarketAddBusy(row.ticker);
+    setError?.("");
+    setMarketSearchError("");
+    try {
+      await addMarketExtra(activeClassId, teacher.uid, {
+        ticker: row.ticker,
+        name: row.name || row.ticker,
+        category: row.category === "etfs" ? "etfs" : "stocks",
+        industry: "Custom",
+      });
+      setMarketSearchResults((prev) =>
+        prev.map((r) =>
+          r.ticker === row.ticker ? { ...r, alreadyOnMarket: true } : r
+        )
+      );
+      await refreshMarketExtras(activeClassId);
+    } catch (err) {
+      setMarketSearchError(err.message || `Could not add ${row.ticker}`);
+    } finally {
+      setMarketAddBusy("");
+    }
+  }
+
+  async function handleRemoveMarketTicker(ticker) {
+    if (!activeClassId || !teacher?.uid || !ticker || marketAddBusy) return;
+    setMarketAddBusy(ticker);
+    setError?.("");
+    try {
+      await removeMarketExtra(activeClassId, teacher.uid, ticker);
+      await refreshMarketExtras(activeClassId);
+      setMarketSearchResults((prev) =>
+        prev.map((r) =>
+          r.ticker === ticker ? { ...r, alreadyOnMarket: false } : r
+        )
+      );
+    } catch (err) {
+      setError?.(err.message || `Could not remove ${ticker}`);
+    } finally {
+      setMarketAddBusy("");
+    }
+  }
 
   async function startHeadToHead() {
     if (!activeClass) return;
@@ -616,6 +836,271 @@ export default function TeacherDashboard({
             refreshing={aggRefreshing}
             onRefresh={handleAggRefresh}
           />
+
+          <div className="closet-review-panel market-search-panel">
+            <div className="closet-review-head">
+              <div>
+                <p className="closet-kicker">Market</p>
+                <strong>Add stocks with Finnhub</strong>
+              </div>
+            </div>
+            <p className="market-search-lead">
+              Search by ticker or company name, then add it for every class.
+            </p>
+            <form className="market-search-form" onSubmit={handleMarketSearch}>
+              <input
+                type="search"
+                value={marketSearch}
+                onChange={(e) => setMarketSearch(e.target.value)}
+                placeholder="e.g. NVDA or NVIDIA"
+                aria-label="Search stocks"
+                autoComplete="off"
+              />
+              <button
+                type="submit"
+                className="primary-btn"
+                data-click="confirm"
+                disabled={marketSearchBusy || !marketSearch.trim()}
+              >
+                {marketSearchBusy ? "Searching…" : "Search"}
+              </button>
+            </form>
+            {marketSearchError ? (
+              <p className="market-search-error">{marketSearchError}</p>
+            ) : null}
+            {marketSearchResults.length > 0 ? (
+              <div className="market-search-results">
+                {marketSearchResults.map((row) => (
+                  <article key={row.ticker} className="market-search-row">
+                    <div className="market-search-row-main">
+                      <strong>{row.ticker}</strong>
+                      <span>
+                        {row.name}
+                        {row.type ? ` · ${row.type}` : ""}
+                        {row.category === "etfs" ? " · ETF" : ""}
+                      </span>
+                    </div>
+                    {row.alreadyOnMarket || row.inCatalog ? (
+                      <span className="market-search-badge">On market</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        data-click="confirm"
+                        disabled={marketAddBusy === row.ticker || !teacher?.uid}
+                        onClick={() => handleAddMarketTicker(row)}
+                      >
+                        {marketAddBusy === row.ticker ? "…" : "Add"}
+                      </button>
+                    )}
+                  </article>
+                ))}
+              </div>
+            ) : null}
+            <div className="market-extras-block">
+              <div className="market-extras-head">
+                <strong>Shared custom stocks</strong>
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  data-click="select"
+                  disabled={marketExtrasBusy}
+                  onClick={() => refreshMarketExtras(activeClass.id)}
+                >
+                  {marketExtrasBusy ? "…" : "Refresh"}
+                </button>
+              </div>
+              {marketExtras.length === 0 ? (
+                <p className="empty">No custom tickers yet — search above to add some for every class.</p>
+              ) : (
+                <ul className="market-extras-list">
+                  {marketExtras.map((row) => (
+                    <li key={row.ticker}>
+                      <span>
+                        <strong>{row.ticker}</strong>
+                        {row.name && row.name !== row.ticker ? ` · ${row.name}` : ""}
+                        {row.category === "etfs" ? " · ETF" : ""}
+                      </span>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        data-click="select"
+                        disabled={marketAddBusy === row.ticker || !teacher?.uid}
+                        onClick={() => handleRemoveMarketTicker(row.ticker)}
+                      >
+                        {marketAddBusy === row.ticker ? "…" : "Remove"}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+
+          <div className="closet-review-panel">
+            <div className="closet-review-head">
+              <div>
+                <p className="closet-kicker">Market</p>
+                <strong>Stock requests</strong>
+              </div>
+            </div>
+            {stockRequests.length === 0 ? (
+              <p className="empty">No pending stock requests from students.</p>
+            ) : (
+              <div className="closet-review-list">
+                {stockRequests.map((row) => (
+                  <article key={row.id} className="closet-review-card">
+                    <div className="closet-review-card-main">
+                      <strong>{row.query}</strong>
+                      <span>
+                        requested by {row.studentName || "Student"}
+                        {row.createdAt
+                          ? ` · ${row.createdAt.toLocaleString?.(undefined, {
+                              month: "short",
+                              day: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            }) || ""}`
+                          : ""}
+                      </span>
+                    </div>
+                    <div className="closet-review-actions">
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        data-click="confirm"
+                        disabled={
+                          stockRequestBusyId === row.id || !teacher?.uid
+                        }
+                        onClick={() => handleAddStockRequest(row)}
+                      >
+                        {stockRequestBusyId === row.id ? "…" : "Add"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        data-click="select"
+                        disabled={stockRequestBusyId === row.id}
+                        onClick={() =>
+                          handleResolveStockRequest(row.id, "dismissed")
+                        }
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="closet-review-panel">
+            <div className="closet-review-head">
+              <div>
+                <p className="closet-kicker">Closet creations</p>
+                <strong>Teacher review</strong>
+              </div>
+              <button
+                type="button"
+                className="ghost-btn"
+                data-click="select"
+                disabled={reviewsLoading || !teacher?.uid}
+                onClick={() => refreshClosetReviews(activeClass.id)}
+              >
+                {reviewsLoading ? "Loading…" : "Refresh"}
+              </button>
+            </div>
+            {!teacher?.uid ? (
+              <p className="empty">Sign in again to review student creations.</p>
+            ) : closetReviews.length === 0 ? (
+              <p className="empty">
+                {reviewsLoading
+                  ? "Checking for submissions…"
+                  : "No closet items waiting for review."}
+              </p>
+            ) : (
+              <div className="closet-review-list">
+                {closetReviews.map((row) => (
+                  <article key={row.jobId} className="closet-review-card">
+                    <ClosetReviewPreview
+                      thumbnailUrl={row.thumbnailUrl}
+                      glbUrl={row.glbUrl}
+                      parts={row.parts || row.item?.parts}
+                      label={row.label || "Untitled item"}
+                    />
+                    <div className="closet-review-card-main">
+                      <strong>{row.label || "Untitled item"}</strong>
+                      <span>
+                        by {row.creatorName || "Student"}
+                        {row.kind ? ` · ${row.kind}` : ""}
+                        {row.sellPrice != null
+                          ? ` · sells for ${money(row.sellPrice)}`
+                          : ""}
+                      </span>
+                      {row.sourcePrompt ? (
+                        <p className="closet-review-prompt">
+                          Prompt: {row.sourcePrompt}
+                        </p>
+                      ) : null}
+                      {Array.isArray(row.quizAnswers) &&
+                      row.quizAnswers.length > 0 ? (
+                        <div className="closet-review-answers">
+                          {row.quizAnswers.map((qa, i) => (
+                            <div key={qa.id || i}>
+                              <em>
+                                {row.quizAnswers.length === 1
+                                  ? "Strategy response"
+                                  : `Q${i + 1}.`}{" "}
+                                {qa.prompt || "Scenario"}
+                              </em>
+                              <p>{qa.answer || "—"}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      <p className="closet-review-fee">
+                        {row.crew?.payMode === "profit_share"
+                          ? `Partnership — approve goes live; partner shares ${row.crew.profitSharePct || 50}% of sales.`
+                          : row.crew?.slots > 0
+                            ? `Approve pays ${money(row.publishFee || 0)} crew wages (${row.crew.members?.length || 0}/${row.crew.slots} hired).`
+                            : "Approve goes live with no payroll."}{" "}
+                        Deny deletes the item with no charge.
+                      </p>
+                      {Array.isArray(row.crew?.members) &&
+                      row.crew.members.length > 0 ? (
+                        <p className="closet-review-prompt">
+                          Crew:{" "}
+                          {row.crew.members
+                            .map((m) => m.studentName || "Student")
+                            .join(", ")}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="closet-review-actions">
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        data-click="confirm"
+                        disabled={reviewBusyId === row.jobId}
+                        onClick={() => handleClosetReview(row.jobId, "approve")}
+                      >
+                        {reviewBusyId === row.jobId ? "…" : "Approve"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn danger"
+                        data-click="select"
+                        disabled={reviewBusyId === row.jobId}
+                        onClick={() => handleClosetReview(row.jobId, "reject")}
+                      >
+                        Deny
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
 
           <div className="class-dashboard-actions">
             <button

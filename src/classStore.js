@@ -6,6 +6,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  increment,
   limit,
   onSnapshot,
   orderBy,
@@ -128,6 +129,104 @@ export function subscribeClassPopularStocks(classId, onData, onError) {
       });
     },
     (err) => onError?.(err)
+  );
+}
+
+/** Shared teacher-added tickers (all classes). Newest first. */
+export function subscribeClassExtraMarketItems(_classId, onData, onError) {
+  return onSnapshot(
+    doc(db, "config", "classroomMarket"),
+    (snap) => {
+      if (!snap.exists()) {
+        onData?.([]);
+        return;
+      }
+      const rows = Array.isArray(snap.data()?.extraMarketItems)
+        ? snap.data().extraMarketItems
+        : [];
+      const items = rows
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const ticker = String(row.ticker || "").trim().toUpperCase();
+          if (!ticker) return null;
+          const cat = String(row.category || "stocks").trim().toLowerCase();
+          return {
+            ticker,
+            name: String(row.name || ticker).slice(0, 80),
+            category: cat === "etfs" ? "etfs" : "stocks",
+            industry: String(row.industry || "Custom").slice(0, 40),
+            addedAtMs: Math.max(0, Number(row.addedAtMs) || 0),
+          };
+        })
+        .filter(Boolean)
+        .sort(
+          (a, b) =>
+            b.addedAtMs - a.addedAtMs || a.ticker.localeCompare(b.ticker)
+        );
+      onData?.(items);
+    },
+    (err) => onError?.(err)
+  );
+}
+
+/** Live class closet catalog (AI-published + future class items). */
+export function subscribeClassClosetItems(classId, onData, onError) {
+  if (!classId) {
+    onData?.([]);
+    return () => {};
+  }
+  return onSnapshot(
+    doc(db, "classes", classId),
+    (snap) => {
+      if (!snap.exists()) {
+        onData?.([]);
+        return;
+      }
+      const rows = Array.isArray(snap.data()?.closetItems)
+        ? snap.data().closetItems
+        : [];
+      const items = rows
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const id = String(row.id || "").trim();
+          const kind = String(row.kind || "").trim();
+          const url = String(row.url || "").trim();
+          if (!id || !kind || !url) return null;
+          // Pending quiz / teacher review — keep out of the buyable shelf.
+          if (
+            row.live === false ||
+            row.quizPending === true ||
+            row.reviewPending === true
+          ) {
+            return null;
+          }
+          return {
+            id,
+            kind,
+            label: String(row.label || id).slice(0, 48),
+            url,
+            thumbnailUrl: row.thumbnailUrl ? String(row.thumbnailUrl) : undefined,
+            attach: String(row.attach || "handR"),
+            scale: Number(row.scale) > 0 ? Number(row.scale) : undefined,
+            color: String(row.color || "#888888"),
+            accent: row.accent ? String(row.accent) : undefined,
+            price: Math.max(0, Math.round(Number(row.price) || 0)),
+            category: String(row.category || "").trim() || undefined,
+            createdBy: row.createdBy || null,
+            createdByName: row.createdByName || null,
+            sourcePrompt: row.sourcePrompt || "",
+            aiCreated: true,
+            aiSprite: row.aiSprite === true,
+            parts: Array.isArray(row.parts) ? row.parts : undefined,
+          };
+        })
+        .filter(Boolean);
+      onData?.(items);
+    },
+    (err) => {
+      onError?.(err);
+      onData?.([]);
+    }
   );
 }
 
@@ -841,7 +940,7 @@ export async function buildStudentSessionFromAuth(authUid, profile = {}) {
     email: membership.email || profile.email,
   });
 
-  return {
+  const session = {
     classId: membership.classId,
     className: cls?.name || "",
     inviteCode: cls?.inviteCode || "",
@@ -853,6 +952,12 @@ export async function buildStudentSessionFromAuth(authUid, profile = {}) {
     investmentGoal:
       membership.investmentGoal || profile.investmentGoal || null,
   };
+  recordStudentLogin(session.classId, session.firestoreStudentId, {
+    name: session.name,
+    email: session.email,
+    authUid,
+  }).catch(() => {});
+  return session;
 }
 
 export async function updateClassStudent(classId, studentId, patch) {
@@ -860,6 +965,45 @@ export async function updateClassStudent(classId, studentId, patch) {
     ...patch,
     updatedAt: serverTimestamp(),
   });
+}
+
+/** Debounce window so page refreshes don't spam login events. */
+const LOGIN_DEBOUNCE_MS = 30 * 60 * 1000;
+
+/**
+ * Record a student login: updates lastLoginAt / loginCount on the seat,
+ * and appends classes/{classId}/students/{id}/logins/{autoId}.
+ * Safe to call on every auth restore — debounced to ~30 minutes.
+ */
+export async function recordStudentLogin(classId, studentId, meta = {}) {
+  if (!classId || !studentId) return;
+  try {
+    const ref = doc(db, "classes", classId, "students", studentId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
+    const data = snap.data() || {};
+    const lastMs =
+      data.lastLoginAt?.toMillis?.() ||
+      (typeof data.lastLoginAtMs === "number" ? data.lastLoginAtMs : 0) ||
+      0;
+    if (lastMs && Date.now() - lastMs < LOGIN_DEBOUNCE_MS) return;
+
+    await updateDoc(ref, {
+      lastLoginAt: serverTimestamp(),
+      lastLoginAtMs: Date.now(),
+      loginCount: increment(1),
+      updatedAt: serverTimestamp(),
+    });
+    await addDoc(collection(db, "classes", classId, "students", studentId, "logins"), {
+      at: serverTimestamp(),
+      atMs: Date.now(),
+      name: meta.name || data.name || null,
+      email: meta.email || data.email || null,
+      authUid: meta.authUid || data.authUid || null,
+    });
+  } catch {
+    /* analytics must never block sign-in */
+  }
 }
 
 export async function getClassStudent(classId, studentId) {
@@ -1232,4 +1376,67 @@ export function clearJoinFromUrl() {
   url.searchParams.delete("join");
   if (/^#\/?join\//i.test(url.hash)) url.hash = "";
   window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+}
+
+function stockRequestsCol(classId) {
+  return collection(db, "classes", classId, "stockRequests");
+}
+
+/** Student asks the teacher to add a ticker / company to the class market. */
+export async function createStockRequest(
+  classId,
+  { query: rawQuery, studentId = null, studentName = "" } = {}
+) {
+  if (!classId) throw new Error("Class not found.");
+  const text = String(rawQuery || "").trim().slice(0, 80);
+  if (text.length < 1) throw new Error("Enter a stock symbol or company name.");
+  const name = (String(studentName || "").trim() || "Student").slice(0, 48);
+  const ref = await addDoc(stockRequestsCol(classId), {
+    query: text,
+    studentId: studentId || null,
+    studentName: name,
+    status: "pending",
+    createdAt: serverTimestamp(),
+    createdAtMs: Date.now(),
+  });
+  return { id: ref.id, query: text, studentName: name, status: "pending" };
+}
+
+export function subscribeStockRequests(classId, onData, onError) {
+  if (!classId) {
+    onData?.([]);
+    return () => {};
+  }
+  const q = query(stockRequestsCol(classId), orderBy("createdAt", "desc"), limit(40));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const rows = snap.docs.map((d) => {
+        const data = d.data() || {};
+        return {
+          id: d.id,
+          query: String(data.query || "").slice(0, 80),
+          studentId: data.studentId || null,
+          studentName: String(data.studentName || "Student").slice(0, 48),
+          status: String(data.status || "pending"),
+          createdAt: data.createdAt?.toDate?.() || null,
+          createdAtMs: Number(data.createdAtMs) || data.createdAt?.toMillis?.() || 0,
+        };
+      });
+      onData?.(rows);
+    },
+    (err) => {
+      onError?.(err);
+      onData?.([]);
+    }
+  );
+}
+
+export async function resolveStockRequest(classId, requestId, status = "done") {
+  if (!classId || !requestId) return;
+  const next = status === "dismissed" ? "dismissed" : "done";
+  await updateDoc(doc(db, "classes", classId, "stockRequests", requestId), {
+    status: next,
+    resolvedAt: serverTimestamp(),
+  });
 }

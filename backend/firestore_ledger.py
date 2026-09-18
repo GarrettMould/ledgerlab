@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import os
+import time as _time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 _db = None
@@ -73,6 +75,36 @@ def _init_app():
         pid = _project_id()
         if pid:
             opts["projectId"] = pid
+        bucket = (
+            os.environ.get("FIREBASE_STORAGE_BUCKET")
+            or os.environ.get("VITE_FIREBASE_STORAGE_BUCKET")
+            or ""
+        ).strip()
+        if not bucket:
+            try:
+                from dotenv import dotenv_values
+
+                for env_path in (
+                    Path(__file__).resolve().parent / ".env",
+                    Path(__file__).resolve().parent.parent / ".env.local",
+                ):
+                    if env_path.is_file():
+                        vals = dotenv_values(env_path)
+                        bucket = (
+                            vals.get("FIREBASE_STORAGE_BUCKET")
+                            or vals.get("VITE_FIREBASE_STORAGE_BUCKET")
+                            or bucket
+                            or ""
+                        ).strip()
+                        if bucket:
+                            break
+            except Exception:
+                pass
+        if not bucket and pid:
+            bucket = f"{pid}-closet"
+        if bucket:
+            opts["storageBucket"] = bucket
+            os.environ["FIREBASE_STORAGE_BUCKET"] = bucket
         firebase_admin.initialize_app(cred, opts or None)
         _db = firestore.client()
         _init_error = None
@@ -92,6 +124,44 @@ def _init_app():
         _init_error = msg
         _db = None
         return None
+
+
+def storage_bucket_name() -> str | None:
+    """Resolved Cloud Storage bucket for closet GLB uploads.
+
+    Re-reads backend/.env on each call so Flask reloads pick up bucket changes
+    even when the parent process still has a stale os.environ value.
+    """
+    try:
+        from dotenv import dotenv_values
+
+        env_file = Path(__file__).resolve().parent / ".env"
+        local_file = Path(__file__).resolve().parent.parent / ".env.local"
+        file_vals = {}
+        if env_file.is_file():
+            file_vals.update({k: v for k, v in dotenv_values(env_file).items() if v})
+        if local_file.is_file():
+            file_vals.update({k: v for k, v in dotenv_values(local_file).items() if v})
+        explicit = (
+            file_vals.get("FIREBASE_STORAGE_BUCKET")
+            or file_vals.get("VITE_FIREBASE_STORAGE_BUCKET")
+            or os.environ.get("FIREBASE_STORAGE_BUCKET")
+            or os.environ.get("VITE_FIREBASE_STORAGE_BUCKET")
+            or ""
+        ).strip()
+    except Exception:
+        explicit = (
+            os.environ.get("FIREBASE_STORAGE_BUCKET")
+            or os.environ.get("VITE_FIREBASE_STORAGE_BUCKET")
+            or ""
+        ).strip()
+    if explicit:
+        return explicit
+    _init_app()
+    pid = _project_id()
+    # Prefer a project-owned GCS bucket name over reserved Firebase defaults
+    # (*.firebasestorage.app / *.appspot.com) which only exist after Console setup.
+    return f"{pid}-closet" if pid else None
 
 
 def is_configured() -> bool:
@@ -141,6 +211,7 @@ def get_student(class_id: str, student_id: str) -> dict | None:
     return {
         "id": snap.id,
         "name": data.get("name") or "Student",
+        "email": (data.get("email") or "").strip().lower() or None,
         "cash": float(data.get("cash") or 0),
         "created_at": created_at,
         "auth_uid": data.get("authUid"),
@@ -443,6 +514,214 @@ def get_class(class_id: str) -> dict | None:
     return data
 
 
+def _global_market_ref():
+    """Shared teacher-added tickers — one catalog for every class."""
+    return db().collection("config").document("classroomMarket")
+
+
+def _normalize_extra_market_row(row: dict) -> dict | None:
+    if not isinstance(row, dict):
+        return None
+    ticker = str(row.get("ticker") or "").strip().upper()
+    if not ticker:
+        return None
+    cat = str(row.get("category") or "stocks").strip().lower()
+    if cat not in ("stocks", "etfs"):
+        cat = "stocks"
+    name = str(row.get("name") or ticker).strip()[:80] or ticker
+    return {
+        "ticker": ticker,
+        "name": name,
+        "industry": str(row.get("industry") or "Custom").strip()[:40] or "Custom",
+        "category": cat,
+        "addedBy": row.get("addedBy"),
+        "addedAtMs": int(row.get("addedAtMs") or 0),
+        "custom": True,
+        "info": row.get("info")
+        or {
+            "summary": f"{name} was added to the shared classroom market by a teacher."
+        },
+    }
+
+
+def _merge_extra_market_rows(*lists: list) -> list[dict]:
+    by_ticker: dict[str, dict] = {}
+    for rows in lists:
+        for row in rows or []:
+            item = _normalize_extra_market_row(row if isinstance(row, dict) else {})
+            if not item:
+                continue
+            prev = by_ticker.get(item["ticker"])
+            if not prev or item["addedAtMs"] >= prev["addedAtMs"]:
+                by_ticker[item["ticker"]] = item
+    out = list(by_ticker.values())
+    out.sort(key=lambda r: r["ticker"])
+    return out
+
+
+def migrate_extra_market_items_to_global(*, clear_class_fields: bool = True) -> dict:
+    """Union every class's extraMarketItems into the shared catalog (retroactive)."""
+    from firebase_admin import firestore as fs
+
+    ref = _global_market_ref()
+    snap = ref.get()
+    existing = list((snap.to_dict() or {}).get("extraMarketItems") or []) if snap.exists else []
+
+    class_lists: list[list] = []
+    cleared = 0
+    for csnap in db().collection("classes").stream():
+        data = csnap.to_dict() or {}
+        rows = list(data.get("extraMarketItems") or [])
+        if not rows:
+            continue
+        class_lists.append(rows)
+        if clear_class_fields:
+            csnap.reference.set(
+                {"extraMarketItems": [], "updatedAt": fs.SERVER_TIMESTAMP},
+                merge=True,
+            )
+            cleared += 1
+
+    merged = _merge_extra_market_rows(existing, *class_lists)
+    ref.set(
+        {
+            "extraMarketItems": merged,
+            "updatedAt": fs.SERVER_TIMESTAMP,
+            "migratedFromClassesAt": fs.SERVER_TIMESTAMP,
+            "scope": "global",
+        },
+        merge=True,
+    )
+    return {"count": len(merged), "classesCleared": cleared}
+
+
+def _ensure_global_extra_market() -> list[dict]:
+    """Return shared extras, migrating per-class leftovers once if needed."""
+    ref = _global_market_ref()
+    snap = ref.get()
+    data = snap.to_dict() or {} if snap.exists else {}
+    if not data.get("migratedFromClassesAt"):
+        try:
+            migrate_extra_market_items_to_global(clear_class_fields=True)
+            snap = ref.get()
+            data = snap.to_dict() or {} if snap.exists else {}
+        except Exception:
+            pass
+    return list(data.get("extraMarketItems") or [])
+
+
+def get_extra_market_items(class_id: str | None = None, category: str | None = None) -> list[dict]:
+    """Teacher-added tickers shared by every class (stocks / etfs).
+
+    class_id is accepted for call-site compatibility but ignored — catalog is global.
+    """
+    _ = class_id
+    rows = _ensure_global_extra_market()
+    out = []
+    for row in rows:
+        item = _normalize_extra_market_row(row if isinstance(row, dict) else {})
+        if not item:
+            continue
+        if category and item["category"] != category:
+            continue
+        out.append(item)
+    out.sort(key=lambda r: (-int(r.get("addedAtMs") or 0), r["ticker"]))
+    return out
+
+
+def add_extra_market_item(
+    class_id: str | None = None,
+    *,
+    ticker: str,
+    name: str,
+    category: str = "stocks",
+    industry: str = "Custom",
+    added_by: str | None = None,
+) -> dict:
+    from firebase_admin import firestore as fs
+
+    _ = class_id
+    ticker_u = str(ticker or "").strip().upper()
+    if not ticker_u or len(ticker_u) > 12:
+        raise ValueError("Enter a valid ticker")
+    cat = str(category or "stocks").strip().lower()
+    if cat not in ("stocks", "etfs"):
+        cat = "stocks"
+    display_name = str(name or ticker_u).strip()[:80] or ticker_u
+    item = {
+        "ticker": ticker_u,
+        "name": display_name,
+        "industry": str(industry or "Custom").strip()[:40] or "Custom",
+        "category": cat,
+        "addedBy": (added_by or "").strip() or None,
+        "addedAtMs": int(_time.time() * 1000),
+        "custom": True,
+        "info": {
+            "summary": (
+                f"{display_name} was added to the shared classroom market by a teacher."
+            )
+        },
+    }
+    _ensure_global_extra_market()
+    ref = _global_market_ref()
+    snap = ref.get()
+    rows = list((snap.to_dict() or {}).get("extraMarketItems") or []) if snap.exists else []
+    next_rows = []
+    replaced = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("ticker") or "").strip().upper() == ticker_u:
+            next_rows.append({**row, **item})
+            replaced = True
+        else:
+            next_rows.append(row)
+    if not replaced:
+        next_rows.append(item)
+    if len(next_rows) > 80 and not replaced:
+        raise ValueError("Shared classroom market already has 80 custom tickers")
+    prior = (snap.to_dict() or {}) if snap.exists else {}
+    payload = {
+        "extraMarketItems": next_rows,
+        "updatedAt": fs.SERVER_TIMESTAMP,
+        "scope": "global",
+    }
+    if prior.get("migratedFromClassesAt"):
+        payload["migratedFromClassesAt"] = prior["migratedFromClassesAt"]
+    else:
+        payload["migratedFromClassesAt"] = fs.SERVER_TIMESTAMP
+    ref.set(payload, merge=True)
+    return item
+
+
+def remove_extra_market_item(class_id: str | None, ticker: str) -> bool:
+    from firebase_admin import firestore as fs
+
+    _ = class_id
+    ticker_u = str(ticker or "").strip().upper()
+    if not ticker_u:
+        return False
+    _ensure_global_extra_market()
+    ref = _global_market_ref()
+    snap = ref.get()
+    if not snap.exists:
+        return False
+    rows = list((snap.to_dict() or {}).get("extraMarketItems") or [])
+    next_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and str(row.get("ticker") or "").strip().upper() != ticker_u
+    ]
+    if len(next_rows) == len(rows):
+        return False
+    ref.set(
+        {"extraMarketItems": next_rows, "updatedAt": fs.SERVER_TIMESTAMP},
+        merge=True,
+    )
+    return True
+
+
 def _rank_popular_stocks(rows: list[dict]) -> list[dict]:
     cleaned = []
     for row in rows:
@@ -557,3 +836,54 @@ def adjust_popular_stock(
     else:
         by_ticker[ticker] = row
     return write_popular_stocks(class_id, list(by_ticker.values()))
+
+
+def record_trade(
+    class_id: str,
+    student_id: str,
+    *,
+    side: str,
+    ticker: str,
+    shares: float,
+    price: float,
+    notional: float | None = None,
+    kind: str = "market",
+    student_name: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    """Append a trade to class + student trade logs (best-effort analytics)."""
+    if not class_id or not student_id or not ticker:
+        return
+    from firebase_admin import firestore as fs
+    import time as _time
+
+    side_norm = str(side or "").strip().lower()
+    if side_norm not in ("buy", "sell"):
+        side_norm = "buy"
+    qty = float(shares)
+    px = float(price)
+    total = float(notional) if notional is not None else qty * px
+    payload: dict[str, Any] = {
+        "studentId": student_id,
+        "studentName": student_name or None,
+        "side": side_norm,
+        "ticker": str(ticker).strip().upper(),
+        "shares": qty,
+        "price": px,
+        "notional": total,
+        "kind": str(kind or "market"),
+        "createdAt": fs.SERVER_TIMESTAMP,
+        "createdAtMs": int(_time.time() * 1000),
+    }
+    if extra and isinstance(extra, dict):
+        for key, val in extra.items():
+            if key not in payload and val is not None:
+                payload[key] = val
+    try:
+        class_ref(class_id).collection("trades").document().set(payload)
+    except Exception:
+        pass
+    try:
+        student_ref(class_id, student_id).collection("trades").document().set(payload)
+    except Exception:
+        pass

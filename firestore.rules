@@ -21,11 +21,23 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Shared classroom market extras (teacher-added tickers for every class).
+    // Writes go through Admin SDK / Flask only.
+    match /config/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     match /classes/{classId} {
       // Invite links look up a class by inviteCode BEFORE the student signs in.
       // Class docs are OK to read publicly; roster/cash stay protected below.
       allow read: if true;
-      allow write: if signedIn();
+      allow create: if signedIn();
+      // closetItems are published only via Admin SDK (AI creator).
+      allow update: if signedIn()
+        && !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(['closetItems']);
+      allow delete: if signedIn();
 
       match /students/{studentId} {
         allow read: if signedIn();
@@ -45,11 +57,51 @@ service cloud.firestore {
           allow write: if false;
         }
 
+        // Login analytics — students append their own login events.
+        match /logins/{loginId} {
+          allow read: if signedIn();
+          allow create: if signedIn();
+          allow update, delete: if false;
+        }
+
+        // Per-student trade log (written by Admin SDK / Flask).
+        match /trades/{tradeId} {
+          allow read: if signedIn();
+          allow write: if false;
+        }
+
         match /transfers/{transferId} {
           allow read: if signedIn();
           allow create, update: if signedIn();
           allow delete: if false;
         }
+      }
+
+      // Class-wide trade log (written by Admin SDK / Flask).
+      match /trades/{tradeId} {
+        allow read: if signedIn();
+        allow write: if false;
+      }
+
+      // Student stock add-requests for the teacher.
+      match /stockRequests/{requestId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.query is string
+          && request.resource.data.query.size() > 0
+          && request.resource.data.query.size() <= 80
+          && request.resource.data.status == 'pending';
+        allow update: if signedIn()
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'resolvedAt'])
+          && request.resource.data.status in ['pending', 'done', 'dismissed'];
+        allow delete: if isTeacher();
+      }
+
+      // Closet crew job board (written by Admin SDK / Flask).
+      match /crewJobs/{crewJobId} {
+        allow read: if signedIn();
+        allow write: if false;
       }
 
       match /messages/{messageId} {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,8 +31,10 @@ from portfolio_service import (
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(Path(__file__).resolve().parent / ".env")
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    # override=True so .env edits (e.g. FIREBASE_STORAGE_BUCKET) apply on Flask reload
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env.local", override=True)
 except ImportError:
     pass
 
@@ -161,6 +164,9 @@ HTTP_HEADERS = {
 # Free tier is ~60 calls/min — pause briefly if we get throttled.
 _finnhub_cooldown_until = 0.0
 FINNHUB_COOLDOWN_SECONDS = 65
+# Free Finnhub keys often 403 on forex (OANDA:*) — skip Finnhub FX after first denial.
+_finnhub_fx_blocked_until = 0.0
+FINNHUB_FX_BLOCK_SECONDS = 6 * 60 * 60
 # Yahoo chart/futures 429s — skip Yahoo for a bit so Finnhub can answer fast.
 _yahoo_cooldown_until = 0.0
 YAHOO_COOLDOWN_SECONDS = 90
@@ -254,6 +260,16 @@ def _trip_finnhub_cooldown() -> None:
     _finnhub_cooldown_until = time.time() + FINNHUB_COOLDOWN_SECONDS
 
 
+def _finnhub_fx_blocked() -> bool:
+    return time.time() < _finnhub_fx_blocked_until
+
+
+def _trip_finnhub_fx_block() -> None:
+    """Free Finnhub plans reject forex — stop retrying OANDA symbols for a while."""
+    global _finnhub_fx_blocked_until
+    _finnhub_fx_blocked_until = time.time() + FINNHUB_FX_BLOCK_SECONDS
+
+
 def _yahoo_on_cooldown() -> bool:
     return time.time() < _yahoo_cooldown_until
 
@@ -267,7 +283,8 @@ def finnhub_configured() -> bool:
     return bool(FINNHUB_API_KEY)
 
 
-# Curated classroom menus. Stocks/ETFs/commodities/currencies use Finnhub;
+# Curated classroom menus. Stocks/ETFs/commodities use Finnhub when available;
+# currencies prefer Yahoo FX (free Finnhub keys usually deny OANDA forex).
 # bonds use fixed offerings (+ live Treasury yields); realestate uses city indexes.
 MARKET_CATALOG = {
     "stocks": [
@@ -2003,6 +2020,47 @@ def currency_usd_price(raw: float, meta: dict) -> float:
     return price * lot
 
 
+def _frankfurter_currency_quotes(
+    symbols: list[str],
+) -> dict[str, tuple[float | None, float | None]]:
+    """Free ECB FX via Frankfurter — no API key. Rates are foreign units per 1 USD."""
+    wanted = [s for s in symbols if s in CURRENCY_BY_TICKER]
+    out: dict[str, tuple[float | None, float | None]] = {}
+    if not wanted:
+        return out
+    try:
+        res = requests.get(
+            "https://api.frankfurter.app/latest",
+            params={"from": "USD", "to": ",".join(sorted(set(wanted)))},
+            timeout=10,
+        )
+        if res.status_code != 200:
+            return out
+        payload = res.json() or {}
+        rates = payload.get("rates") or {}
+    except Exception:
+        return out
+
+    for symbol in wanted:
+        meta = CURRENCY_BY_TICKER[symbol]
+        try:
+            foreign_per_usd = float(rates.get(symbol))
+        except (TypeError, ValueError):
+            continue
+        if foreign_per_usd <= 0:
+            continue
+        # Classroom price is always USD per unit (or pack).
+        # invert tickers are quoted as foreign-per-USD (same as USD_JPY).
+        raw = foreign_per_usd if meta.get("invert") else (1.0 / foreign_per_usd)
+        try:
+            price = currency_usd_price(raw, meta)
+        except Exception:
+            continue
+        if price and price > 0:
+            out[symbol] = (price, None)
+    return out
+
+
 def _finnhub_get(path: str, params: dict | None = None) -> tuple[dict | list | None, str | None]:
     if not FINNHUB_API_KEY:
         return None, "FINNHUB_API_KEY is not set"
@@ -2031,11 +2089,17 @@ def _finnhub_get(path: str, params: dict | None = None) -> tuple[dict | list | N
 
 
 def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | None]:
-    provider, _is_fx = finnhub_symbol_for(local_symbol)
+    provider, is_fx = finnhub_symbol_for(local_symbol)
+    if is_fx and _finnhub_fx_blocked():
+        return local_symbol, None, None
     payload, err = _finnhub_get("/quote", {"symbol": provider})
     if err:
         global _last_quote_provider_error
-        _last_quote_provider_error = err
+        # Forex 403 is expected on free Finnhub — don't poison the UI error; Yahoo handles FX.
+        if is_fx and ("403" in err or "don't have access" in err.lower() or "access" in err.lower()):
+            _trip_finnhub_fx_block()
+        else:
+            _last_quote_provider_error = err
     if not isinstance(payload, dict):
         return local_symbol, None, None
     current = payload.get("c")
@@ -2665,6 +2729,41 @@ def fetch_quotes_batch(
 
     now = datetime.now(timezone.utc).timestamp()
 
+    # Currencies: Yahoo FX first. Free Finnhub keys usually 403 on OANDA forex.
+    currency_need = [s for s in need if s in CURRENCY_BY_TICKER and out[s][0] is None]
+    if currency_need and not _yahoo_on_cooldown():
+        workers = min(4, len(currency_need))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_yfinance_quote_one, symbol) for symbol in currency_need]
+            for fut in as_completed(futures):
+                try:
+                    local, price, change_pct = fut.result()
+                except Exception as exc:
+                    _last_quote_provider_error = f"yfinance: {exc}"
+                    continue
+                if price is None:
+                    continue
+                out[local] = (price, change_pct)
+                _remember_quote(local, price, now, change_pct, "yahoo")
+                sources_used.add("yfinance")
+                if _yahoo_on_cooldown():
+                    break
+
+    # Free ECB rates when Yahoo is blocked / Finnhub denies forex.
+    currency_need = [s for s in need if s in CURRENCY_BY_TICKER and out[s][0] is None]
+    if currency_need:
+        try:
+            fx_marks = _frankfurter_currency_quotes(currency_need)
+        except Exception as exc:
+            _last_quote_provider_error = f"frankfurter: {exc}"
+            fx_marks = {}
+        for local, (price, change_pct) in fx_marks.items():
+            if price is None:
+                continue
+            out[local] = (price, change_pct)
+            _remember_quote(local, price, now, change_pct, "ecb")
+            sources_used.add("frankfurter")
+
     # Commodities: Finnhub ETF proxies first (stable under classroom load). Yahoo
     # futures are a nicety — one 429 trips a global cooldown and used to block buys.
     commodity_need = [s for s in need if s in COMMODITY_BY_TICKER]
@@ -2675,6 +2774,8 @@ def fetch_quotes_batch(
         and not (
             s in COMMODITY_BY_TICKER and not COMMODITY_BY_TICKER[s].get("finnhub")
         )
+        # Skip FX on Finnhub when free-tier access was denied.
+        and not (s in CURRENCY_BY_TICKER and _finnhub_fx_blocked())
     ]
     if finnhub_configured() and not _finnhub_on_cooldown() and finnhub_need:
         workers = min(4, len(finnhub_need))
@@ -2714,12 +2815,14 @@ def fetch_quotes_batch(
             _calibrate_commodity_scale(local, float(price))
             sources_used.add("yfinance")
 
-    # Finnhub for any non-commodity still missing after the first pass.
+    # Finnhub for any non-commodity still missing after the first pass
+    # (stocks/ETFs; currencies only if Yahoo missed and FX isn't blocked).
     finnhub_need = [
         s
         for s in need
         if out[s][0] is None
         and s not in COMMODITY_BY_TICKER
+        and not (s in CURRENCY_BY_TICKER and _finnhub_fx_blocked())
     ]
     if finnhub_configured() and not _finnhub_on_cooldown() and finnhub_need:
         workers = min(4, len(finnhub_need))
@@ -2791,6 +2894,8 @@ def fetch_quotes_batch(
 
     if any(out[s][0] is not None for s in need):
         _save_disk_quotes()
+        # Don't surface a Finnhub FX 403 (or similar) once we have usable marks.
+        _last_quote_provider_error = None
 
     for symbol in need:
         if out[symbol][0] is not None:
@@ -2806,8 +2911,12 @@ def fetch_quotes_batch(
 
     missing = [s for s in need if out[s][0] is None]
     if missing and not _last_quote_provider_error:
-        if not finnhub_configured():
+        if not finnhub_configured() and "yfinance" not in sources_used:
             _last_quote_provider_error = "FINNHUB_API_KEY is not set and yfinance fallback failed"
+        elif _yahoo_on_cooldown() and any(s in CURRENCY_BY_TICKER for s in missing):
+            _last_quote_provider_error = (
+                "Currency prices are rate-limited right now. Try again in a moment."
+            )
         elif _finnhub_on_cooldown():
             _last_quote_provider_error = "Finnhub rate limited; yfinance fallback also missed some quotes"
         else:
@@ -3670,6 +3779,177 @@ def quote(ticker: str):
     )
 
 
+def class_extra_market_tickers(class_id: str | None = None) -> set[str]:
+    """Tickers teachers added to the shared classroom market (stocks / etfs)."""
+    _ = class_id
+    if not using_firestore():
+        return set()
+    try:
+        return {
+            str(row.get("ticker") or "").strip().upper()
+            for row in fs_ledger.get_extra_market_items(None)
+            if row.get("ticker")
+        }
+    except Exception:
+        return set()
+
+
+def append_class_extra_market(
+    items: list[dict],
+    category: str,
+    *,
+    catalog_only: bool = False,
+    force_refresh: bool = False,
+) -> list[dict]:
+    """Merge shared teacher-added stocks/ETFs into a market list response."""
+    if category not in {"stocks", "etfs"}:
+        return items
+    if not using_firestore():
+        return items
+    try:
+        extras = fs_ledger.get_extra_market_items(None, category=category)
+    except Exception:
+        return items
+    if not extras:
+        return items
+
+    existing = {
+        str(row.get("ticker") or "").strip().upper()
+        for row in items
+        if row.get("ticker")
+    }
+    pending = [e for e in extras if e["ticker"] not in existing]
+    if not pending:
+        return items
+
+    quotes: dict[str, tuple[float | None, float | None]] = {}
+    if not catalog_only:
+        quotes = fetch_quotes_batch(
+            [e["ticker"] for e in pending], force_refresh=force_refresh
+        )
+
+    out = list(items)
+    for extra in pending:
+        ticker = extra["ticker"]
+        price, change_pct = (None, None) if catalog_only else quotes.get(
+            ticker, (None, None)
+        )
+        out.append(
+            {
+                "ticker": ticker,
+                "name": extra.get("name") or ticker,
+                "industry": extra.get("industry") or "Custom",
+                "price": round(price, 2) if price is not None else None,
+                "change_pct": round(change_pct, 2) if change_pct is not None else None,
+                "asset_type": "equity",
+                "custom": True,
+                "info": extra.get("info")
+                or {
+                    "summary": (
+                        f"{extra.get('name') or ticker} was added to the shared "
+                        "classroom market by a teacher."
+                    )
+                },
+            }
+        )
+    return out
+
+
+def _is_us_classroom_symbol(symbol: str) -> bool:
+    """Keep US-style tickers students actually trade (AAPL, BRK.B) — drop foreign listings."""
+    s = (symbol or "").strip().upper()
+    if not s or len(s) > 8:
+        return False
+    # Pure letter tickers (most US commons / ETFs).
+    if re.fullmatch(r"[A-Z]{1,5}", s):
+        return True
+    # US share classes only (BRK.B, BF.A). Reject foreign suffixes like VOD.L.
+    m = re.fullmatch(r"([A-Z]{1,4})\.([A-Z])", s)
+    if m and m.group(2) in {"A", "B", "C", "D", "K", "P", "W", "V", "U"}:
+        return True
+    return False
+
+
+def _finnhub_search_results(
+    query: str, *, limit: int = 15, quote_limit: int = 5
+) -> tuple[list[dict], str | None]:
+    q = (query or "").strip()
+    if len(q) < 1:
+        return [], None
+    if not finnhub_configured():
+        return [], "FINNHUB_API_KEY is not set"
+    # Prefer US exchange results from Finnhub, then harden with local ticker rules.
+    payload, err = _finnhub_get("/search", {"q": q, "exchange": "US"})
+    if err:
+        return [], err
+    if not isinstance(payload, dict):
+        return [], "Unexpected Finnhub search response"
+    raw = payload.get("result") or []
+    if not isinstance(raw, list):
+        return [], None
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or row.get("displaySymbol") or "").strip().upper()
+        display = str(row.get("displaySymbol") or symbol).strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        if any(ch in symbol for ch in ("*", "=", "^")):
+            continue
+        # Drop foreign / numeric listings even if Finnhub tagged them oddly
+        # (e.g. 601288.SS, BNC.CR, RY.TO).
+        if not _is_us_classroom_symbol(symbol):
+            continue
+        if display and display != symbol and not _is_us_classroom_symbol(display):
+            continue
+        typ = str(row.get("type") or "").strip()
+        typ_l = typ.lower()
+        if typ_l in {"equity option", "warrant", "unit", "right"}:
+            continue
+        if "etf" in typ_l or typ_l in {"etp", "closed-end fund", "mutual fund"}:
+            category = "etfs"
+        elif typ_l in {"common stock", "adr", "preferred stock", "equity"} or not typ:
+            category = "stocks"
+        else:
+            if any(x in typ_l for x in ("bond", "crypto", "index", "future", "forex")):
+                continue
+            category = "stocks"
+        seen.add(symbol)
+        out.append(
+            {
+                "ticker": symbol,
+                "name": str(row.get("description") or symbol)[:80],
+                "type": typ or "Equity",
+                "category": category,
+                "displaySymbol": display or symbol,
+            }
+        )
+        if len(out) >= max(1, min(int(limit or 15), 25)):
+            break
+
+    # Only quote the first few — “Show more” rows still return, without burning quota.
+    n_quote = max(0, min(int(quote_limit or 0), len(out)))
+    if n_quote:
+        quotes = fetch_quotes_batch([r["ticker"] for r in out[:n_quote]])
+        for row in out[:n_quote]:
+            price, change_pct = quotes.get(row["ticker"], (None, None))
+            row["price"] = round(price, 2) if price is not None else None
+            row["change_pct"] = (
+                round(change_pct, 2) if change_pct is not None else None
+            )
+        for row in out[n_quote:]:
+            row["price"] = None
+            row["change_pct"] = None
+    else:
+        for row in out:
+            row["price"] = None
+            row["change_pct"] = None
+    return out, None
+
+
 @app.get("/api/market/<category>")
 def market_category(category: str):
     key = category.strip().lower()
@@ -3679,6 +3959,7 @@ def market_category(category: str):
     catalog_only = request.args.get("catalog") == "1"
     if catalog_only:
         items = catalog_snapshot(key)
+        items = append_class_extra_market(items, key, catalog_only=True)
         # Real estate ships with classroom prices; other markets need live quotes.
         needs_live = key in {"stocks", "etfs", "commodities", "currencies", "bonds"}
         return jsonify(
@@ -3697,6 +3978,9 @@ def market_category(category: str):
         )
 
     items = enrich_catalog(key, force_refresh=force)
+    items = append_class_extra_market(
+        items, key, catalog_only=False, force_refresh=force
+    )
     priced = sum(1 for row in items if row.get("price") is not None)
     needs_live = key in {"stocks", "etfs", "commodities", "currencies"}
     pricing = {
@@ -3714,6 +3998,145 @@ def market_category(category: str):
             "pricing": pricing,
         }
     )
+
+
+@app.get("/api/teacher/market/search")
+def market_search():
+    """Teacher Finnhub symbol search — find tickers to add to the class market."""
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 1:
+        return jsonify({"query": q, "results": []})
+    # Up to 15 US-filtered hits; no quote fan-out on search (buy modal prices live).
+    results, search_err = _finnhub_search_results(q, limit=15, quote_limit=0)
+    if search_err and not results:
+        status = 503 if "not set" in search_err.lower() else 502
+        return jsonify({"error": search_err}), status
+
+    already = set()
+    for cat in ("stocks", "etfs"):
+        for item in MARKET_CATALOG.get(cat, []):
+            already.add(item["ticker"])
+    already |= class_extra_market_tickers(class_id)
+
+    for row in results:
+        row["alreadyOnMarket"] = row["ticker"] in already
+        row["inCatalog"] = any(
+            item["ticker"] == row["ticker"]
+            for cat in ("stocks", "etfs")
+            for item in MARKET_CATALOG.get(cat, [])
+        )
+
+    return jsonify({"query": q, "results": results})
+
+
+@app.get("/api/teacher/market/extras")
+def list_market_extras():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    try:
+        rows = fs_ledger.get_extra_market_items(class_id)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"items": rows})
+
+
+@app.post("/api/teacher/market/extras")
+def add_market_extra():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    teacher_uid = (data.get("teacherUid") or "").strip()
+    ticker = (data.get("ticker") or "").strip().upper()
+    name = (data.get("name") or ticker).strip()
+    category = (data.get("category") or "stocks").strip().lower()
+    industry = (data.get("industry") or "Custom").strip() or "Custom"
+    if category not in ("stocks", "etfs"):
+        category = "stocks"
+    if not ticker:
+        return jsonify({"error": "Ticker is required"}), 400
+    try:
+        import closet_ai
+
+        closet_ai._require_teacher(teacher_uid)
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    # Prefer a live quote so dead symbols don't enter the classroom market.
+    price = fetch_quote(ticker)
+    if price is None or price <= 0:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"Could not find a live price for {ticker}. "
+                        "Try another symbol."
+                    )
+                }
+            ),
+            404,
+        )
+
+    try:
+        existing = fs_ledger.get_extra_market_items(class_id)
+        if len(existing) >= 80 and not any(
+            str(r.get("ticker") or "").upper() == ticker for r in existing
+        ):
+            return jsonify({"error": "Shared classroom market already has 80 custom tickers"}), 400
+        item = fs_ledger.add_extra_market_item(
+            class_id,
+            ticker=ticker,
+            name=name,
+            category=category,
+            industry=industry,
+            added_by=teacher_uid,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "item": {
+                **item,
+                "price": round(float(price), 2),
+            },
+        }
+    )
+
+
+@app.delete("/api/teacher/market/extras/<ticker>")
+def remove_market_extra(ticker: str):
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    teacher_uid = (
+        (request.args.get("teacherUid") or "")
+        or str((request.get_json(silent=True) or {}).get("teacherUid") or "")
+    ).strip()
+    try:
+        import closet_ai
+
+        closet_ai._require_teacher(teacher_uid)
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    try:
+        removed = fs_ledger.remove_extra_market_item(class_id, ticker)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    if not removed:
+        return jsonify({"error": "Ticker not found on this class market"}), 404
+    return jsonify({"ok": True, "ticker": ticker.strip().upper()})
 
 
 @app.get("/api/students/<student_id>/history")
@@ -4064,6 +4487,25 @@ def buy_home(student_id: str):
             portfolio_value=payload["portfolio_value"] or 0,
             total_value=payload["total_value"],
         )
+        try:
+            fs_ledger.record_trade(
+                class_id,
+                student_id,
+                side="buy",
+                ticker=ticker,
+                shares=1,
+                price=costs["price"],
+                notional=due_today,
+                kind="home",
+                student_name=student.get("name"),
+                extra={
+                    "loanAmount": costs["loan_amount"],
+                    "downPayment": costs.get("down_payment"),
+                    "closingCosts": costs["closing_costs"],
+                },
+            )
+        except Exception:
+            pass
         return jsonify(payload)
 
     try:
@@ -4153,6 +4595,7 @@ def buy_shares(student_id: str):
         if cat not in {"bonds", "realestate"}
         for item in rows
     }
+    allowed |= class_extra_market_tickers()
     if ticker not in allowed and ticker not in BOND_BY_TICKER:
         return jsonify({"error": f"{ticker} is not on the classroom market list"}), 400
 
@@ -4254,6 +4697,20 @@ def buy_shares(student_id: str):
             portfolio_value=payload["portfolio_value"] or 0,
             total_value=payload["total_value"],
         )
+        try:
+            fs_ledger.record_trade(
+                class_id,
+                student_id,
+                side="buy",
+                ticker=ticker,
+                shares=shares,
+                price=price,
+                notional=cost,
+                kind="bond" if ticker in BOND_BY_TICKER else "market",
+                student_name=student.get("name"),
+            )
+        except Exception:
+            pass
         return jsonify(payload)
 
     try:
@@ -4395,6 +4852,23 @@ def sell_shares(student_id: str):
             portfolio_value=payload["portfolio_value"] or 0,
             total_value=payload["total_value"],
         )
+        try:
+            fs_ledger.record_trade(
+                class_id,
+                student_id,
+                side="sell",
+                ticker=ticker,
+                shares=shares,
+                price=price,
+                notional=proceeds,
+                kind="home" if is_home else (
+                    "bond" if ticker in BOND_BY_TICKER else "market"
+                ),
+                student_name=student.get("name"),
+                extra={"mortgagePayoff": mortgage_balance} if is_home else None,
+            )
+        except Exception:
+            pass
         return jsonify(payload)
 
     try:
@@ -4622,6 +5096,298 @@ def market_news():
             "disclaimer": "Written for Ledger Lab from public market headlines.",
         }
     )
+
+
+# --- Privileged AI closet creator (test@gmail.com) ---
+
+
+@app.get("/api/closet/ai/status")
+def closet_ai_status():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    student_id = (request.args.get("studentId") or "").strip()
+    if not student_id:
+        return jsonify({"error": "studentId is required"}), 400
+    try:
+        import closet_ai
+
+        return jsonify(closet_ai.creator_status(class_id, student_id))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/ai/draft")
+def closet_ai_draft():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    prompt = data.get("prompt") or ""
+    try:
+        import closet_ai
+
+        job = closet_ai.start_draft(class_id, student_id, prompt)
+        return jsonify({"job": job})
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/closet/ai/jobs/<job_id>")
+def closet_ai_job(job_id: str):
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    student_id = (request.args.get("studentId") or "").strip()
+    if not student_id:
+        return jsonify({"error": "studentId is required"}), 400
+    try:
+        import closet_ai
+
+        job = closet_ai.advance_job(class_id, student_id, job_id)
+        return jsonify({"job": job})
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/ai/publish")
+def closet_ai_publish():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    job_id = (data.get("jobId") or "").strip()
+    if not job_id:
+        return jsonify({"error": "jobId is required"}), 400
+    price = data.get("price", None)
+    crew_slots = data.get("crewSlots", data.get("crew_slots", 0))
+    try:
+        import closet_ai
+
+        result = closet_ai.publish_job(
+            class_id, student_id, job_id, price=price, crew_slots=crew_slots
+        )
+        return jsonify(result)
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/closet/crew/jobs")
+def closet_crew_jobs():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    student_id = (request.args.get("studentId") or "").strip() or None
+    try:
+        import closet_ai
+
+        return jsonify(closet_ai.list_crew_jobs(class_id, student_id))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/crew/invite")
+def closet_crew_invite():
+    """Partnership: creator invites one classmate (right after choosing Partnership)."""
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    crew_job_id = (data.get("crewJobId") or data.get("jobId") or "").strip()
+    partner_id = (data.get("partnerId") or data.get("invitedStudentId") or "").strip()
+    if not student_id or not partner_id:
+        return jsonify({"error": "studentId and partnerId are required"}), 400
+    try:
+        import closet_ai
+
+        return jsonify(
+            closet_ai.invite_crew_partner(class_id, student_id, crew_job_id, partner_id)
+        )
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/crew/decline")
+def closet_crew_decline():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    crew_job_id = (data.get("crewJobId") or data.get("jobId") or "").strip()
+    if not student_id or not crew_job_id:
+        return jsonify({"error": "studentId and crewJobId are required"}), 400
+    try:
+        import closet_ai
+
+        return jsonify(closet_ai.decline_crew_invite(class_id, student_id, crew_job_id))
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/crew/join")
+def closet_crew_join():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    crew_job_id = (data.get("crewJobId") or data.get("jobId") or "").strip()
+    if not student_id or not crew_job_id:
+        return jsonify({"error": "studentId and crewJobId are required"}), 400
+    try:
+        import closet_ai
+
+        return jsonify(closet_ai.join_crew_job(class_id, student_id, crew_job_id))
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/crew/leave")
+def closet_crew_leave():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    crew_job_id = (data.get("crewJobId") or data.get("jobId") or "").strip()
+    if not student_id or not crew_job_id:
+        return jsonify({"error": "studentId and crewJobId are required"}), 400
+    try:
+        import closet_ai
+
+        return jsonify(closet_ai.leave_crew_job(class_id, student_id, crew_job_id))
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/ai/activate")
+def closet_ai_activate():
+    """After publish: quiz answers go to teacher review (payroll on approve)."""
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    job_id = (data.get("jobId") or "").strip()
+    answers = data.get("answers")
+    if not job_id:
+        return jsonify({"error": "jobId is required"}), 400
+    try:
+        import closet_ai
+
+        result = closet_ai.submit_quiz_for_review(
+            class_id, student_id, job_id, answers=answers
+        )
+        return jsonify(result)
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/ai/test-review")
+def closet_ai_test_review():
+    """Seed a fake pending_review job for teacher-dashboard UI testing."""
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    answers = data.get("answers")
+    try:
+        import closet_ai
+
+        result = closet_ai.seed_test_review_submission(
+            class_id, student_id, answers=answers
+        )
+        return jsonify(result)
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/closet/ai/reviews")
+def closet_ai_reviews():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    teacher_uid = (request.args.get("teacherUid") or "").strip()
+    try:
+        import closet_ai
+
+        return jsonify(closet_ai.list_pending_reviews(class_id, teacher_uid))
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/ai/review")
+def closet_ai_review():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    teacher_uid = (data.get("teacherUid") or "").strip()
+    job_id = (data.get("jobId") or "").strip()
+    action = data.get("action")
+    note = data.get("note")
+    if not job_id:
+        return jsonify({"error": "jobId is required"}), 400
+    try:
+        import closet_ai
+
+        result = closet_ai.review_submission(
+            class_id, teacher_uid, job_id, action=action, note=note
+        )
+        return jsonify(result)
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 init_db()

@@ -2,6 +2,13 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { buyShares, getMarket, getQuote, getStudent } from "./api";
 import {
+  AvatarCanvas,
+  loadSavedOutfit,
+  outfitForStudent,
+  setClassClosetAccessories,
+  stripPlayerFishForm,
+} from "./StudentCharacter";
+import {
   acceptH2hMatchAndClearOthers,
   createH2hMatchRequest,
   declineAllPendingH2hForStudent,
@@ -10,15 +17,10 @@ import {
   respondH2hMatch,
   setH2hMatchPicks,
   skipHeadToHeadSeason,
+  subscribeClassClosetItems,
   subscribeH2hMatches,
   subscribeHeadToHead,
 } from "./classStore";
-import {
-  AvatarCanvas,
-  loadSavedOutfit,
-  outfitForStudent,
-  stripPlayerFishForm,
-} from "./StudentCharacter";
 import { TICKER_CATEGORY } from "./portfolioAllocation";
 
 const STOCK_SLOTS = 3;
@@ -184,6 +186,14 @@ export default function HeadToHeadModal({
         setDismissedId("");
       }
     });
+  }, [classId]);
+
+  useEffect(() => {
+    if (!classId) {
+      setClassClosetAccessories([]);
+      return undefined;
+    }
+    return subscribeClassClosetItems(classId, setClassClosetAccessories);
   }, [classId]);
 
   useEffect(() => {
@@ -1382,10 +1392,12 @@ export function HeadToHeadLiveMatchups({
   }, [classId]);
 
   const myMatches = useMemo(() => {
+    // Only the active contest season — hide leftovers after a contest ends.
     const seasonId = challenge?.id;
+    if (!seasonId) return [];
     return matches.filter((m) => {
       if (m.status !== "accepted") return false;
-      if (seasonId && m.seasonId !== seasonId) return false;
+      if (m.seasonId !== seasonId) return false;
       return (
         m.fromId === firestoreStudentId || m.toId === firestoreStudentId
       );
@@ -1599,10 +1611,12 @@ export function HeadToHeadBattleModal({
   }, [open, classId]);
 
   const myMatches = useMemo(() => {
+    // Only the active contest season — hide leftovers after a contest ends.
     const seasonId = challenge?.id;
+    if (!seasonId) return [];
     return matches.filter((m) => {
       if (m.status !== "accepted") return false;
-      if (seasonId && m.seasonId !== seasonId) return false;
+      if (m.seasonId !== seasonId) return false;
       return (
         m.fromId === firestoreStudentId || m.toId === firestoreStudentId
       );

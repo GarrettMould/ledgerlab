@@ -1,9 +1,53 @@
-import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { ContactShadows, Float, Html, useGLTF } from "@react-three/drei";
+import { ContactShadows, Billboard, Float, Html, useGLTF } from "@react-three/drei";
+import { DoubleSide, SRGBColorSpace, TextureLoader } from "three";
+import { useLoader } from "@react-three/fiber";
 import { createPortal } from "react-dom";
-import { adjustCash } from "./api";
-import { updateClassStudent } from "./classStore";
+import {
+  adjustCash,
+  getClosetAiStatus,
+  pollClosetAiJob,
+  publishClosetAiJob,
+  activateClosetAiJob,
+  seedClosetAiTestReview,
+  startClosetAiDraft,
+  inviteCrewPartner,
+} from "./api";
+import {
+  getClassStudent,
+  listClassStudents,
+  subscribeClassClosetItems,
+  updateClassStudent,
+} from "./classStore";
+
+/** Catches failed remote GLB loads (CORS / 404) so the closet modal doesn't white-screen. */
+class AccessoryLoadBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false, failedUrl: null };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch() {
+    /* swallow — missing accessory should not crash the closet */
+  }
+
+  componentDidUpdate(prevProps) {
+    const url = this.props.url;
+    if (url && url !== prevProps.url && this.state.failed) {
+      this.setState({ failed: false, failedUrl: null });
+    }
+  }
+
+  render() {
+    if (this.state.failed) return this.props.fallback ?? null;
+    return this.props.children;
+  }
+}
 
 const BLENDER_CHARACTER_URL = "/models/character.glb?v=hairstyles1";
 
@@ -57,7 +101,7 @@ function money(n) {
   });
 }
 
-/** Free starter closet + paid extras baked under each category. */
+/** Free starter closet + paid extras. Clothing shelves are colors only; buyables live in accessories. */
 export const CLOSET_CATALOG = {
   skin: [
     { id: "skin-fair", label: "Fair", color: "#f0c9a8", price: 0 },
@@ -87,6 +131,37 @@ export const CLOSET_CATALOG = {
     { id: "hair-bob", label: "Bob", mesh: "Hair_Bob", swatch: "#4a3428", price: 0 },
     { id: "hair-long", label: "Long", mesh: "Hair_Long", swatch: "#3b2a1e", price: 0 },
     { id: "hair-bald", label: "Bald", mesh: null, swatch: "#e0b090", price: 0 },
+  ],
+  hair: [
+    { id: "hair-black", label: "Black", color: "#1f1a16", price: 0 },
+    { id: "hair-espresso", label: "Brown", color: "#3b2a1e", price: 0 },
+    { id: "hair-copper", label: "Copper", color: "#8a4f28", price: 0 },
+    { id: "hair-sand", label: "Blonde", color: "#c9a66b", price: 0 },
+    { id: "hair-silver", label: "Silver", color: "#9a9590", price: 0 },
+  ],
+  shirt: [
+    { id: "tee-forest", label: "Forest", color: "#3f8f68", price: 0 },
+    { id: "tee-sky", label: "Sky", color: "#4a90a4", price: 0 },
+    { id: "tee-sun", label: "Gold", color: "#c4a035", price: 0 },
+    { id: "tee-berry", label: "Berry", color: "#a0455c", price: 0 },
+    { id: "tee-ink", label: "Ink", color: "#24312b", price: 0 },
+  ],
+  pants: [
+    { id: "pants-pine", label: "Pine", color: "#1f3d30", price: 0 },
+    { id: "pants-denim", label: "Denim", color: "#3d5a80", price: 0 },
+    { id: "pants-khaki", label: "Khaki", color: "#8a7a4f", price: 0 },
+    { id: "pants-slate", label: "Slate", color: "#4a5560", price: 0 },
+    { id: "pants-black", label: "Black", color: "#1a1f1c", price: 0 },
+  ],
+  shoes: [
+    { id: "shoes-brown", label: "Brown", color: "#2a241f", price: 0 },
+    { id: "shoes-white", label: "White", color: "#f2f5f3", price: 0 },
+    { id: "shoes-red", label: "Red", color: "#b04040", price: 0 },
+    { id: "shoes-navy", label: "Navy", color: "#1e3a5f", price: 0 },
+    { id: "shoes-green", label: "Green", color: "#2f6b4f", price: 0 },
+  ],
+  /** All buyable gear + student AI class creations. */
+  accessories: [
     {
       id: "acc-tophat",
       kind: "hat",
@@ -127,20 +202,6 @@ export const CLOSET_CATALOG = {
       accent: "#1a2228",
       price: 2500,
     },
-  ],
-  hair: [
-    { id: "hair-black", label: "Black", color: "#1f1a16", price: 0 },
-    { id: "hair-espresso", label: "Brown", color: "#3b2a1e", price: 0 },
-    { id: "hair-copper", label: "Copper", color: "#8a4f28", price: 0 },
-    { id: "hair-sand", label: "Blonde", color: "#c9a66b", price: 0 },
-    { id: "hair-silver", label: "Silver", color: "#9a9590", price: 0 },
-  ],
-  shirt: [
-    { id: "tee-forest", label: "Forest", color: "#3f8f68", price: 0 },
-    { id: "tee-sky", label: "Sky", color: "#4a90a4", price: 0 },
-    { id: "tee-sun", label: "Gold", color: "#c4a035", price: 0 },
-    { id: "tee-berry", label: "Berry", color: "#a0455c", price: 0 },
-    { id: "tee-ink", label: "Ink", color: "#24312b", price: 0 },
     {
       id: "acc-jersey",
       kind: "jersey",
@@ -165,7 +226,6 @@ export const CLOSET_CATALOG = {
       id: "acc-chain",
       kind: "neck",
       label: "Gold chain",
-      // Procedural chain-link mesh (not a single-hoop GLB).
       procedural: "goldChain",
       url: "/accessories/GoldChain.glb?v=front2",
       attach: "neck",
@@ -186,20 +246,6 @@ export const CLOSET_CATALOG = {
       accent: "#c42a30",
       price: 900,
     },
-  ],
-  pants: [
-    { id: "pants-pine", label: "Pine", color: "#1f3d30", price: 0 },
-    { id: "pants-denim", label: "Denim", color: "#3d5a80", price: 0 },
-    { id: "pants-khaki", label: "Khaki", color: "#8a7a4f", price: 0 },
-    { id: "pants-slate", label: "Slate", color: "#4a5560", price: 0 },
-    { id: "pants-black", label: "Black", color: "#1a1f1c", price: 0 },
-  ],
-  shoes: [
-    { id: "shoes-brown", label: "Brown", color: "#2a241f", price: 0 },
-    { id: "shoes-white", label: "White", color: "#f2f5f3", price: 0 },
-    { id: "shoes-red", label: "Red", color: "#b04040", price: 0 },
-    { id: "shoes-navy", label: "Navy", color: "#1e3a5f", price: 0 },
-    { id: "shoes-green", label: "Green", color: "#2f6b4f", price: 0 },
     {
       id: "acc-purse",
       kind: "bag",
@@ -293,10 +339,73 @@ function paidCatalogItems(category) {
   return (CLOSET_CATALOG[category] || []).filter((item) => isPaidItem(item));
 }
 
-/** Flat list of purchasable accessory GLBs. */
+/** Flat list of purchasable accessory GLBs (built-in only). */
 export const ACCESSORY_ITEMS = Object.values(CLOSET_CATALOG)
   .flat()
   .filter(isAccessoryItem);
+
+/** Class-published AI accessories — updated by subscribeClassClosetItems. */
+let _classAccessoryItems = [];
+const _classAccessoryListeners = new Set();
+
+export function setClassClosetAccessories(items) {
+  _classAccessoryItems = (items || []).filter(isAccessoryItem);
+  _classAccessoryItems.forEach((item) => {
+    // Same-origin built-ins only — remote Storage URLs can fail CORS and
+    // poison useGLTF's cache before the student even clicks the item.
+    if (item.url && item.url.startsWith("/")) {
+      try {
+        useGLTF.preload(item.url);
+      } catch {
+        /* ignore bad urls */
+      }
+    }
+  });
+  _classAccessoryListeners.forEach((fn) => fn(_classAccessoryItems));
+}
+
+export function getClassClosetAccessories() {
+  return _classAccessoryItems;
+}
+
+function useClassClosetAccessories() {
+  const [extra, setExtra] = useState(_classAccessoryItems);
+  useEffect(() => {
+    _classAccessoryListeners.add(setExtra);
+    setExtra(_classAccessoryItems);
+    return () => _classAccessoryListeners.delete(setExtra);
+  }, []);
+  return extra;
+}
+
+export function allAccessoryItems() {
+  return [...ACCESSORY_ITEMS, ..._classAccessoryItems];
+}
+
+const KIND_TO_CATEGORY = {
+  hat: "accessories",
+  glasses: "accessories",
+  jersey: "accessories",
+  backpack: "accessories",
+  neck: "accessories",
+  bag: "accessories",
+  prop: "accessories",
+};
+
+/** Merge built-in catalog with class AI items for closet shelves. */
+export function catalogWithClassItems(classItems = []) {
+  const merged = Object.fromEntries(
+    Object.entries(CLOSET_CATALOG).map(([key, rows]) => [key, [...rows]])
+  );
+  if (!merged.accessories) merged.accessories = [];
+  for (const item of classItems) {
+    if (!isAccessoryItem(item)) continue;
+    // All class creations land on the Accessories (Extras) shelf.
+    if (merged.accessories.some((row) => row.id === item.id)) continue;
+    merged.accessories.push(item);
+  }
+  return merged;
+}
 
 ACCESSORY_ITEMS.forEach((item) => {
   if (item.url) useGLTF.preload(item.url);
@@ -324,9 +433,14 @@ export const CLOSET_SECTIONS = [
       { id: "shoes", label: "Shoes" },
     ],
   },
+  {
+    id: "extras",
+    label: "Extras",
+    categories: [{ id: "accessories", label: "Accessories" }],
+  },
 ];
 
-const SETUP_SECTIONS = CLOSET_SECTIONS;
+const SETUP_SECTIONS = CLOSET_SECTIONS.filter((s) => s.id !== "extras");
 
 function hairMeshForOutfit(outfit) {
   const id = outfit?.hairStyleId || "hair-block";
@@ -535,11 +649,85 @@ function HairStylePreview({ outfit, hairStyleId, hatItem = null, className }) {
 function accessoryPose(item) {
   const base = ATTACH[item.attach] || ATTACH.torso;
   const offset = item.offset || [0, 0, 0];
+  // Blocky AI props are authored ~1 unit tall; catalog default 0.55 left them tiny.
+  const scale =
+    item.aiCreated && !item.aiSprite
+      ? Math.max(Number(item.scale) || 1, 1)
+      : item.scale ?? 1;
   return {
     position: [base[0] + offset[0], base[1] + offset[1], base[2] + offset[2]],
     rotation: item.rotation || [0, 0, 0],
-    scale: item.scale ?? 1,
+    scale,
   };
+}
+
+function degToRad(d) {
+  return ((Number(d) || 0) * Math.PI) / 180;
+}
+
+/** Parts recipes store degrees; older jobs may have radians — accept both. */
+function partRotationRad(rot) {
+  if (!Array.isArray(rot) || rot.length < 3) return [0, 0, 0];
+  const vals = [0, 1, 2].map((i) => Number(rot[i]) || 0);
+  const maxAbs = Math.max(...vals.map((v) => Math.abs(v)));
+  if (maxAbs > Math.PI + 0.05) {
+    return vals.map(degToRad);
+  }
+  return vals;
+}
+
+/** Runtime Roblox-style mesh from AI parts recipe (same language as Blender accessories). */
+function BlockyPartsModel({ parts, pose }) {
+  const safe = Array.isArray(parts) ? parts.slice(0, 24) : [];
+  if (!safe.length) return null;
+  return (
+    <group
+      position={pose.position}
+      rotation={pose.rotation}
+      scale={pose.scale}
+    >
+      {safe.map((part, i) => {
+        const color = part.color || "#888888";
+        const pos = Array.isArray(part.pos) ? part.pos : [0, 0, 0];
+        const rot = partRotationRad(part.rot);
+        const key = `${part.shape || "box"}-${i}`;
+        if (part.shape === "cylinder") {
+          const r = Math.max(0.03, Number(part.radius) || 0.2);
+          const h = Math.max(0.05, Number(part.height) || 0.4);
+          const r2 = part.radius2 != null ? Math.max(0.03, Number(part.radius2)) : r;
+          return (
+            <mesh key={key} position={pos} rotation={rot} castShadow>
+              <cylinderGeometry args={[r2, r, h, 12]} />
+              <meshStandardMaterial color={color} roughness={0.55} metalness={0.05} />
+            </mesh>
+          );
+        }
+        if (part.shape === "sphere") {
+          const r = Math.max(0.05, Number(part.radius) || 0.25);
+          const sc = Array.isArray(part.scale) ? part.scale : [1, 1, 1];
+          return (
+            <mesh
+              key={key}
+              position={pos}
+              rotation={rot}
+              scale={sc}
+              castShadow
+            >
+              <sphereGeometry args={[r, 12, 10]} />
+              <meshStandardMaterial color={color} roughness={0.55} metalness={0.05} />
+            </mesh>
+          );
+        }
+        const size = Array.isArray(part.size) ? part.size : [0.4, 0.4, 0.4];
+        return (
+          <mesh key={key} position={pos} rotation={rot} castShadow>
+            <boxGeometry args={[size[0] || 0.4, size[1] || 0.4, size[2] || 0.4]} />
+            <meshStandardMaterial color={color} roughness={0.55} metalness={0.05} />
+          </mesh>
+        );
+      })}
+    </group>
+  );
 }
 
 function AccessoryModel({ item }) {
@@ -557,7 +745,143 @@ function AccessoryModel({ item }) {
     );
   }
 
-  return <GlbAccessoryModel item={item} pose={pose} />;
+  // Preferred path for AI blocky items — no remote GLB dependency.
+  if (Array.isArray(item.parts) && item.parts.length > 0) {
+    return <BlockyPartsModel parts={item.parts} pose={pose} />;
+  }
+
+  // Legacy flat image sprites only.
+  if (item.aiSprite === true) {
+    return (
+      <AccessoryLoadBoundary
+        url={item.thumbnailUrl || item.url}
+        fallback={
+          <Billboard position={pose.position} follow>
+            <mesh scale={1.6} renderOrder={20}>
+              <planeGeometry args={[1, 1]} />
+              <meshBasicMaterial color="#f59e0b" toneMapped={false} />
+            </mesh>
+          </Billboard>
+        }
+      >
+        <AiSpriteAccessory item={item} pose={pose} />
+      </AccessoryLoadBoundary>
+    );
+  }
+
+  return (
+    <AccessoryLoadBoundary
+      url={item.url}
+      fallback={
+        <mesh position={pose.position} scale={0.7}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={item.color || "#f59e0b"} />
+        </mesh>
+      }
+    >
+      <GlbAccessoryModel item={{ ...item, url: withCacheBust(item.url, "glb3") }} pose={pose} />
+    </AccessoryLoadBoundary>
+  );
+}
+
+/** Bust useGLTF / browser cache after earlier CORS failures. */
+function withCacheBust(url, tag = "ll2") {
+  if (!url) return url;
+  try {
+    const u = new URL(url, typeof window !== "undefined" ? window.location.href : "http://local");
+    u.searchParams.set(tag, "1");
+    return u.toString();
+  } catch {
+    return url.includes("?") ? `${url}&${tag}=1` : `${url}?${tag}=1`;
+  }
+}
+
+/**
+ * AI props are painted sprites. Prefer the PNG thumbnail; otherwise pull the
+ * texture out of the generated GLB. MeshBasicMaterial + Billboard = always visible.
+ */
+function AiSpriteAccessory({ item, pose }) {
+  const thumb = item.thumbnailUrl ? withCacheBust(item.thumbnailUrl, "t") : null;
+  if (thumb) {
+    return <AiSpriteFromImage url={thumb} pose={pose} item={item} />;
+  }
+  return <AiSpriteFromGlb url={withCacheBust(item.url, "g")} pose={pose} item={item} />;
+}
+
+function AiSpriteFromImage({ url, pose, item }) {
+  const texture = useLoader(TextureLoader, url);
+  useLayoutEffect(() => {
+    if (!texture) return;
+    texture.colorSpace = SRGBColorSpace;
+    texture.needsUpdate = true;
+  }, [texture]);
+  const scale = Math.max(Number(item.scale) || 1, 1) * 1.9;
+  return (
+    <Billboard position={pose.position} follow>
+      <mesh scale={scale} renderOrder={20}>
+        <planeGeometry args={[1, 1]} />
+        <meshBasicMaterial
+          map={texture}
+          transparent
+          depthWrite={false}
+          side={DoubleSide}
+          toneMapped={false}
+        />
+      </mesh>
+    </Billboard>
+  );
+}
+
+function AiSpriteFromGlb({ url, pose, item }) {
+  const { scene } = useGLTF(url);
+  const texture = useMemo(() => {
+    let map = null;
+    scene.traverse((obj) => {
+      if (map || !obj.isMesh) return;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const m of mats) {
+        if (m?.map) {
+          map = m.map;
+          break;
+        }
+      }
+    });
+    return map;
+  }, [scene]);
+
+  useLayoutEffect(() => {
+    if (!texture) return;
+    texture.colorSpace = SRGBColorSpace;
+    texture.needsUpdate = true;
+  }, [texture]);
+
+  const scale = Math.max(Number(item.scale) || 1, 1) * 1.9;
+
+  if (!texture) {
+    return (
+      <Billboard position={pose.position} follow>
+        <mesh scale={scale} renderOrder={20}>
+          <planeGeometry args={[1, 1]} />
+          <meshBasicMaterial color={item.color || "#f59e0b"} toneMapped={false} />
+        </mesh>
+      </Billboard>
+    );
+  }
+
+  return (
+    <Billboard position={pose.position} follow>
+      <mesh scale={scale} renderOrder={20}>
+        <planeGeometry args={[1, 1]} />
+        <meshBasicMaterial
+          map={texture}
+          transparent
+          depthWrite={false}
+          side={DoubleSide}
+          toneMapped={false}
+        />
+      </mesh>
+    </Billboard>
+  );
 }
 
 function GlbAccessoryModel({ item, pose }) {
@@ -569,7 +893,6 @@ function GlbAccessoryModel({ item, pose }) {
       if (!obj.isMesh) return;
       obj.castShadow = true;
       obj.receiveShadow = true;
-      // Keep necklaces / scarves drawing in front of the shirt (no z-fight bury).
       if (item.kind === "neck" || item.attach === "neck") {
         obj.renderOrder = 4;
         const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -608,7 +931,11 @@ function AccessoryAtOrigin({ item, scale = 1 }) {
     );
   }
 
-  return <GlbAccessoryAtOrigin item={item} scale={scale} />;
+  return (
+    <AccessoryLoadBoundary url={item.url} fallback={null}>
+      <GlbAccessoryAtOrigin item={item} scale={scale} />
+    </AccessoryLoadBoundary>
+  );
 }
 
 function GlbAccessoryAtOrigin({ item, scale = 1 }) {
@@ -634,7 +961,20 @@ function GlbAccessoryAtOrigin({ item, scale = 1 }) {
 }
 
 function AccessoryProps({ outfit }) {
-  const equipped = ACCESSORY_ITEMS.filter((item) => outfit[item.kind] === item.id);
+  const classItems = useClassClosetAccessories();
+  const equipped = useMemo(() => {
+    const catalog = [...ACCESSORY_ITEMS, ...classItems];
+    const byId = new Map(catalog.map((item) => [item.id, item]));
+    const kinds = ["hat", "glasses", "neck", "jersey", "backpack", "bag", "prop"];
+    const out = [];
+    for (const kind of kinds) {
+      const id = outfit?.[kind];
+      if (!id) continue;
+      const item = byId.get(id);
+      if (item) out.push(item);
+    }
+    return out;
+  }, [outfit, classItems]);
   if (!equipped.length) return null;
   return (
     <>
@@ -1043,33 +1383,40 @@ function FruitFlyAvatarModel({ outfit, waving, spin = false, still = false }) {
     if (group.current) {
       if (still) {
         group.current.rotation.y = 0;
+        group.current.position.y = AVATAR_BASE_Y;
       } else {
         group.current.rotation.y = spin
           ? t * 0.35
           : Math.sin(t * 0.55) * 0.18;
+        group.current.position.y = AVATAR_BASE_Y + Math.sin(t * 1.4) * 0.02;
       }
-      group.current.position.y = AVATAR_BASE_Y + (still ? 0 : Math.sin(t * 1.4) * 0.02);
     }
-    if (still) {
-      const swing = Math.sin(t * 7.5) * 0.45;
-      if (legL.current) legL.current.rotation.x = swing;
-      if (legR.current) legR.current.rotation.x = -swing;
-    } else if (legL.current && legR.current) {
-      legL.current.rotation.x = 0.12;
-      legR.current.rotation.x = -0.08;
+    if (legL.current && legR.current) {
+      if (still) {
+        legL.current.rotation.x = 0.12;
+        legR.current.rotation.x = -0.08;
+      } else {
+        legL.current.rotation.x = 0.12;
+        legR.current.rotation.x = -0.08;
+      }
     }
     if (armR.current && waving) {
       armR.current.rotation.x = -0.15 + Math.sin(t * 4.2) * 0.55;
       armR.current.rotation.z = Math.sin(t * 4.2) * 0.25;
     }
-    const flap = Math.sin(t * 18) * 0.2;
-    if (wingL.current) {
-      wingL.current.rotation.x = 0.2 + flap;
-      wingL.current.rotation.z = 0.28;
-    }
-    if (wingR.current) {
-      wingR.current.rotation.x = 0.2 + flap;
-      wingR.current.rotation.z = -0.28;
+    if (wingL.current && wingR.current) {
+      if (still) {
+        wingL.current.rotation.x = 0.2;
+        wingL.current.rotation.z = 0.28;
+        wingR.current.rotation.x = 0.2;
+        wingR.current.rotation.z = -0.28;
+      } else {
+        const flap = Math.sin(t * 18) * 0.2;
+        wingL.current.rotation.x = 0.2 + flap;
+        wingL.current.rotation.z = 0.28;
+        wingR.current.rotation.x = 0.2 + flap;
+        wingR.current.rotation.z = -0.28;
+      }
     }
   });
 
@@ -1300,6 +1647,10 @@ function CameraRig({ mode }) {
     } else if (mode === "class") {
       camera.position.set(0, 1.05, 6.4);
       camera.lookAt(0, 0.55, 0);
+    } else if (mode === "bust") {
+      // Top ~2/3 of the figure (head through mid-body) — works for fruit fly + humans.
+      camera.position.set(0, 0.52, 2.35);
+      camera.lookAt(0, 0.42, 0);
     } else if (mode === "headshot") {
       // Frame face/shoulders only — head sits ~0.7–0.95 world Y after scale.
       camera.position.set(0, 0.82, 1.55);
@@ -1581,12 +1932,14 @@ function Scene({ outfit, mode = "thumb", useBlender }) {
   const isDash = mode === "dash";
   const isCloset = mode === "closet";
   const isHeadshot = mode === "headshot";
+  const isBust = mode === "bust";
+  const stillCrop = isHeadshot || isBust;
   const avatar = (
     <AvatarModel
       outfit={outfit}
-      waving={!isCloset && !isDash && !isHeadshot}
+      waving={!isCloset && !isDash && !stillCrop}
       spin={isCloset}
-      still={isDash || isHeadshot}
+      still={isDash || stillCrop}
       useBlender={useBlender}
     />
   );
@@ -1594,16 +1947,16 @@ function Scene({ outfit, mode = "thumb", useBlender }) {
   return (
     <>
       <CameraRig mode={mode} />
-      <ambientLight intensity={isHeadshot ? 0.85 : 0.75} />
+      <ambientLight intensity={stillCrop ? 0.85 : 0.75} />
       <directionalLight
         position={[2.5, 4, 2]}
         intensity={1.15}
-        castShadow={!isHeadshot}
+        castShadow={!stillCrop}
         shadow-mapSize-width={512}
         shadow-mapSize-height={512}
       />
       <directionalLight position={[-2, 2, -1]} intensity={0.35} color="#9fd4a8" />
-      {isHeadshot ? (
+      {stillCrop ? (
         avatar
       ) : isDash ? (
         <WalkingPad enabled>{avatar}</WalkingPad>
@@ -1617,7 +1970,7 @@ function Scene({ outfit, mode = "thumb", useBlender }) {
         </Float>
       )}
       {isDash && <FishbowlOnStool />}
-      {!isHeadshot && (
+      {!stillCrop && (
         <>
           <mesh
             rotation={[-Math.PI / 2, 0, 0]}
@@ -1643,6 +1996,7 @@ function Scene({ outfit, mode = "thumb", useBlender }) {
 export function AvatarCanvas({ outfit, mode, className }) {
   const useBlender = useBlenderCharacterAvailable();
   const isHeadshot = mode === "headshot";
+  const isBust = mode === "bust";
   return (
     <div className={className}>
       <Canvas
@@ -1652,10 +2006,12 @@ export function AvatarCanvas({ outfit, mode, className }) {
               ? [0, 0.18, 3.5]
               : mode === "dash"
                 ? [0, 0.55, 5.2]
-                : isHeadshot
-                  ? [0, 0.82, 1.55]
-                  : [0, 0.1, 3.85],
-          fov: mode === "closet" ? 34 : mode === "dash" ? 38 : isHeadshot ? 28 : 32,
+                : isBust
+                  ? [0, 0.52, 2.35]
+                  : isHeadshot
+                    ? [0, 0.82, 1.55]
+                    : [0, 0.1, 3.85],
+          fov: mode === "closet" ? 34 : mode === "dash" ? 38 : isBust ? 30 : isHeadshot ? 28 : 32,
           near: 0.1,
           far: 50,
         }}
@@ -1820,6 +2176,7 @@ function ClosetShelf({
     const swatch = item.accent
       ? `linear-gradient(145deg, ${item.accent}, ${item.color})`
       : item.swatch || item.color;
+    const thumb = item.thumbnailUrl || null;
 
     return (
       <div
@@ -1840,13 +2197,27 @@ function ClosetShelf({
           disabled={buyingId === item.id}
           onClick={() => onSelectLuxury(item)}
         >
-          <span
-            className="closet-swatch closet-swatch-luxury"
-            style={{ background: swatch }}
-            aria-hidden="true"
-          />
+          {thumb ? (
+            <img
+              className="closet-swatch closet-swatch-thumb"
+              src={thumb}
+              alt=""
+              aria-hidden="true"
+            />
+          ) : (
+            <span
+              className="closet-swatch closet-swatch-luxury"
+              style={{ background: swatch }}
+              aria-hidden="true"
+            />
+          )}
           <span className="closet-item-copy">
-            <strong>{item.label}</strong>
+            <strong>
+              {item.label}
+              {item.aiCreated ? (
+                <span className="closet-item-ai-tag">Class Creation</span>
+              ) : null}
+            </strong>
             <span>{buyingId === item.id ? "Buying…" : status}</span>
           </span>
         </button>
@@ -1875,14 +2246,28 @@ function ClosetShelf({
 
   const toneItems = freeItems.filter((item) => !item.form);
   const formItems = freeItems.filter((item) => item.form);
+  const isAccessoriesShelf = category === "accessories";
 
   return (
     <div className="closet-shelf" role="tabpanel">
-      {category === "hairStyle" ? (
+      {isAccessoriesShelf ? (
+        <>
+          <p className="closet-shelf-label">Shop</p>
+          {paidItems.length === 0 ? (
+            <p className="closet-ai-empty">No accessories yet.</p>
+          ) : (
+            paidItems.map(renderPaidItem)
+          )}
+        </>
+      ) : category === "hairStyle" ? (
         renderHairStyleTiles(freeItems)
       ) : paletteLabels[category] ? (
         <>
-          {renderColorPalette(paletteLabels[category], toneItems)}
+          <p className="closet-shelf-label">{paletteLabels[category]}</p>
+          {renderColorPalette(
+            paletteLabels[category],
+            toneItems.length ? toneItems : freeItems
+          )}
           {formItems.length > 0 && (
             <>
               <p className="closet-shelf-label">Characters</p>
@@ -1893,7 +2278,7 @@ function ClosetShelf({
       ) : (
         freeItems.map(renderFreeItem)
       )}
-      {paidItems.length > 0 && (
+      {!isAccessoriesShelf && paidItems.length > 0 && (
         <>
           <p className="closet-shelf-label">Buyables</p>
           {paidItems.map(renderPaidItem)}
@@ -2014,6 +2399,993 @@ export function AvatarSetupPanel({ outfit, onChangeOutfit, studentName }) {
   );
 }
 
+function ClosetAiBuildSpinner() {
+  return (
+    <div className="closet-ai-build" role="status" aria-live="polite">
+      <div className="closet-ai-build-stage" aria-hidden="true">
+        <div className="closet-ai-build-cube">
+          <span className="face front" />
+          <span className="face back" />
+          <span className="face right" />
+          <span className="face left" />
+          <span className="face top" />
+          <span className="face bottom" />
+        </div>
+      </div>
+      <p className="closet-ai-build-label">Building your 3D item…</p>
+    </div>
+  );
+}
+
+function ClosetAiGlbPreview({ url, parts, color = "#888888", className = "closet-ai-preview-3d" }) {
+  const hasParts = Array.isArray(parts) && parts.length > 0;
+  if (!url && !hasParts) return null;
+  return (
+    <div className={className} aria-label="3D item preview">
+      <Canvas
+        camera={{ position: [1.6, 1.15, 2.1], fov: 36, near: 0.1, far: 40 }}
+        dpr={[1, 1.5]}
+        gl={{ antialias: true, alpha: true }}
+      >
+        <ambientLight intensity={0.9} />
+        <directionalLight position={[2.5, 3.5, 2]} intensity={1.2} />
+        <directionalLight position={[-2, 1.5, -1]} intensity={0.4} color="#9fd4a8" />
+        <Suspense fallback={null}>
+          {hasParts ? (
+            <Float speed={1.2} rotationIntensity={0.2} floatIntensity={0.3}>
+              <BlockyPartsModel
+                parts={parts}
+                pose={{ position: [0, 0, 0], rotation: [0, 0, 0], scale: 0.85 }}
+              />
+            </Float>
+          ) : (
+            <AccessoryLoadBoundary url={url} fallback={null}>
+              <ClosetAiGlbPreviewModel url={url} />
+            </AccessoryLoadBoundary>
+          )}
+        </Suspense>
+      </Canvas>
+    </div>
+  );
+}
+
+function ClosetAiGlbPreviewModel({ url }) {
+  const { scene } = useGLTF(withCacheBust(url, "prev"));
+  const cloned = useMemo(() => scene.clone(true), [scene]);
+  const group = useRef();
+
+  useLayoutEffect(() => {
+    cloned.traverse((obj) => {
+      if (obj.isMesh) {
+        obj.castShadow = false;
+        obj.receiveShadow = false;
+      }
+    });
+  }, [cloned]);
+
+  useFrame((state) => {
+    if (!group.current) return;
+    group.current.rotation.y = state.clock.getElapsedTime() * 0.7;
+  });
+
+  return (
+    <Float speed={1.2} rotationIntensity={0.15} floatIntensity={0.25}>
+      <group ref={group} scale={0.95}>
+        <primitive object={cloned} />
+      </group>
+    </Float>
+  );
+}
+
+const CLOSET_AI_PUBLISH_FEE = 2000; // legacy fallback; payroll replaces flat fee
+
+const CREW_TIERS = [
+  {
+    slots: 1,
+    wageEach: 0,
+    maxSellPrice: 1500,
+    payroll: 0,
+    payMode: "profit_share",
+    profitSharePct: 50,
+    label: "Partnership (1)",
+    blurb: "One partner — split profits 50/50. Smallest sell-price cap.",
+  },
+  {
+    slots: 3,
+    wageEach: 700,
+    maxSellPrice: 4500,
+    payroll: 2100,
+    payMode: "wages",
+    profitSharePct: 0,
+    label: "Team of 3",
+    blurb: "Three employees paid wages when approved. Bigger sell-price cap.",
+  },
+  {
+    slots: 5,
+    wageEach: 900,
+    maxSellPrice: 12000,
+    payroll: 4500,
+    payMode: "wages",
+    profitSharePct: 0,
+    label: "Crew of 3+",
+    blurb: "Five employees for scale. Highest wages and biggest sell-price cap.",
+  },
+];
+
+function crewTierFor(slots) {
+  const n = Number(slots);
+  return CREW_TIERS.find((t) => t.slots === n) || CREW_TIERS[0];
+}
+
+const CLOSET_AI_SCENARIO = {
+  id: "strategy",
+  prompt:
+    "Markets just swung hard: popular tech stocks dropped about 8% in a week, and the Fear & Greed meter flipped from Extreme Greed toward Fear. Several classmates are panic-selling into cash. How would you change your investment strategy, if at all, and why? Be specific about what you’d buy, sell, or hold, and how risk and time horizon factor into your decision.",
+};
+
+const CLOSET_AI_STRATEGY_MIN_CHARS = 80;
+
+function ClosetAiCreator({
+  open,
+  studentId,
+  classId,
+  cash = 0,
+  onCashChange,
+  onPublished,
+  onExit,
+  onGateStepChange,
+  quizHostReady = false,
+}) {
+  const [status, setStatus] = useState(null);
+  const [gateStep, setGateStep] = useState("crew"); // crew | notice | create | partner | quiz | review
+  const [prompt, setPrompt] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [job, setJob] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [sellPrice, setSellPrice] = useState("1200");
+  const [crewSlots, setCrewSlots] = useState(null);
+  const [strategyAnswer, setStrategyAnswer] = useState("");
+  const [quizTestMode, setQuizTestMode] = useState(false);
+  const [quizHostEl, setQuizHostEl] = useState(null);
+  const [partnerRoster, setPartnerRoster] = useState([]);
+  const [partnerLoading, setPartnerLoading] = useState(false);
+  const [selectedPartnerId, setSelectedPartnerId] = useState("");
+  const [invitedPartnerName, setInvitedPartnerName] = useState("");
+  const pollRef = useRef(null);
+  const messagesEndRef = useRef(null);
+  const tiers = Array.isArray(status?.tiers) && status.tiers.length
+    ? status.tiers.map((t) => ({
+        slots: Number(t.slots) || 1,
+        wageEach: Number(t.wageEach) || 0,
+        maxSellPrice: Number(t.maxSellPrice) || 1500,
+        payroll: Number(t.payroll) || 0,
+        payMode: t.payMode || "wages",
+        profitSharePct: Number(t.profitSharePct) || 0,
+        label: t.label || "Crew",
+        blurb: t.blurb || "",
+      }))
+    : CREW_TIERS;
+  const activeTier = tiers.length ? tiers : CREW_TIERS;
+  const selectedTier =
+    crewSlots == null
+      ? null
+      : activeTier.find((t) => t.slots === crewSlots) || crewTierFor(crewSlots);
+  const publishFee = selectedTier?.payroll || 0;
+
+  useEffect(() => {
+    if (!open) return;
+    setGateStep("crew");
+    setPrompt("");
+    setMessages([]);
+    setJob(null);
+    setBusy(false);
+    setError("");
+    setSellPrice("1500");
+    setCrewSlots(null);
+    setStrategyAnswer("");
+    setQuizTestMode(false);
+    setPartnerRoster([]);
+    setSelectedPartnerId("");
+    setInvitedPartnerName("");
+    stopPoll();
+  }, [open]);
+
+  useEffect(() => {
+    onGateStepChange?.(gateStep);
+  }, [gateStep, onGateStepChange]);
+
+  useEffect(() => {
+    return () => {
+      onGateStepChange?.(null);
+    };
+  }, [onGateStepChange]);
+
+  useEffect(() => {
+    if (!open || gateStep !== "partner" || !classId) return undefined;
+    let cancelled = false;
+    setPartnerLoading(true);
+    listClassStudents(classId)
+      .then((rows) => {
+        if (cancelled) return;
+        const list = (Array.isArray(rows) ? rows : []).filter((s) => {
+          const tid = String(s?.id || s?.apiStudentId || "");
+          return tid && tid !== String(studentId || "");
+        });
+        setPartnerRoster(list);
+      })
+      .catch(() => {
+        if (!cancelled) setPartnerRoster([]);
+      })
+      .finally(() => {
+        if (!cancelled) setPartnerLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, gateStep, classId, studentId]);
+
+  useLayoutEffect(() => {
+    if (gateStep !== "quiz") {
+      setQuizHostEl(null);
+      return undefined;
+    }
+    const find = () => document.getElementById("closet-ai-quiz-host");
+    const el = find();
+    if (el) {
+      setQuizHostEl(el);
+      return undefined;
+    }
+    const raf = window.requestAnimationFrame(() => setQuizHostEl(find()));
+    return () => window.cancelAnimationFrame(raf);
+  }, [gateStep, quizHostReady]);
+
+  useEffect(() => {
+    if (!open || !studentId || !classId) return undefined;
+    let cancelled = false;
+    getClosetAiStatus(studentId, classId)
+      .then((data) => {
+        if (!cancelled) setStatus(data);
+      })
+      .catch(() => {
+        if (!cancelled) setStatus({ allowed: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, studentId, classId]);
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+  }, [messages, job?.status, gateStep]);
+
+  function stopPoll() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
+
+  function pushReadyPreview(next) {
+    if (!next?.id || next.status !== "ready") return;
+    setMessages((prev) => {
+      if (prev.some((m) => m.previewJobId === next.id)) return prev;
+      return [
+        ...prev,
+        {
+          role: "assistant",
+          text: `Preview of “${next.label || "your item"}” — look it over, then publish to class.`,
+          imageUrl: next.thumbnailUrl || null,
+          glbUrl: next.glbUrl || null,
+          parts: Array.isArray(next.parts) ? next.parts : null,
+          color: next.color || "#888888",
+          previewJobId: next.id,
+        },
+      ];
+    });
+  }
+
+  function startPoll(jobId) {
+    stopPoll();
+    const tick = async () => {
+      try {
+        const data = await pollClosetAiJob(studentId, jobId, classId);
+        const next = data.job;
+        setJob(next);
+        if (!next) return;
+        if (
+          next.status === "ready" ||
+          next.status === "failed" ||
+          next.status === "published" ||
+          next.status === "pending_quiz"
+        ) {
+          stopPoll();
+          setBusy(false);
+          if (next.status === "failed") {
+            setError(next.error || "Generation failed");
+          }
+          if (next.status === "ready") {
+            const maxP = selectedTier?.maxSellPrice || 1500;
+            const suggested = Math.max(100, Math.min(maxP, Number(next.price) || maxP));
+            setSellPrice(String(suggested));
+            pushReadyPreview(next);
+          }
+        }
+      } catch (err) {
+        stopPoll();
+        setBusy(false);
+        setError(err.message || "Could not check generation status");
+      }
+    };
+    tick();
+    pollRef.current = setInterval(tick, 2500);
+  }
+
+  async function handleSend(e) {
+    e?.preventDefault?.();
+    const text = prompt.trim();
+    if (!text || busy || gateStep !== "create") return;
+    setError("");
+    setPrompt("");
+    setMessages((prev) => [...prev, { role: "user", text }]);
+    setBusy(true);
+    setJob(null);
+    setSellPrice("2000");
+    try {
+      const data = await startClosetAiDraft(studentId, text, classId);
+      const next = data.job;
+      setJob(next);
+      if (next?.chatReply) {
+        setMessages((prev) => [...prev, { role: "assistant", text: next.chatReply }]);
+      }
+      if (next?.id) startPoll(next.id);
+    } catch (err) {
+      setBusy(false);
+      setError(err.message || "Could not start generation");
+    }
+  }
+
+  async function handlePublish() {
+    if (!job?.id || job.status !== "ready" || busy) return;
+    if (crewSlots == null || !selectedTier) {
+      setError("Pick a crew size on the Hire a crew step first.");
+      return;
+    }
+    const maxP = selectedTier.maxSellPrice || 1500;
+    const payroll = selectedTier.payroll || 0;
+    const parsed = Math.round(Number(String(sellPrice).replace(/[^0-9.]/g, "")));
+    if (!Number.isFinite(parsed) || parsed < 100 || parsed > maxP) {
+      setError(`Set a price between $100 and ${money(maxP)} for this crew size.`);
+      return;
+    }
+    if (payroll > 0 && Number(cash) < payroll) {
+      setError(
+        `You need at least ${money(payroll)} cash for crew payroll (charged only if approved).`
+      );
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const data = await publishClosetAiJob(
+        studentId,
+        job.id,
+        classId,
+        parsed,
+        crewSlots
+      );
+      const title = data?.crew?.jobTitle || "";
+      const partnerName =
+        data?.crew?.invitedStudentName || invitedPartnerName || "";
+      setJob((prev) => ({
+        ...prev,
+        status: "pending_quiz",
+        price: parsed,
+        itemId: data.item?.id,
+        crew: data.crew,
+        crewSlots,
+        crewPayroll: payroll,
+        label: data.item?.label || prev?.label,
+      }));
+      if (partnerName) setInvitedPartnerName(partnerName);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text:
+            crewSlots === 1
+              ? partnerName
+                ? `Published “${title || "your item"}”. Waiting for ${partnerName} to accept the partnership (if they haven’t yet), then finish the strategy scenario.`
+                : `Published “${title || "your item"}”. Finish the strategy scenario once your partner accepts.`
+              : title
+                ? `Posted to the Job board as “${title}”. Hire ${crewSlots} classmates, then finish the strategy scenario.`
+                : `Posted to the Job board. Hire ${crewSlots} classmates, then finish the strategy scenario.`,
+        },
+      ]);
+      setGateStep("quiz");
+      getClosetAiStatus(studentId, classId).then(setStatus).catch(() => {});
+    } catch (err) {
+      setError(err.message || "Could not publish");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleInvitePartner() {
+    if (!selectedPartnerId || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const data = await inviteCrewPartner(
+        classId,
+        studentId,
+        selectedPartnerId
+      );
+      const name = data?.partnerName || "classmate";
+      setInvitedPartnerName(name);
+      setGateStep("notice");
+    } catch (err) {
+      setError(err.message || "Could not send invite");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleQuizSubmit(e) {
+    e?.preventDefault?.();
+    if ((!job?.id && !quizTestMode) || busy) return;
+    const answer = String(strategyAnswer || "").trim();
+    if (answer.length < CLOSET_AI_STRATEGY_MIN_CHARS) {
+      setError(
+        `Write a thoughtful response (at least ${CLOSET_AI_STRATEGY_MIN_CHARS} characters).`
+      );
+      return;
+    }
+    const answers = [
+      {
+        id: CLOSET_AI_SCENARIO.id,
+        prompt: CLOSET_AI_SCENARIO.prompt,
+        answer,
+      },
+    ];
+    setBusy(true);
+    setError("");
+    try {
+      if (quizTestMode) {
+        const result = await seedClosetAiTestReview(
+          studentId,
+          classId,
+          answers
+        );
+        setJob((prev) => ({
+          ...(prev || {}),
+          id: result?.jobId || prev?.id,
+          status: "pending_review",
+          isTest: true,
+        }));
+        setGateStep("review");
+        return;
+      }
+      const result = await activateClosetAiJob(studentId, job.id, classId, answers);
+      setJob((prev) => ({
+        ...prev,
+        status: result?.pendingReview
+          ? "pending_review"
+          : result?.awaitingCrew
+            ? "awaiting_crew"
+            : "awaiting_crew",
+      }));
+      setGateStep("review");
+    } catch (err) {
+      setError(err.message || "Could not submit strategy response");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function skipToQuizForTesting() {
+    stopPoll();
+    setBusy(false);
+    setError("");
+    setQuizTestMode(true);
+    setStrategyAnswer("");
+    setJob({
+      id: "test-quiz",
+      status: "pending_quiz",
+      label: "Test item",
+      kind: "prop",
+    });
+    setGateStep("quiz");
+  }
+
+  if (status && !status.allowed) return null;
+  if (!status && gateStep === "create") return null;
+
+  const isBuilding =
+    job &&
+    (job.status === "previewing" ||
+      job.status === "refining" ||
+      job.status === "generating" ||
+      job.status === "queued");
+
+  if (gateStep === "crew") {
+    return (
+      <div className="closet-ai-panel closet-ai-gate">
+        <p className="closet-kicker">Hire a crew</p>
+        <strong className="closet-ai-gate-title">Choose your team</strong>
+        <p className="closet-ai-gate-copy">
+          Partnership: invite one classmate directly. Team of 3 or Crew of 3+:
+          your role posts to the Job board for classmates to join. Bigger crews
+          cost more when approved, but unlock a higher sell price.
+        </p>
+        <div className="closet-ai-crew-choices" role="radiogroup" aria-label="Crew size">
+          {activeTier.map((t) => {
+            const selected = crewSlots === t.slots;
+            return (
+              <button
+                key={t.slots}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                className={
+                  selected
+                    ? "closet-ai-crew-choice is-selected"
+                    : "closet-ai-crew-choice"
+                }
+                data-click="select"
+                onClick={() => {
+                  setCrewSlots(t.slots);
+                  setSellPrice(String(t.maxSellPrice));
+                }}
+              >
+                <strong>{t.label}</strong>
+                <span>{t.blurb}</span>
+                <em>
+                  {t.payMode === "profit_share"
+                    ? `Split profits ${t.profitSharePct || 50}/${100 - (t.profitSharePct || 50)} · max ${money(t.maxSellPrice)}`
+                    : `Payroll ${money(t.payroll)} · max ${money(t.maxSellPrice)}`}
+                </em>
+              </button>
+            );
+          })}
+        </div>
+        <div className="closet-ai-gate-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            data-click="confirm"
+            disabled={crewSlots == null}
+            onClick={() =>
+              setGateStep(crewSlots === 1 ? "partner" : "notice")
+            }
+          >
+            {crewSlots === 1 ? "Choose partner" : "Continue"}
+          </button>
+          <button
+            type="button"
+            className="ghost-btn"
+            data-click="select"
+            onClick={() => onExit?.()}
+          >
+            Exit
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (gateStep === "notice") {
+    return (
+      <div className="closet-ai-panel closet-ai-gate">
+        <p className="closet-kicker">Before you create</p>
+        <strong className="closet-ai-gate-title">Strategy response required</strong>
+        <p className="closet-ai-gate-copy">
+          After publishing, you’ll get one market scenario and must explain how
+          you’d change your investment strategy. Your teacher will not approve
+          the item unless your answer is thoughtful and original.
+          {selectedTier?.payMode === "profit_share"
+            ? invitedPartnerName
+              ? ` You’ve invited ${invitedPartnerName} as your partner — they’ll get a notification when they open LedgerLab.`
+              : " You’ll invite one classmate as your partner next."
+            : " Your crew opening will post to the Job board for classmates to join."}
+        </p>
+        <div className="closet-ai-gate-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            data-click="confirm"
+            onClick={() => setGateStep("create")}
+          >
+            Agree
+          </button>
+          <button
+            type="button"
+            className="ghost-btn"
+            data-click="select"
+            onClick={() => onExit?.()}
+          >
+            Exit
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (gateStep === "partner") {
+    const selectedSeat = partnerRoster.find(
+      (s) => String(s?.id || s?.apiStudentId || "") === selectedPartnerId
+    );
+    return (
+      <div className="closet-ai-panel closet-ai-gate closet-ai-partner-gate">
+        <p className="closet-kicker">Partnership</p>
+        <strong className="closet-ai-gate-title">Invite a partner</strong>
+        <p className="closet-ai-gate-copy">
+          Pick one classmate from your class list. Any profit from this venture
+          is split evenly between you and your partner — they must accept before
+          your item can go to teacher review.
+        </p>
+        <section className="h2h-roster" aria-label="Classmates">
+          <h4 className="h2h-roster-title">Send invite to</h4>
+          {partnerLoading ? (
+            <p className="standings-profile-note">Loading classmates…</p>
+          ) : partnerRoster.length === 0 ? (
+            <p className="standings-profile-note">
+              No other students in this class yet.
+            </p>
+          ) : (
+            <ul className="h2h-opponent-list">
+              {partnerRoster.map((s) => {
+                const tid = String(s?.id || s?.apiStudentId || "");
+                const outfitId = String(s?.apiStudentId || s?.id || "");
+                const base = outfitForStudent(outfitId, s.name);
+                const outfit =
+                  s?.outfit && typeof s.outfit === "object"
+                    ? stripPlayerFishForm(
+                        { ...base, ...s.outfit, npcFish: false },
+                        base
+                      )
+                    : loadSavedOutfit(outfitId, s.name);
+                const active = tid === selectedPartnerId;
+                return (
+                  <li key={tid || s.id}>
+                    <button
+                      type="button"
+                      className={`h2h-opponent-btn${active ? " is-active" : ""}`}
+                      data-click="select"
+                      disabled={busy}
+                      onClick={() => setSelectedPartnerId(tid)}
+                    >
+                      <span className="h2h-opponent-avatar" aria-hidden="true">
+                        <Suspense
+                          fallback={
+                            <div className="standings-profile-avatar-fallback">
+                              <span className="busy-spinner" />
+                            </div>
+                          }
+                        >
+                          <AvatarCanvas
+                            outfit={outfit}
+                            mode="headshot"
+                            className="h2h-opponent-stage"
+                          />
+                        </Suspense>
+                      </span>
+                      <span className="h2h-opponent-name">
+                        {s.name || "Student"}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+        {error ? <p className="closet-note closet-note-error">{error}</p> : null}
+        <div className="closet-ai-gate-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            data-click="confirm"
+            disabled={!selectedPartnerId || busy}
+            onClick={handleInvitePartner}
+          >
+            {busy
+              ? "Sending…"
+              : selectedSeat
+                ? `Invite ${selectedSeat.name || "partner"}`
+                : "Pick a partner"}
+          </button>
+          <button
+            type="button"
+            className="ghost-btn"
+            data-click="select"
+            disabled={busy}
+            onClick={() => setGateStep("crew")}
+          >
+            Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (gateStep === "review") {
+    const waitingOnCrew = !quizTestMode && job?.status === "awaiting_crew";
+    return (
+      <div className="closet-ai-panel closet-ai-gate closet-ai-review-done">
+        <p className="closet-kicker">Submitted</p>
+        <strong className="closet-ai-gate-title">
+          {waitingOnCrew ? "Response saved" : "Under teacher review"}
+        </strong>
+        <p className="closet-ai-gate-copy">
+          {waitingOnCrew ? (
+            <>
+              Your strategy response for
+              {job?.label ? ` “${job.label}”` : " your item"} is saved. Your
+              teacher won’t see it until the crew is full
+              {crewSlots === 1
+                ? invitedPartnerName
+                  ? ` (${invitedPartnerName} still needs to accept).`
+                  : " (your partner still needs to accept)."
+                : "."}
+            </>
+          ) : (
+            <>
+              Your item{job?.label ? ` “${job.label}”` : ""} is waiting for your
+              teacher to review it.
+            </>
+          )}
+        </p>
+        <ul className="closet-ai-review-points">
+          <li>
+            <strong>If accepted:</strong> added to the class closet
+            {publishFee > 0
+              ? ` and you pay ${money(publishFee)} in crew wages`
+              : selectedTier?.payMode === "profit_share"
+                ? " and you split profits with your partner on sales"
+                : ""}
+            .
+          </li>
+          <li>
+            <strong>If denied:</strong> the item is deleted and you are charged{" "}
+            {money(0)}.
+          </li>
+        </ul>
+        {quizTestMode ? (
+          <p className="closet-note">Test mode — nothing was sent to Firebase.</p>
+        ) : null}
+        <div className="closet-ai-gate-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            data-click="confirm"
+            onClick={() =>
+              onPublished?.({
+                id: job?.itemId || job?.id || "pending",
+                label: job?.label || "Item",
+                pendingReview: !waitingOnCrew,
+                awaitingCrew: waitingOnCrew,
+                quizTest: quizTestMode,
+              })
+            }
+          >
+            Got it
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (gateStep === "quiz") {
+    const trimmed = String(strategyAnswer || "").trim();
+    const ready = trimmed.length >= CLOSET_AI_STRATEGY_MIN_CHARS;
+    const quizForm = (
+      <form className="closet-ai-quiz closet-ai-quiz-stage-form" onSubmit={handleQuizSubmit}>
+        <p className="closet-ai-quiz-stage-kicker">Free response</p>
+        <p className="closet-ai-quiz-prompt">{CLOSET_AI_SCENARIO.prompt}</p>
+        <textarea
+          className="closet-ai-quiz-input"
+          rows={9}
+          value={strategyAnswer}
+          disabled={busy}
+          placeholder="Explain what you’d buy, sell, or hold — and why…"
+          maxLength={1200}
+          aria-label="Strategy response"
+          onChange={(e) => setStrategyAnswer(e.target.value)}
+        />
+        <p className="closet-ai-quiz-progress">
+          {trimmed.length}/{CLOSET_AI_STRATEGY_MIN_CHARS}+ characters
+          {quizTestMode ? " · test" : ""}
+        </p>
+        {error ? <p className="closet-note closet-note-error">{error}</p> : null}
+        <div className="closet-ai-gate-actions">
+          <button
+            type="submit"
+            className="primary-btn"
+            data-click="confirm"
+            disabled={busy || !ready}
+          >
+            {busy ? "Submitting…" : "Submit response"}
+          </button>
+        </div>
+      </form>
+    );
+    const host = quizHostEl;
+    return (
+      <>
+        <div className="closet-ai-panel closet-ai-gate">
+          <p className="closet-kicker">Go live</p>
+          <strong className="closet-ai-gate-title">Strategy scenario</strong>
+          <p className="closet-ai-gate-copy">
+            Complete the quiz to the right.
+            {quizTestMode ? " (Test mode.)" : ""}
+            {!quizTestMode
+              ? " You can submit now — your teacher only sees it once the crew is full."
+              : ""}
+          </p>
+          {!quizTestMode && crewSlots === 1 && !invitedPartnerName ? (
+            <div className="closet-ai-gate-actions">
+              <button
+                type="button"
+                className="ghost-btn"
+                data-click="select"
+                onClick={() => setGateStep("partner")}
+              >
+                Invite partner
+              </button>
+            </div>
+          ) : null}
+          <p className="closet-ai-gate-copy closet-ai-gate-copy-soft">
+            Your teacher will not approve this item if your response is thin,
+            copied, or not an original thought.
+          </p>
+        </div>
+        {host ? createPortal(quizForm, host) : null}
+      </>
+    );
+  }
+
+  return (
+    <div className="closet-ai-panel">
+      <div className="closet-ai-head">
+        <p className="closet-kicker">Creator</p>
+        <strong>Make a class buyable</strong>
+        <span className="closet-ai-quota">
+          {status.publishesToday ?? 0}/{status.maxPerDay ?? 8} today · payroll{" "}
+          {money(publishFee)}
+        </span>
+      </div>
+      <div className="closet-ai-messages" aria-live="polite">
+        {messages.length === 0 && !isBuilding ? (
+          <p className="closet-ai-empty">
+            Tell the AI what to make — e.g. “a boombox” — and it’ll build a
+            blocky 3D prop (same style as hats & bats) for the class closet.
+          </p>
+        ) : (
+          messages.map((m, i) => (
+            <div
+              key={`${m.role}-${i}`}
+              className={
+                m.role === "user" ? "closet-ai-msg user" : "closet-ai-msg bot"
+              }
+            >
+              {m.text ? <p>{m.text}</p> : null}
+              {m.imageUrl ? (
+                <img
+                  className="closet-ai-preview-img"
+                  src={m.imageUrl}
+                  alt={m.text ? `Preview: ${m.text}` : "Item preview"}
+                />
+              ) : null}
+              {!m.imageUrl && (m.parts?.length || m.glbUrl) ? (
+                <ClosetAiGlbPreview
+                  url={m.glbUrl}
+                  parts={m.parts}
+                  color={m.color}
+                />
+              ) : null}
+            </div>
+          ))
+        )}
+        {isBuilding ? <ClosetAiBuildSpinner /> : null}
+        <div ref={messagesEndRef} />
+      </div>
+      {job?.status === "ready" && (
+        <div className="closet-ai-ready">
+          <div className="closet-ai-ready-meta">
+            <strong>{job.label}</strong>
+            <span className="closet-ai-ready-kind">{job.kind}</span>
+            <label className="closet-ai-price-field">
+              <span>Crew</span>
+              <strong className="closet-ai-crew-locked">
+                {selectedTier?.label || "Not chosen"}
+                {selectedTier?.payMode === "profit_share"
+                  ? ` · ${selectedTier.profitSharePct || 50}% profit share`
+                  : ` · payroll ${money(selectedTier?.payroll || 0)}`}
+              </strong>
+            </label>
+            <label className="closet-ai-price-field">
+              <span>
+                Sell price (max {money(selectedTier?.maxSellPrice || 1500)})
+              </span>
+              <span className="closet-ai-price-input-wrap">
+                <span aria-hidden="true">$</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={100}
+                  max={selectedTier?.maxSellPrice || 1500}
+                  step={100}
+                  value={sellPrice}
+                  disabled={busy || crewSlots == null}
+                  onChange={(e) => setSellPrice(e.target.value)}
+                  aria-label="Classroom sell price"
+                />
+              </span>
+            </label>
+          </div>
+          <button
+            type="button"
+            className="primary-btn"
+            data-click="confirm"
+            disabled={busy || crewSlots == null}
+            onClick={handlePublish}
+          >
+            {busy
+              ? "Publishing…"
+              : crewSlots === 1
+                ? "Publish"
+                : "Post to Job board"}
+          </button>
+        </div>
+      )}
+      {error ? <p className="closet-note closet-note-error">{error}</p> : null}
+      <form className="closet-ai-form" onSubmit={handleSend}>
+        <input
+          type="text"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Make a cat…"
+          maxLength={400}
+          disabled={busy && job?.status !== "ready" && job?.status !== "published"}
+          aria-label="Describe a closet item"
+        />
+        <button
+          type="submit"
+          className="primary-btn"
+          data-click="confirm"
+          disabled={
+            busy ||
+            !prompt.trim() ||
+            (job &&
+              (job.status === "previewing" ||
+                job.status === "refining" ||
+                job.status === "generating" ||
+                job.status === "queued"))
+          }
+        >
+          Create
+        </button>
+      </form>
+      <button
+        type="button"
+        className="closet-ai-skip-test"
+        data-click="select"
+        disabled={busy}
+        onClick={skipToQuizForTesting}
+      >
+        Skip to quiz (test)
+      </button>
+    </div>
+  );
+}
+
 function ClosetModal({
   open,
   onClose,
@@ -2023,6 +3395,10 @@ function ClosetModal({
   studentId,
   cash = 0,
   onCashChange,
+  classId = "",
+  classClosetItems = [],
+  canCreateAi = false,
+  creatorStudentId = "",
 }) {
   const [sectionId, setSectionId] = useState("base");
   const [categoryId, setCategoryId] = useState("skin");
@@ -2030,6 +3406,8 @@ function ClosetModal({
   const [shopNote, setShopNote] = useState("");
   const [shopError, setShopError] = useState("");
   const [draft, setDraft] = useState(outfit);
+  const [showAi, setShowAi] = useState(false);
+  const [aiGateStep, setAiGateStep] = useState(null);
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const committedRef = useRef(outfit);
@@ -2037,6 +3415,11 @@ function ClosetModal({
   onCloseRef.current = onClose;
   const onChangeRef = useRef(onChangeOutfit);
   onChangeRef.current = onChangeOutfit;
+
+  const mergedCatalog = useMemo(
+    () => catalogWithClassItems(classClosetItems),
+    [classClosetItems]
+  );
 
   function persistWithoutTryOns(next) {
     const cleaned = stripUnownedBuyables(next, committedRef.current);
@@ -2058,6 +3441,8 @@ function ClosetModal({
     setDraft(cleaned);
     setShopNote("");
     setShopError("");
+    setShowAi(false);
+    setAiGateStep(null);
     const onKey = (e) => {
       if (e.key === "Escape") {
         onChangeRef.current(stripUnownedBuyables(draftRef.current, committedRef.current));
@@ -2080,7 +3465,7 @@ function ClosetModal({
   const section = CLOSET_SECTIONS.find((s) => s.id === sectionId) || CLOSET_SECTIONS[0];
   const category =
     section.categories.find((c) => c.id === categoryId)?.id || section.categories[0].id;
-  const items = CLOSET_CATALOG[category] || [];
+  const items = mergedCatalog[category] || [];
 
   function isItemEquipped(item) {
     if (isAccessoryItem(item)) return draft[item.kind] === item.id;
@@ -2097,8 +3482,10 @@ function ClosetModal({
       return { ...draft, hairStyleId: committed.hairStyleId || "hair-block" };
     }
     const free =
-      freeCatalogItems(category).find((entry) => entry.id === committed[`${category}Id`])
-      || freeCatalogItems(category)[0];
+      (mergedCatalog[category] || []).filter((entry) => !isPaidItem(entry)).find(
+        (entry) => entry.id === committed[`${category}Id`]
+      ) ||
+      (mergedCatalog[category] || []).find((entry) => !isPaidItem(entry));
     return free
       ? {
           ...draft,
@@ -2183,7 +3570,7 @@ function ClosetModal({
     }
   }
 
-  const paidInCategory = paidCatalogItems(category).length > 0;
+  const paidInCategory = items.some((item) => isPaidItem(item));
 
   const modal = (
     <div className="closet-overlay" onClick={commitAndClose} role="presentation">
@@ -2199,52 +3586,106 @@ function ClosetModal({
             <p className="closet-kicker">Closet</p>
             <h3>{studentName || "Your look"}</h3>
           </div>
-          <div className="closet-cash-chip" title="Available cash">
-            {money(cash)}
+          <div className="closet-head-tools">
+            {canCreateAi ? (
+              <button
+                type="button"
+                className={
+                  showAi
+                    ? "closet-ai-create-btn is-active"
+                    : "closet-ai-create-btn"
+                }
+                data-click="select"
+                title={showAi ? "Back to shelf" : "Create an Item"}
+                aria-label={showAi ? "Back to shelf" : "Create an Item"}
+                aria-pressed={showAi}
+                onClick={() => {
+                  setShowAi((v) => {
+                    if (v) setAiGateStep(null);
+                    return !v;
+                  });
+                }}
+              >
+                <span className="closet-ai-create-plus" aria-hidden="true">
+                  +
+                </span>
+                <span>{showAi ? "Back to shelf" : "Create an Item"}</span>
+              </button>
+            ) : null}
+            <div className="closet-cash-chip" title="Available cash">
+              {money(cash)}
+            </div>
+            <button
+              type="button"
+              className="closet-close"
+              data-click="select"
+              onClick={commitAndClose}
+              aria-label="Close closet"
+            >
+              ×
+            </button>
           </div>
-          <button
-            type="button"
-            className="closet-close"
-            data-click="select"
-            onClick={commitAndClose}
-            aria-label="Close closet"
-          >
-            ×
-          </button>
         </header>
 
         <div className="closet-body">
           <aside className="closet-rail" aria-label="Customization options">
-            <ClosetNav
-              sections={CLOSET_SECTIONS}
-              sectionId={section.id}
-              categoryId={category}
-              onSection={(id) => {
-                setSectionId(id);
-                const next = CLOSET_SECTIONS.find((s) => s.id === id);
-                setCategoryId(next?.categories[0]?.id || "skin");
-              }}
-              onCategory={setCategoryId}
-            />
+            {showAi && canCreateAi ? null : (
+              <ClosetNav
+                sections={CLOSET_SECTIONS}
+                sectionId={section.id}
+                categoryId={category}
+                onSection={(id) => {
+                  setSectionId(id);
+                  const next = CLOSET_SECTIONS.find((s) => s.id === id);
+                  setCategoryId(next?.categories[0]?.id || "skin");
+                  setShowAi(false);
+                  setAiGateStep(null);
+                }}
+                onCategory={(id) => {
+                  setCategoryId(id);
+                  setShowAi(false);
+                  setAiGateStep(null);
+                }}
+              />
+            )}
 
-            <ClosetShelf
-              category={category}
-              items={items}
-              outfit={draft}
-              cash={cash}
-              buyingId={buyingId}
-              onSelectItem={(item) =>
-                persistWithoutTryOns(applyCatalogSelection(draft, category, item))
-              }
-              onSelectLuxury={handleTryLuxury}
-              onBuyLuxury={handleBuyLuxury}
-            />
+            {showAi && canCreateAi ? (
+              <ClosetAiCreator
+                open={open}
+                studentId={creatorStudentId || studentId}
+                classId={classId}
+                cash={cash}
+                onCashChange={onCashChange}
+                onGateStepChange={setAiGateStep}
+                quizHostReady={aiGateStep === "quiz"}
+                onExit={() => {
+                  setShowAi(false);
+                  setAiGateStep(null);
+                }}
+                onPublished={() => {
+                  commitAndClose();
+                }}
+              />
+            ) : (
+              <ClosetShelf
+                category={category}
+                items={items}
+                outfit={draft}
+                cash={cash}
+                buyingId={buyingId}
+                onSelectItem={(item) =>
+                  persistWithoutTryOns(applyCatalogSelection(draft, category, item))
+                }
+                onSelectLuxury={handleTryLuxury}
+                onBuyLuxury={handleBuyLuxury}
+              />
+            )}
 
             {shopError ? (
               <p className="closet-note closet-note-error">{shopError}</p>
             ) : shopNote ? (
               <p className="closet-note">{shopNote}</p>
-            ) : (
+            ) : !showAi ? (
               <p className="closet-note">
                 {paidInCategory
                   ? "Free options up top. Buyables below — try on free, buy to keep."
@@ -2252,12 +3693,34 @@ function ClosetModal({
                     ? "Pick a haircut, then fine-tune color under Hair color."
                     : "Free looks save automatically."}
               </p>
-            )}
+            ) : null}
           </aside>
 
-          <div className="closet-preview">
-            <AvatarCanvas outfit={draft} mode="closet" className="closet-stage" />
-            <p className="closet-hint">Try buyables free — only purchases leave with you</p>
+          <div
+            className={
+              showAi && aiGateStep === "quiz"
+                ? "closet-preview closet-preview--quiz"
+                : "closet-preview"
+            }
+          >
+            {showAi && aiGateStep === "quiz" ? (
+              <div
+                id="closet-ai-quiz-host"
+                className="closet-ai-quiz-stage"
+                aria-label="Strategy quiz"
+              />
+            ) : (
+              <>
+                <AvatarCanvas
+                  outfit={draft}
+                  mode="closet"
+                  className="closet-stage"
+                />
+                <p className="closet-hint">
+                  Try buyables free — only purchases leave with you
+                </p>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -2277,12 +3740,46 @@ export default function StudentCharacter({
 }) {
   const [open, setOpen] = useState(false);
   const [outfit, setOutfit] = useState(() => loadSavedOutfit(studentId, name));
+  const [classClosetItems, setClassClosetItems] = useState([]);
+  const [studentEmail, setStudentEmail] = useState("");
 
   useEffect(() => {
     setOutfit(loadSavedOutfit(studentId, name));
   }, [studentId, name]);
 
+  useEffect(() => {
+    if (!classId) {
+      setClassClosetItems([]);
+      setClassClosetAccessories([]);
+      return undefined;
+    }
+    return subscribeClassClosetItems(classId, (items) => {
+      setClassClosetItems(items);
+      setClassClosetAccessories(items);
+    });
+  }, [classId]);
+
+  useEffect(() => {
+    if (!classId || !firestoreStudentId) {
+      setStudentEmail("");
+      return undefined;
+    }
+    let cancelled = false;
+    getClassStudent(classId, firestoreStudentId)
+      .then((seat) => {
+        if (!cancelled) setStudentEmail(String(seat?.email || "").toLowerCase());
+      })
+      .catch(() => {
+        if (!cancelled) setStudentEmail("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [classId, firestoreStudentId]);
+
   const displayOutfit = useMemo(() => outfit, [outfit]);
+  const canCreateAi = studentEmail === "test@gmail.com";
+  const creatorStudentId = firestoreStudentId || studentId;
 
   function handleOutfitChange(next) {
     const cleaned = stripPlayerFishForm(next);
@@ -2315,6 +3812,10 @@ export default function StudentCharacter({
         studentId={studentId}
         cash={cash}
         onCashChange={onCashChange}
+        classId={classId}
+        classClosetItems={classClosetItems}
+        canCreateAi={canCreateAi}
+        creatorStudentId={creatorStudentId}
       />
     </>
   );
