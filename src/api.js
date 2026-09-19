@@ -192,12 +192,21 @@ export function getClosetAiStatus(studentId, classId) {
   return request(`/closet/ai/status?${q}`, { classId });
 }
 
-export function startClosetAiDraft(studentId, prompt, classId) {
+export function startClosetAiDraft(studentId, prompt, classId, options = {}) {
   return request("/closet/ai/draft", {
     method: "POST",
     classId,
     timeoutMs: 90000,
-    body: JSON.stringify({ studentId, prompt }),
+    body: JSON.stringify({
+      studentId,
+      prompt,
+      primaryColor: options.primaryColor || null,
+      secondaryColor: options.secondaryColor || null,
+      tertiaryColor: options.tertiaryColor || null,
+      quaternaryColor: options.quaternaryColor || null,
+      kind: options.kind || null,
+      style: options.style || null,
+    }),
   });
 }
 

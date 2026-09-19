@@ -88,7 +88,22 @@ const ATTACH = {
   torso: [0, 2.5, 0],
   torsoBack: [0, 2.55, -0.55],
   shoulderL: [-0.95, 3.15, 0.05],
+  // Palm of right hand — AI props still need an outward offset (see below).
   handR: [1.35, 1.85, 0.2],
+};
+
+/**
+ * Extra weld offsets so AI / catalog-like props aren’t buried in the limb.
+ * handR: push out of the arm (+X) and slightly forward (+Z).
+ */
+const ATTACH_AI_OFFSET = {
+  handR: [0.62, 0.12, 0.42],
+  torsoBack: [0, 0.05, -0.2],
+  shoulderL: [-0.2, -0.15, 0.25],
+  neck: [0, -0.06, 0.1],
+  eyes: [0, 0, 0.12],
+  headTop: [0, 0.08, 0],
+  torso: [0, 0, 0.15],
 };
 
 useGLTF.preload(BLENDER_CHARACTER_URL);
@@ -647,16 +662,26 @@ function HairStylePreview({ outfit, hairStyleId, hatItem = null, className }) {
 }
 
 function accessoryPose(item) {
-  const base = ATTACH[item.attach] || ATTACH.torso;
-  const offset = item.offset || [0, 0, 0];
+  const attach = item.attach || "torso";
+  const base = ATTACH[attach] || ATTACH.torso;
+  const explicit = item.offset;
+  const aiNudge =
+    item.aiCreated && !item.aiSprite
+      ? ATTACH_AI_OFFSET[attach] || [0, 0, 0]
+      : [0, 0, 0];
+  const offset = Array.isArray(explicit) ? explicit : aiNudge;
   // Blocky AI props are authored ~1 unit tall; catalog default 0.55 left them tiny.
   const scale =
     item.aiCreated && !item.aiSprite
       ? Math.max(Number(item.scale) || 1, 1)
       : item.scale ?? 1;
+  // Handheld props: slight tip outward like the catalog baseball bat.
+  const rotation =
+    item.rotation ||
+    (item.aiCreated && attach === "handR" ? [0, 0, -0.45] : [0, 0, 0]);
   return {
     position: [base[0] + offset[0], base[1] + offset[1], base[2] + offset[2]],
-    rotation: item.rotation || [0, 0, 0],
+    rotation,
     scale,
   };
 }
@@ -966,8 +991,31 @@ function AccessoryProps({ outfit }) {
     const catalog = [...ACCESSORY_ITEMS, ...classItems];
     const byId = new Map(catalog.map((item) => [item.id, item]));
     const kinds = ["hat", "glasses", "neck", "jersey", "backpack", "bag", "prop"];
+    const preview = outfit?.aiPreviewAccessory;
     const out = [];
     for (const kind of kinds) {
+      if (
+        preview &&
+        preview.kind === kind &&
+        ((Array.isArray(preview.parts) && preview.parts.length > 0) ||
+          preview.url ||
+          preview.glbUrl)
+      ) {
+        out.push({
+          id: preview.id || `ai-preview-${kind}`,
+          kind,
+          label: preview.label || "Preview",
+          attach: preview.attach || "handR",
+          color: preview.color || "#888888",
+          parts: preview.parts || null,
+          url: preview.glbUrl || preview.url || null,
+          aiCreated: true,
+          scale: preview.scale,
+          offset: preview.offset,
+          rotation: preview.rotation,
+        });
+        continue;
+      }
       const id = outfit?.[kind];
       if (!id) continue;
       const item = byId.get(id);
@@ -2399,7 +2447,7 @@ export function AvatarSetupPanel({ outfit, onChangeOutfit, studentName }) {
   );
 }
 
-function ClosetAiBuildSpinner() {
+function ClosetAiBuildSpinner({ label = "Building your 3D item…" }) {
   return (
     <div className="closet-ai-build" role="status" aria-live="polite">
       <div className="closet-ai-build-stage" aria-hidden="true">
@@ -2412,7 +2460,47 @@ function ClosetAiBuildSpinner() {
           <span className="face bottom" />
         </div>
       </div>
-      <p className="closet-ai-build-label">Building your 3D item…</p>
+      <p className="closet-ai-build-label">{label}</p>
+    </div>
+  );
+}
+
+/** Roblox-style mystery crate teasing the item waiting after the strategy response. */
+function ClosetAiMysteryBox({
+  primary = "#3f8f68",
+  secondary = "#24312b",
+  tertiary = null,
+  quaternary = null,
+}) {
+  const accent = tertiary || secondary;
+  const lid = quaternary || primary;
+  return (
+    <div className="closet-ai-mystery" aria-hidden="true">
+      <div
+        className="closet-ai-mystery-stage"
+        style={{
+          "--mystery-primary": primary,
+          "--mystery-secondary": secondary,
+          "--mystery-accent": accent,
+          "--mystery-lid": lid,
+        }}
+      >
+        <div className="closet-ai-mystery-glow" />
+        <div className="closet-ai-mystery-crate">
+          <span className="mystery-face mystery-back" />
+          <span className="mystery-face mystery-left" />
+          <span className="mystery-face mystery-right" />
+          <span className="mystery-face mystery-bottom" />
+          <span className="mystery-face mystery-front">
+            <span className="mystery-band" />
+            <span className="mystery-mark">?</span>
+          </span>
+          <span className="mystery-face mystery-top" />
+          <span className="mystery-silhouette" />
+        </div>
+        <div className="closet-ai-mystery-shadow" />
+      </div>
+      <p className="closet-ai-mystery-caption">Your creation is sealed inside</p>
     </div>
   );
 }
@@ -2525,6 +2613,168 @@ const CLOSET_AI_SCENARIO = {
 
 const CLOSET_AI_STRATEGY_MIN_CHARS = 80;
 
+/** Classroom palette for Create-an-Item (same colors as closet clothing). */
+const CLOSET_AI_COLORS = [
+  { id: "tee-forest", label: "Forest", color: "#3f8f68" },
+  { id: "tee-sky", label: "Sky", color: "#4a90a4" },
+  { id: "tee-sun", label: "Gold", color: "#c4a035" },
+  { id: "tee-berry", label: "Berry", color: "#a0455c" },
+  { id: "tee-ink", label: "Ink", color: "#24312b" },
+  { id: "pants-denim", label: "Denim", color: "#3d5a80" },
+  { id: "pants-khaki", label: "Khaki", color: "#8a7a4f" },
+  { id: "pants-slate", label: "Slate", color: "#4a5560" },
+  { id: "shoes-white", label: "White", color: "#f2f5f3" },
+  { id: "shoes-red", label: "Red", color: "#b04040" },
+  { id: "shoes-navy", label: "Navy", color: "#1e3a5f" },
+  { id: "hair-copper", label: "Copper", color: "#8a4f28" },
+  { id: "hair-sand", label: "Blonde", color: "#c9a66b" },
+  { id: "hair-silver", label: "Silver", color: "#9a9590" },
+  { id: "hair-black", label: "Black", color: "#1f1a16" },
+];
+
+const CLOSET_AI_KINDS = [
+  { id: "hat", label: "Hat" },
+  { id: "glasses", label: "Glasses" },
+  { id: "backpack", label: "Backpack" },
+  { id: "jersey", label: "Jersey" },
+  { id: "prop", label: "Hand prop" },
+];
+
+const CLOSET_AI_STYLES = [
+  { id: "chunky", label: "Chunky", blurb: "Big bold blocks" },
+  { id: "simple", label: "Simple", blurb: "Clean & minimal" },
+  { id: "fancy", label: "Fancy", blurb: "Extra accents" },
+  { id: "silly", label: "Silly", blurb: "Playful & goofy" },
+];
+
+function closetAiColorById(id) {
+  return CLOSET_AI_COLORS.find((c) => c.id === id) || CLOSET_AI_COLORS[0];
+}
+
+function ClosetAiColorField({
+  label,
+  valueId,
+  open,
+  onToggle,
+  onPick,
+  disabled = false,
+  onRemove = null,
+}) {
+  const current = closetAiColorById(valueId);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") onToggle?.();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onToggle]);
+
+  return (
+    <div className="closet-ai-brief-field">
+      <div className="closet-ai-brief-field-head">
+        <div className="closet-ai-brief-label-row">
+          <span className="closet-ai-brief-label">{label}</span>
+          {onRemove ? (
+            <button
+              type="button"
+              className="closet-ai-color-remove"
+              data-click="select"
+              disabled={disabled}
+              onClick={onRemove}
+            >
+              Remove
+            </button>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          className="closet-ai-color-pick"
+          data-click="select"
+          disabled={disabled}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-label={`${label}: ${current.label}. Change color`}
+          onClick={onToggle}
+        >
+          <span
+            className="closet-swatch"
+            style={{ background: current.color }}
+            aria-hidden="true"
+          />
+          <span className="closet-ai-color-pick-meta">
+            <strong>{current.label}</strong>
+            <span>Change</span>
+          </span>
+        </button>
+      </div>
+      {open
+        ? createPortal(
+            <div
+              className="closet-ai-color-modal-overlay"
+              role="presentation"
+              onClick={onToggle}
+            >
+              <div
+                className="closet-ai-color-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label={`Pick ${label.toLowerCase()}`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <header className="closet-ai-color-modal-head">
+                  <div>
+                    <p className="closet-ai-color-modal-kicker">Color</p>
+                    <strong>{label}</strong>
+                  </div>
+                  <button
+                    type="button"
+                    className="ghost-btn closet-ai-color-modal-close"
+                    data-click="select"
+                    aria-label="Close color picker"
+                    onClick={onToggle}
+                  >
+                    Close
+                  </button>
+                </header>
+                <div
+                  className="closet-color-palette closet-ai-color-modal-palette"
+                  role="listbox"
+                  aria-label={`${label} palette`}
+                >
+                  {CLOSET_AI_COLORS.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="option"
+                      aria-selected={item.id === valueId}
+                      aria-label={item.label}
+                      title={item.label}
+                      className={
+                        item.id === valueId
+                          ? "closet-color-swatch selected"
+                          : "closet-color-swatch"
+                      }
+                      style={{ background: item.color }}
+                      data-click="select"
+                      disabled={disabled}
+                      onClick={() => onPick(item.id)}
+                    />
+                  ))}
+                </div>
+                <p className="closet-ai-color-modal-current">
+                  Selected: <strong>{current.label}</strong>
+                </p>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+    </div>
+  );
+}
+
 function ClosetAiCreator({
   open,
   studentId,
@@ -2534,18 +2784,29 @@ function ClosetAiCreator({
   onPublished,
   onExit,
   onGateStepChange,
+  onPreviewChange,
   quizHostReady = false,
 }) {
   const [status, setStatus] = useState(null);
   const [gateStep, setGateStep] = useState("crew"); // crew | notice | create | partner | quiz | review
   const [prompt, setPrompt] = useState("");
+  const [primaryColorId, setPrimaryColorId] = useState("tee-forest");
+  const [secondaryColorId, setSecondaryColorId] = useState("tee-ink");
+  const [tertiaryColorId, setTertiaryColorId] = useState(null);
+  const [quaternaryColorId, setQuaternaryColorId] = useState(null);
+  const [itemKind, setItemKind] = useState("prop");
+  const [itemStyle, setItemStyle] = useState("chunky");
+  const [paletteOpen, setPaletteOpen] = useState(null); // primary | secondary | tertiary | quaternary | null
   const [messages, setMessages] = useState([]);
   const [job, setJob] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [briefTeasing, setBriefTeasing] = useState(false);
   const [error, setError] = useState("");
   const [sellPrice, setSellPrice] = useState("1200");
   const [crewSlots, setCrewSlots] = useState(null);
   const [strategyAnswer, setStrategyAnswer] = useState("");
+  const [pendingBrief, setPendingBrief] = useState(null);
+  const [quizDone, setQuizDone] = useState(false);
   const [quizTestMode, setQuizTestMode] = useState(false);
   const [quizHostEl, setQuizHostEl] = useState(null);
   const [partnerRoster, setPartnerRoster] = useState([]);
@@ -2554,6 +2815,7 @@ function ClosetAiCreator({
   const [invitedPartnerName, setInvitedPartnerName] = useState("");
   const pollRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const briefTeaseTokenRef = useRef(null);
   const tiers = Array.isArray(status?.tiers) && status.tiers.length
     ? status.tiers.map((t) => ({
         slots: Number(t.slots) || 1,
@@ -2577,19 +2839,62 @@ function ClosetAiCreator({
     if (!open) return;
     setGateStep("crew");
     setPrompt("");
+    setPrimaryColorId("tee-forest");
+    setSecondaryColorId("tee-ink");
+    setTertiaryColorId(null);
+    setQuaternaryColorId(null);
+    setItemKind("prop");
+    setItemStyle("chunky");
+    setPaletteOpen(null);
     setMessages([]);
     setJob(null);
     setBusy(false);
+    setBriefTeasing(false);
     setError("");
     setSellPrice("1500");
     setCrewSlots(null);
     setStrategyAnswer("");
+    setPendingBrief(null);
+    setQuizDone(false);
     setQuizTestMode(false);
     setPartnerRoster([]);
     setSelectedPartnerId("");
     setInvitedPartnerName("");
+    onPreviewChange?.(null);
+    briefTeaseTokenRef.current = null;
     stopPoll();
   }, [open]);
+
+  useEffect(() => {
+    return () => {
+      onPreviewChange?.(null);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!job) {
+      onPreviewChange?.(null);
+      return;
+    }
+    const parts = Array.isArray(job.parts) ? job.parts : [];
+    const glbUrl = job.glbUrl || null;
+    if (!parts.length && !glbUrl) {
+      onPreviewChange?.(null);
+      return;
+    }
+    onPreviewChange?.({
+      id: `ai-preview-${job.id || "draft"}`,
+      kind: job.kind || itemKind || "prop",
+      attach: job.attach || "handR",
+      label: job.label || "Preview",
+      color: job.color || "#888888",
+      parts,
+      glbUrl,
+      offset: Array.isArray(job.offset) ? job.offset : undefined,
+      rotation: Array.isArray(job.rotation) ? job.rotation : undefined,
+      aiCreated: true,
+    });
+  }, [job, itemKind, onPreviewChange]);
 
   useEffect(() => {
     onGateStepChange?.(gateStep);
@@ -2727,22 +3032,41 @@ function ClosetAiCreator({
     pollRef.current = setInterval(tick, 2500);
   }
 
-  async function handleSend(e) {
-    e?.preventDefault?.();
-    const text = prompt.trim();
-    if (!text || busy || gateStep !== "create") return;
-    setError("");
-    setPrompt("");
-    setMessages((prev) => [...prev, { role: "user", text }]);
+  async function startGenerationFromBrief(brief) {
+    if (!brief?.text) return;
     setBusy(true);
+    setBriefTeasing(false);
     setJob(null);
     setSellPrice("2000");
+    setError("");
+    setMessages((prev) => {
+      const withoutTease = prev.filter((m) => !m.tease);
+      if (withoutTease.some((m) => m.buildingHint)) return withoutTease;
+      return [
+        ...withoutTease,
+        {
+          role: "assistant",
+          text: "Building your item now — hang tight.",
+          buildingHint: true,
+        },
+      ];
+    });
     try {
-      const data = await startClosetAiDraft(studentId, text, classId);
+      const data = await startClosetAiDraft(studentId, brief.text, classId, {
+        primaryColor: brief.primaryColor,
+        secondaryColor: brief.secondaryColor,
+        tertiaryColor: brief.tertiaryColor || null,
+        quaternaryColor: brief.quaternaryColor || null,
+        kind: brief.kind,
+        style: brief.style,
+      });
       const next = data.job;
       setJob(next);
       if (next?.chatReply) {
-        setMessages((prev) => [...prev, { role: "assistant", text: next.chatReply }]);
+        setMessages((prev) => [
+          ...prev.filter((m) => !m.buildingHint),
+          { role: "assistant", text: next.chatReply },
+        ]);
       }
       if (next?.id) startPoll(next.id);
     } catch (err) {
@@ -2751,10 +3075,95 @@ function ClosetAiCreator({
     }
   }
 
+  async function handleSend(e) {
+    e?.preventDefault?.();
+    if (busy || briefTeasing || gateStep !== "create") return;
+
+    // Retry path: brief + quiz already done, generation failed — rebuild without re-quiz.
+    if (quizDone && pendingBrief) {
+      await startGenerationFromBrief(pendingBrief);
+      return;
+    }
+
+    const text = prompt.trim();
+    if (!text) return;
+
+    const primary = closetAiColorById(primaryColorId);
+    const secondary = closetAiColorById(secondaryColorId);
+    const tertiary = tertiaryColorId ? closetAiColorById(tertiaryColorId) : null;
+    const quaternary = quaternaryColorId
+      ? closetAiColorById(quaternaryColorId)
+      : null;
+    const kindMeta = CLOSET_AI_KINDS.find((k) => k.id === itemKind) || CLOSET_AI_KINDS[4];
+    const styleMeta =
+      CLOSET_AI_STYLES.find((s) => s.id === itemStyle) || CLOSET_AI_STYLES[0];
+    const colorLabels = [
+      primary.label,
+      secondary.label,
+      tertiary?.label,
+      quaternary?.label,
+    ].filter(Boolean);
+    const briefLine = `${kindMeta.label} · ${styleMeta.label} · ${colorLabels.join(" / ")}`;
+    const brief = {
+      text,
+      primaryColor: primary.color,
+      secondaryColor: secondary.color,
+      tertiaryColor: tertiary?.color || null,
+      quaternaryColor: quaternary?.color || null,
+      kind: kindMeta.id,
+      style: styleMeta.id,
+      briefLine,
+    };
+    setError("");
+    setPrompt("");
+    setPaletteOpen(null);
+    setPendingBrief(brief);
+    setJob(null);
+    setMessages([
+      { role: "user", text: `${briefLine}\n${text}` },
+      {
+        role: "assistant",
+        text: "Got it — lining up your build…",
+        tease: true,
+      },
+    ]);
+    setBusy(true);
+    setBriefTeasing(true);
+    const teaseToken = Symbol("brief-tease");
+    briefTeaseTokenRef.current = teaseToken;
+    // Let React paint the loading chat before the wait.
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    if (briefTeaseTokenRef.current !== teaseToken) return;
+    briefTeaseTokenRef.current = null;
+    setBriefTeasing(false);
+    setBusy(false);
+    setGateStep("quiz");
+  }
+
+  function strategyAnswersPayload() {
+    return [
+      {
+        id: CLOSET_AI_SCENARIO.id,
+        prompt: CLOSET_AI_SCENARIO.prompt,
+        answer: String(strategyAnswer || "").trim(),
+      },
+    ];
+  }
+
   async function handlePublish() {
     if (!job?.id || job.status !== "ready" || busy) return;
     if (crewSlots == null || !selectedTier) {
       setError("Pick a crew size on the Hire a crew step first.");
+      return;
+    }
+    const answer = String(strategyAnswer || "").trim();
+    if (answer.length < CLOSET_AI_STRATEGY_MIN_CHARS) {
+      setError(
+        `Strategy response is missing — go back and write at least ${CLOSET_AI_STRATEGY_MIN_CHARS} characters.`
+      );
       return;
     }
     const maxP = selectedTier.maxSellPrice || 1500;
@@ -2783,9 +3192,19 @@ function ClosetAiCreator({
       const title = data?.crew?.jobTitle || "";
       const partnerName =
         data?.crew?.invitedStudentName || invitedPartnerName || "";
+      const result = await activateClosetAiJob(
+        studentId,
+        job.id,
+        classId,
+        strategyAnswersPayload()
+      );
       setJob((prev) => ({
         ...prev,
-        status: "pending_quiz",
+        status: result?.pendingReview
+          ? "pending_review"
+          : result?.awaitingCrew
+            ? "awaiting_crew"
+            : "awaiting_crew",
         price: parsed,
         itemId: data.item?.id,
         crew: data.crew,
@@ -2801,14 +3220,14 @@ function ClosetAiCreator({
           text:
             crewSlots === 1
               ? partnerName
-                ? `Published “${title || "your item"}”. Waiting for ${partnerName} to accept the partnership (if they haven’t yet), then finish the strategy scenario.`
-                : `Published “${title || "your item"}”. Finish the strategy scenario once your partner accepts.`
+                ? `Published “${title || "your item"}”. Waiting for ${partnerName} to accept the partnership (if they haven’t yet).`
+                : `Published “${title || "your item"}”. Waiting for your partner to accept.`
               : title
-                ? `Posted to the Job board as “${title}”. Hire ${crewSlots} classmates, then finish the strategy scenario.`
-                : `Posted to the Job board. Hire ${crewSlots} classmates, then finish the strategy scenario.`,
+                ? `Posted to the Job board as “${title}”. Hire ${crewSlots} classmates to fill the crew.`
+                : `Posted to the Job board. Hire ${crewSlots} classmates to fill the crew.`,
         },
       ]);
-      setGateStep("quiz");
+      setGateStep("review");
       getClosetAiStatus(studentId, classId).then(setStatus).catch(() => {});
     } catch (err) {
       setError(err.message || "Could not publish");
@@ -2839,7 +3258,7 @@ function ClosetAiCreator({
 
   async function handleQuizSubmit(e) {
     e?.preventDefault?.();
-    if ((!job?.id && !quizTestMode) || busy) return;
+    if (busy || briefTeasing) return;
     const answer = String(strategyAnswer || "").trim();
     if (answer.length < CLOSET_AI_STRATEGY_MIN_CHARS) {
       setError(
@@ -2847,17 +3266,11 @@ function ClosetAiCreator({
       );
       return;
     }
-    const answers = [
-      {
-        id: CLOSET_AI_SCENARIO.id,
-        prompt: CLOSET_AI_SCENARIO.prompt,
-        answer,
-      },
-    ];
-    setBusy(true);
+    const answers = strategyAnswersPayload();
     setError("");
     try {
       if (quizTestMode) {
+        setBusy(true);
         const result = await seedClosetAiTestReview(
           studentId,
           classId,
@@ -2869,22 +3282,22 @@ function ClosetAiCreator({
           status: "pending_review",
           isTest: true,
         }));
+        setQuizDone(true);
         setGateStep("review");
+        setBusy(false);
         return;
       }
-      const result = await activateClosetAiJob(studentId, job.id, classId, answers);
-      setJob((prev) => ({
-        ...prev,
-        status: result?.pendingReview
-          ? "pending_review"
-          : result?.awaitingCrew
-            ? "awaiting_crew"
-            : "awaiting_crew",
-      }));
-      setGateStep("review");
+      if (!pendingBrief?.text) {
+        setError("Describe your item first, then come back to this scenario.");
+        setGateStep("create");
+        return;
+      }
+      // Back to the create chat with the loading box, then actually run AI.
+      setQuizDone(true);
+      setGateStep("create");
+      await startGenerationFromBrief(pendingBrief);
     } catch (err) {
       setError(err.message || "Could not submit strategy response");
-    } finally {
       setBusy(false);
     }
   }
@@ -2894,7 +3307,9 @@ function ClosetAiCreator({
     setBusy(false);
     setError("");
     setQuizTestMode(true);
+    setQuizDone(false);
     setStrategyAnswer("");
+    setPendingBrief(null);
     setJob({
       id: "test-quiz",
       status: "pending_quiz",
@@ -2913,6 +3328,16 @@ function ClosetAiCreator({
       job.status === "refining" ||
       job.status === "generating" ||
       job.status === "queued");
+  const formLocked = Boolean(busy || isBuilding || briefTeasing);
+  const showBuildSpinner =
+    briefTeasing ||
+    isBuilding ||
+    (busy && quizDone && job?.status !== "ready");
+  const buildSpinnerLabel = briefTeasing
+    ? "Getting your idea ready…"
+    : "Building your 3D item…";
+  const showBriefForm =
+    !formLocked && !job && !briefTeasing && !quizDone;
 
   if (gateStep === "crew") {
     return (
@@ -2986,9 +3411,9 @@ function ClosetAiCreator({
         <p className="closet-kicker">Before you create</p>
         <strong className="closet-ai-gate-title">Strategy response required</strong>
         <p className="closet-ai-gate-copy">
-          After publishing, you’ll get one market scenario and must explain how
-          you’d change your investment strategy. Your teacher will not approve
-          the item unless your answer is thoughtful and original.
+          You’ll describe your item, then answer one market scenario before we
+          build it. Your teacher will not approve the item unless your answer is
+          thoughtful and original.
           {selectedTier?.payMode === "profit_share"
             ? invitedPartnerName
               ? ` You’ve invited ${invitedPartnerName} as your partner — they’ll get a notification when they open LedgerLab.`
@@ -3223,10 +3648,11 @@ function ClosetAiCreator({
           <p className="closet-kicker">Go live</p>
           <strong className="closet-ai-gate-title">Strategy scenario</strong>
           <p className="closet-ai-gate-copy">
-            Complete the quiz to the right.
+            Answer the scenario to the right. When you submit, we’ll build your
+            item.
             {quizTestMode ? " (Test mode.)" : ""}
             {!quizTestMode
-              ? " You can submit now — your teacher only sees it once the crew is full."
+              ? " Your teacher only sees this once the crew is full."
               : ""}
           </p>
           {!quizTestMode && crewSlots === 1 && !invitedPartnerName ? (
@@ -3245,6 +3671,12 @@ function ClosetAiCreator({
             Your teacher will not approve this item if your response is thin,
             copied, or not an original thought.
           </p>
+          <ClosetAiMysteryBox
+            primary={pendingBrief?.primaryColor || "#3f8f68"}
+            secondary={pendingBrief?.secondaryColor || "#24312b"}
+            tertiary={pendingBrief?.tertiaryColor || null}
+            quaternary={pendingBrief?.quaternaryColor || null}
+          />
         </div>
         {host ? createPortal(quizForm, host) : null}
       </>
@@ -3252,20 +3684,47 @@ function ClosetAiCreator({
   }
 
   return (
-    <div className="closet-ai-panel">
+    <div
+      className={
+        job?.status === "ready"
+          ? "closet-ai-panel closet-ai-panel--ready"
+          : "closet-ai-panel"
+      }
+    >
       <div className="closet-ai-head">
         <p className="closet-kicker">Creator</p>
-        <strong>Make a class buyable</strong>
-        <span className="closet-ai-quota">
-          {status.publishesToday ?? 0}/{status.maxPerDay ?? 8} today · payroll{" "}
-          {money(publishFee)}
-        </span>
+        <strong>
+          {job?.status === "ready"
+            ? job.label || "Your item"
+            : showBuildSpinner
+              ? briefTeasing
+                ? "Setting up…"
+                : "Building…"
+              : "Make a class buyable"}
+        </strong>
+        {job?.status === "ready" ? (
+          <span className="closet-ai-quota">
+            Preview on your character · set a price to post
+          </span>
+        ) : showBuildSpinner ? (
+          <span className="closet-ai-quota">
+            {briefTeasing
+              ? "Hang tight — strategy next"
+              : "Creating your 3D item"}
+          </span>
+        ) : (
+          <span className="closet-ai-quota">
+            {status.publishesToday ?? 0}/{status.maxPerDay ?? 8} today · payroll{" "}
+            {money(publishFee)}
+          </span>
+        )}
       </div>
       <div className="closet-ai-messages" aria-live="polite">
-        {messages.length === 0 && !isBuilding ? (
+        {messages.length === 0 && !showBuildSpinner ? (
           <p className="closet-ai-empty">
-            Tell the AI what to make — e.g. “a boombox” — and it’ll build a
-            blocky 3D prop (same style as hats & bats) for the class closet.
+            Pick colors, type, and style — describe what to build, then continue.
+            We’ll show a quick setup, then the strategy scenario, then build your
+            item.
           </p>
         ) : (
           messages.map((m, i) => (
@@ -3275,7 +3734,9 @@ function ClosetAiCreator({
                 m.role === "user" ? "closet-ai-msg user" : "closet-ai-msg bot"
               }
             >
-              {m.text ? <p>{m.text}</p> : null}
+              {m.text ? (
+                <p style={{ whiteSpace: "pre-wrap" }}>{m.text}</p>
+              ) : null}
               {m.imageUrl ? (
                 <img
                   className="closet-ai-preview-img"
@@ -3293,13 +3754,14 @@ function ClosetAiCreator({
             </div>
           ))
         )}
-        {isBuilding ? <ClosetAiBuildSpinner /> : null}
+        {showBuildSpinner ? (
+          <ClosetAiBuildSpinner label={buildSpinnerLabel} />
+        ) : null}
         <div ref={messagesEndRef} />
       </div>
-      {job?.status === "ready" && (
-        <div className="closet-ai-ready">
+      {job?.status === "ready" ? (
+        <div className="closet-ai-ready closet-ai-ready--focus">
           <div className="closet-ai-ready-meta">
-            <strong>{job.label}</strong>
             <span className="closet-ai-ready-kind">{job.kind}</span>
             <label className="closet-ai-price-field">
               <span>Crew</span>
@@ -3330,9 +3792,10 @@ function ClosetAiCreator({
               </span>
             </label>
           </div>
+          {error ? <p className="closet-note closet-note-error">{error}</p> : null}
           <button
             type="button"
-            className="primary-btn"
+            className="primary-btn closet-ai-post-btn"
             data-click="confirm"
             disabled={busy || crewSlots == null}
             onClick={handlePublish}
@@ -3344,44 +3807,215 @@ function ClosetAiCreator({
                 : "Post to Job board"}
           </button>
         </div>
+      ) : (
+        <>
+          {error ? <p className="closet-note closet-note-error">{error}</p> : null}
+          {!formLocked && job?.status === "failed" && quizDone && pendingBrief ? (
+            <button
+              type="button"
+              className="primary-btn closet-ai-brief-submit"
+              data-click="confirm"
+              disabled={busy}
+              onClick={() => startGenerationFromBrief(pendingBrief)}
+            >
+              Try again
+            </button>
+          ) : null}
+          {showBriefForm ? (
+            <>
+              <form className="closet-ai-brief" onSubmit={handleSend}>
+                <div className="closet-ai-color-rows">
+                  <div className="closet-ai-color-row">
+                    <ClosetAiColorField
+                      label="Primary color"
+                      valueId={primaryColorId}
+                      open={paletteOpen === "primary"}
+                      disabled={formLocked}
+                      onToggle={() =>
+                        setPaletteOpen((v) =>
+                          v === "primary" ? null : "primary"
+                        )
+                      }
+                      onPick={(id) => {
+                        setPrimaryColorId(id);
+                        setPaletteOpen(null);
+                      }}
+                    />
+                    <ClosetAiColorField
+                      label="Secondary color"
+                      valueId={secondaryColorId}
+                      open={paletteOpen === "secondary"}
+                      disabled={formLocked}
+                      onToggle={() =>
+                        setPaletteOpen((v) =>
+                          v === "secondary" ? null : "secondary"
+                        )
+                      }
+                      onPick={(id) => {
+                        setSecondaryColorId(id);
+                        setPaletteOpen(null);
+                      }}
+                    />
+                  </div>
+                  {tertiaryColorId || quaternaryColorId ? (
+                    <div className="closet-ai-color-row">
+                      {tertiaryColorId ? (
+                        <ClosetAiColorField
+                          label="Third color"
+                          valueId={tertiaryColorId}
+                          open={paletteOpen === "tertiary"}
+                          disabled={formLocked}
+                          onToggle={() =>
+                            setPaletteOpen((v) =>
+                              v === "tertiary" ? null : "tertiary"
+                            )
+                          }
+                          onPick={(id) => {
+                            setTertiaryColorId(id);
+                            setPaletteOpen(null);
+                          }}
+                          onRemove={() => {
+                            setTertiaryColorId(quaternaryColorId);
+                            setQuaternaryColorId(null);
+                            setPaletteOpen(null);
+                          }}
+                        />
+                      ) : null}
+                      {quaternaryColorId ? (
+                        <ClosetAiColorField
+                          label="Fourth color"
+                          valueId={quaternaryColorId}
+                          open={paletteOpen === "quaternary"}
+                          disabled={formLocked}
+                          onToggle={() =>
+                            setPaletteOpen((v) =>
+                              v === "quaternary" ? null : "quaternary"
+                            )
+                          }
+                          onPick={(id) => {
+                            setQuaternaryColorId(id);
+                            setPaletteOpen(null);
+                          }}
+                          onRemove={() => {
+                            setQuaternaryColorId(null);
+                            setPaletteOpen(null);
+                          }}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {!quaternaryColorId ? (
+                    <button
+                      type="button"
+                      className="closet-ai-add-color"
+                      data-click="select"
+                      disabled={formLocked}
+                      onClick={() => {
+                        if (!tertiaryColorId) {
+                          setTertiaryColorId("tee-sun");
+                        } else {
+                          setQuaternaryColorId("tee-berry");
+                        }
+                        setPaletteOpen(null);
+                      }}
+                    >
+                      {tertiaryColorId
+                        ? "+ Add a fourth color"
+                        : "+ Add a third color"}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="closet-ai-brief-field">
+                  <span className="closet-ai-brief-label">What kind of item?</span>
+                  <div
+                    className="closet-ai-choice-row"
+                    role="radiogroup"
+                    aria-label="Item type"
+                  >
+                    {CLOSET_AI_KINDS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={itemKind === opt.id}
+                        className={
+                          itemKind === opt.id
+                            ? "closet-ai-choice is-selected"
+                            : "closet-ai-choice"
+                        }
+                        data-click="select"
+                        disabled={formLocked}
+                        onClick={() => setItemKind(opt.id)}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="closet-ai-brief-field">
+                  <span className="closet-ai-brief-label">Style</span>
+                  <div
+                    className="closet-ai-choice-row"
+                    role="radiogroup"
+                    aria-label="Style"
+                  >
+                    {CLOSET_AI_STYLES.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={itemStyle === opt.id}
+                        title={opt.blurb}
+                        className={
+                          itemStyle === opt.id
+                            ? "closet-ai-choice is-selected"
+                            : "closet-ai-choice"
+                        }
+                        data-click="select"
+                        disabled={formLocked}
+                        onClick={() => setItemStyle(opt.id)}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <label className="closet-ai-brief-field closet-ai-brief-describe">
+                  <span className="closet-ai-brief-label">Describe the item</span>
+                  <textarea
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="e.g. a boombox with chunky speakers"
+                    maxLength={400}
+                    rows={2}
+                    disabled={formLocked}
+                    aria-label="Describe the item"
+                  />
+                </label>
+                <button
+                  type="submit"
+                  className="primary-btn closet-ai-brief-submit"
+                  data-click="confirm"
+                  disabled={
+                    formLocked || !prompt.trim() || prompt.trim().length < 2
+                  }
+                >
+                  Continue
+                </button>
+              </form>
+              <button
+                type="button"
+                className="closet-ai-skip-test"
+                data-click="select"
+                disabled={busy}
+                onClick={skipToQuizForTesting}
+              >
+                Skip to quiz (test)
+              </button>
+            </>
+          ) : null}
+        </>
       )}
-      {error ? <p className="closet-note closet-note-error">{error}</p> : null}
-      <form className="closet-ai-form" onSubmit={handleSend}>
-        <input
-          type="text"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Make a cat…"
-          maxLength={400}
-          disabled={busy && job?.status !== "ready" && job?.status !== "published"}
-          aria-label="Describe a closet item"
-        />
-        <button
-          type="submit"
-          className="primary-btn"
-          data-click="confirm"
-          disabled={
-            busy ||
-            !prompt.trim() ||
-            (job &&
-              (job.status === "previewing" ||
-                job.status === "refining" ||
-                job.status === "generating" ||
-                job.status === "queued"))
-          }
-        >
-          Create
-        </button>
-      </form>
-      <button
-        type="button"
-        className="closet-ai-skip-test"
-        data-click="select"
-        disabled={busy}
-        onClick={skipToQuizForTesting}
-      >
-        Skip to quiz (test)
-      </button>
     </div>
   );
 }
@@ -3408,6 +4042,7 @@ function ClosetModal({
   const [draft, setDraft] = useState(outfit);
   const [showAi, setShowAi] = useState(false);
   const [aiGateStep, setAiGateStep] = useState(null);
+  const [aiPreviewAccessory, setAiPreviewAccessory] = useState(null);
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const committedRef = useRef(outfit);
@@ -3443,6 +4078,7 @@ function ClosetModal({
     setShopError("");
     setShowAi(false);
     setAiGateStep(null);
+    setAiPreviewAccessory(null);
     const onKey = (e) => {
       if (e.key === "Escape") {
         onChangeRef.current(stripUnownedBuyables(draftRef.current, committedRef.current));
@@ -3459,6 +4095,11 @@ function ClosetModal({
     // Only re-snapshot when the modal opens — not on every outfit persist.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  const previewOutfit = useMemo(() => {
+    if (!aiPreviewAccessory) return draft;
+    return { ...draft, aiPreviewAccessory };
+  }, [draft, aiPreviewAccessory]);
 
   if (!open) return null;
 
@@ -3601,7 +4242,10 @@ function ClosetModal({
                 aria-pressed={showAi}
                 onClick={() => {
                   setShowAi((v) => {
-                    if (v) setAiGateStep(null);
+                    if (v) {
+                      setAiGateStep(null);
+                      setAiPreviewAccessory(null);
+                    }
                     return !v;
                   });
                 }}
@@ -3640,11 +4284,13 @@ function ClosetModal({
                   setCategoryId(next?.categories[0]?.id || "skin");
                   setShowAi(false);
                   setAiGateStep(null);
+                  setAiPreviewAccessory(null);
                 }}
                 onCategory={(id) => {
                   setCategoryId(id);
                   setShowAi(false);
                   setAiGateStep(null);
+                  setAiPreviewAccessory(null);
                 }}
               />
             )}
@@ -3657,12 +4303,15 @@ function ClosetModal({
                 cash={cash}
                 onCashChange={onCashChange}
                 onGateStepChange={setAiGateStep}
+                onPreviewChange={setAiPreviewAccessory}
                 quizHostReady={aiGateStep === "quiz"}
                 onExit={() => {
                   setShowAi(false);
                   setAiGateStep(null);
+                  setAiPreviewAccessory(null);
                 }}
                 onPublished={() => {
+                  setAiPreviewAccessory(null);
                   commitAndClose();
                 }}
               />
@@ -3712,12 +4361,14 @@ function ClosetModal({
             ) : (
               <>
                 <AvatarCanvas
-                  outfit={draft}
+                  outfit={previewOutfit}
                   mode="closet"
                   className="closet-stage"
                 />
                 <p className="closet-hint">
-                  Try buyables free — only purchases leave with you
+                  {aiPreviewAccessory
+                    ? "Your creation is on the character — spin to inspect"
+                    : "Try buyables free — only purchases leave with you"}
                 </p>
               </>
             )}

@@ -5432,10 +5432,26 @@ def closet_ai_draft():
     data = request.get_json(silent=True) or {}
     student_id = (data.get("studentId") or "").strip()
     prompt = data.get("prompt") or ""
+    primary_color = data.get("primaryColor") or data.get("primary_color")
+    secondary_color = data.get("secondaryColor") or data.get("secondary_color")
+    tertiary_color = data.get("tertiaryColor") or data.get("tertiary_color")
+    quaternary_color = data.get("quaternaryColor") or data.get("quaternary_color")
+    kind = data.get("kind")
+    style = data.get("style")
     try:
         import closet_ai
 
-        job = closet_ai.start_draft(class_id, student_id, prompt)
+        job = closet_ai.start_draft(
+            class_id,
+            student_id,
+            prompt,
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+            tertiary_color=tertiary_color,
+            quaternary_color=quaternary_color,
+            kind=kind,
+            style=style,
+        )
         return jsonify({"job": job})
     except PermissionError as exc:
         return jsonify({"error": str(exc)}), 403

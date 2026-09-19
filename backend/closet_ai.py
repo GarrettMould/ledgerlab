@@ -86,8 +86,8 @@ def _anthropic_api_key() -> str:
 
 
 def _anthropic_model() -> str:
-    # Fast + strong enough for structured parts JSON.
-    return (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-5").strip()
+    # Create-an-Item parts recipes — Claude Sonnet 5.
+    return (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-5").strip()
 
 
 def _meshy_api_key() -> str:
@@ -95,11 +95,11 @@ def _meshy_api_key() -> str:
 
 
 def _generation_engine() -> str:
-    """Prefer Meshy when keyed; else Claude blocky; else OpenAI blocky."""
-    if _meshy_api_key():
-        return "meshy"
+    """Prefer Claude blocky when keyed; else Meshy; else OpenAI blocky."""
     if _anthropic_api_key():
         return "claude_blocky"
+    if _meshy_api_key():
+        return "meshy"
     if _openai_api_key():
         return "openai_blocky"
     raise RuntimeError(
@@ -124,6 +124,20 @@ KIND_DEFAULTS = {
     "backpack": {"attach": "torsoBack", "scale": 0.85, "color": "#245933"},
     "bag": {"attach": "shoulderL", "scale": 0.75, "color": "#9e6b3d"},
     "prop": {"attach": "handR", "scale": 0.55, "color": "#b88547"},
+}
+# Client also applies these; store on items so published props stay outside the arm.
+ATTACH_DEFAULT_OFFSETS = {
+    "handR": [0.62, 0.12, 0.42],
+    "torsoBack": [0, 0.05, -0.2],
+    "shoulderL": [-0.2, -0.15, 0.25],
+    "neck": [0, -0.06, 0.1],
+    "eyes": [0, 0, 0.12],
+    "headTop": [0, 0.08, 0],
+    "torso": [0, 0, 0.15],
+}
+ATTACH_DEFAULT_ROTATION = {
+    # Tip slightly outward like the catalog baseball bat.
+    "handR": [0, 0, -0.45],
 }
 
 _VALID_ATTACH = {
@@ -254,23 +268,68 @@ def _bump_publish_log(class_id: str, student_id: str) -> None:
     )
 
 
+def _character_rig_brief() -> str:
+    """
+    Character-local units matching StudentCharacter ATTACH + R6 proportions.
+    Parts recipes are authored in local space with origin at the chosen attach point;
+    the client then places that origin on the body at the coordinates below.
+    """
+    return (
+        "AVATAR RIG (Y-up, character-local units — same as the live GLB figure):\n"
+        "Body ~4.5 tall. Approx sizes: head cube 1×1×1, torso 2×2×1, "
+        "each arm/leg ~0.6×1.5×0.6.\n"
+        "Attach points (where the item ORIGIN is welded on the character):\n"
+        "- headTop [0, 4.5, 0] — hats sit ON the scalp; brim ~0.2–0.4 above origin; "
+        "hat body ~0.9–1.3 wide (head is 1 wide).\n"
+        "- eyes [0, 4.08, 0.5] — glasses; frames ~1.0–1.2 wide, sit slightly in front (+Z).\n"
+        "- neck [0, 3.48, 0.58] — necklaces; ring in XY, slightly forward so it isn’t buried.\n"
+        "- torso [0, 2.5, 0] — jersey/chest; cover ~1.6–2.0 wide × ~1.4–1.8 tall.\n"
+        "- torsoBack [0, 2.55, -0.55] — backpack; pack behind torso (−Z), ~0.9–1.2 wide.\n"
+        "- shoulderL [-0.95, 3.15, 0.05] — bag strap on left shoulder.\n"
+        "- handR [1.35, 1.85, 0.2] — palm of the RIGHT hand. CRITICAL: the arm is a "
+        "0.6-wide box at this spot, so if you center a sword on the origin it "
+        "VANISHES INSIDE THE ARM.\n"
+        "  HAND PROP AUTHORING (swords, bats, phones, pets):\n"
+        "  • Origin = GRIP only (the part in the fingers).\n"
+        "  • Build the rest AWAY from the body: mostly +Y (up) and a little +Z (forward).\n"
+        "  • Keep part centers with x >= 0 (never grow into −X toward the torso).\n"
+        "  • Example sword: handle box size[0.14,0.45,0.14] at [0,0.2,0]; "
+        "blade size[0.1,1.05,0.04] at [0,0.9,0]; tip further +Y.\n"
+        "  • Whole prop usually ≤ ~1.3 tall; readable next to the forearm, not room-scale.\n"
+        "AUTHORING RULES:\n"
+        "- All part pos[] are RELATIVE to the attach origin (not world/character root).\n"
+        "- +Y up, +Z forward (out of the chest/face), +X character’s left.\n"
+        "- Keep most geometry within ~1.5 units of the origin so it stays on-body.\n"
+        "- Match catalog scale: TopHat/Headphones ≈ head-sized; BaseballBat ≈ forearm-long; "
+        "Backpack ≈ torso-back panel — not room-scale, not tiny beads.\n"
+    )
+
+
 def _parts_system_prompt() -> str:
     return (
         "You design Roblox-style BLOCKY avatar accessories for a classroom game. "
         "Reply with JSON only. School-safe (no weapons, hate, NSFW).\n"
+        f"{_character_rig_brief()}"
         "kind: hat|glasses|neck|jersey|backpack|bag|prop. "
-        "attach: headTop|eyes|neck|torso|torsoBack|shoulderL|handR. "
+        "attach: headTop|eyes|neck|torso|torsoBack|shoulderL|handR "
+        "(MUST match the item type and the rig points above). "
         "price: integer 500-8000.\n"
+        "COLOR RULES (required when the student picks colors):\n"
+        "- Most of the item uses primaryColor.\n"
+        "- Accents, trim, details use secondaryColor.\n"
+        "- If tertiaryColor / quaternaryColor are provided, use them for "
+        "extra details, patterns, or small features — do not invent other main hues.\n"
+        "- Do not invent other main colors unless tiny (black outline, white highlight).\n"
         "CRITICAL — parts rules (this is how built-in items like TopHat / BaseballBat are made):\n"
         "- Prefer BOXES. Animals and characters must be almost all boxes.\n"
         "- Cylinders only for hats, handles, speakers, wheels.\n"
         "- Spheres sparingly (eyeballs only). NEVER build a whole animal from spheres.\n"
         "- NEVER put a forward cone/cylinder on a round head (that looks like a beak).\n"
         "- Cats/dogs: box body + box head + two triangle-ish BOX ears + box eyes + tiny box nose + box tail.\n"
-        "- 5–10 parts. Origin at attach point. Y-up. pos/rot in degrees. Keep within ~2 units.\n"
+        "- 5–10 parts. Origin at attach point. Y-up. pos/rot in degrees.\n"
         "- Each part: shape, color (#rrggbb), pos[x,y,z], rot[rx,ry,rz], "
         "plus size[sx,sy,sz] for box, radius+height for cylinder, radius for sphere.\n"
-        "Example cat (handheld prop):\n"
+        "Example cat (handR prop — sizes relative to hand, not the whole room):\n"
         '{"shape":"box","size":[0.7,0.55,0.55],"pos":[0,0.28,0.05],"rot":[0,0,0],"color":"#d4a574"},'
         '{"shape":"box","size":[0.48,0.42,0.45],"pos":[0,0.72,0.12],"rot":[0,0,0],"color":"#d4a574"},'
         '{"shape":"box","size":[0.16,0.22,0.1],"pos":[-0.16,0.98,0.05],"rot":[0,0,-18],"color":"#d4a574"},'
@@ -281,6 +340,15 @@ def _parts_system_prompt() -> str:
         '{"shape":"box","size":[0.18,0.14,0.55],"pos":[0.28,0.22,-0.35],"rot":[0,25,0],"color":"#d4a574"}\n'
         "meshyPrompt: backup text-to-3D string with the same blocky look."
     )
+
+
+def _normalize_hex_color(value: str | None, fallback: str = "#3f8f68") -> str:
+    raw = str(value or "").strip()
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", raw):
+        return raw.lower()
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", raw):
+        return f"#{raw.lower()}"
+    return fallback
 
 
 def _parse_llm_json(raw: str) -> dict:
@@ -296,6 +364,8 @@ def _claude_parts_json(system: str, user: str) -> dict | None:
     if not key:
         return None
     try:
+        # Sonnet 5 rejects non-default temperature and prefers adaptive thinking
+        # off for cheap structured JSON recipes.
         res = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -306,7 +376,7 @@ def _claude_parts_json(system: str, user: str) -> dict | None:
             json={
                 "model": _anthropic_model(),
                 "max_tokens": 2500,
-                "temperature": 0.2,
+                "thinking": {"type": "disabled"},
                 "system": system,
                 "messages": [{"role": "user", "content": user}],
             },
@@ -351,22 +421,65 @@ def _openai_parts_json(system: str, user: str) -> dict | None:
         return None
 
 
-def _llm_metadata(user_prompt: str) -> dict:
+def _llm_metadata(
+    user_prompt: str,
+    *,
+    primary_color: str | None = None,
+    secondary_color: str | None = None,
+    tertiary_color: str | None = None,
+    quaternary_color: str | None = None,
+    kind_hint: str | None = None,
+    style: str | None = None,
+) -> dict:
     """Ask Claude (preferred) or OpenAI for catalog fields + blocky parts recipe."""
     defaults = KIND_DEFAULTS["prop"]
     prompt_text = user_prompt.strip()[:400]
+    primary = _normalize_hex_color(primary_color, defaults["color"])
+    secondary = _normalize_hex_color(secondary_color, "#24312b")
+    tertiary = (
+        _normalize_hex_color(tertiary_color, primary)
+        if tertiary_color
+        else None
+    )
+    quaternary = (
+        _normalize_hex_color(quaternary_color, secondary)
+        if quaternary_color
+        else None
+    )
+    style_key = str(style or "chunky").strip().lower()
+    style_guide = {
+        "chunky": "Chunky & bold — oversized boxes, thick proportions.",
+        "simple": "Clean & simple — fewer parts, flat shapes, minimal detail.",
+        "fancy": "Fancy — extra trim and secondary-color accents (stripes, badges, trim).",
+        "silly": "Silly & playful — exaggerated proportions, goofy but still blocky.",
+    }.get(style_key, "Chunky & bold — oversized boxes, thick proportions.")
+    kind_forced = str(kind_hint or "").strip().lower()
+    if kind_forced not in ACCESSORY_KINDS:
+        kind_forced = ""
+
+    color_bits = [f"Primary color {primary}", f"accent {secondary}"]
+    if tertiary:
+        color_bits.append(f"third {tertiary}")
+    if quaternary:
+        color_bits.append(f"fourth {quaternary}")
+    color_phrase = ", ".join(color_bits)
+
     fallback = {
         "label": (prompt_text[:32] or "Class item").title(),
-        "kind": "prop",
-        "attach": defaults["attach"],
+        "kind": kind_forced or "prop",
+        "attach": KIND_DEFAULTS.get(kind_forced or "prop", defaults)["attach"],
         "price": 2000,
-        "color": defaults["color"],
+        "color": primary,
+        "accent": secondary,
+        "tertiary": tertiary,
+        "quaternary": quaternary,
         "meshyPrompt": (
             f"Roblox-style blocky low-poly game accessory: {prompt_text}. "
+            f"{color_phrase}. {style_guide} "
             "Only cubes, cylinders, and spheres. Flat colors, chunky proportions, "
             "single centered object, no character body, no floor, no pedestal."
         ),
-        "parts": fallback_parts(prompt_text[:32] or "Item", "prop", defaults["color"]),
+        "parts": fallback_parts(prompt_text[:32] or "Item", kind_forced or "prop", primary),
         "chatReply": f"I'll build “{prompt_text}” as a blocky 3D prop for the class closet.",
         "llm": None,
     }
@@ -374,11 +487,47 @@ def _llm_metadata(user_prompt: str) -> dict:
         return fallback
 
     system = _parts_system_prompt()
-    user = (
-        f'Student request: "{prompt_text}"\n'
-        "Return JSON keys: label, kind, attach, price, color, parts, meshyPrompt, chatReply. "
-        "Make parts clearly recognizable as the requested object."
+    constraints = [
+        f'Student description: "{prompt_text}"',
+        f"primaryColor (REQUIRED for main body): {primary}",
+        f"secondaryColor (REQUIRED for accents/trim): {secondary}",
+        f"style: {style_guide}",
+    ]
+    if tertiary:
+        constraints.append(
+            f"tertiaryColor (use on extra details/patterns): {tertiary}"
+        )
+    if quaternary:
+        constraints.append(
+            f"quaternaryColor (use sparingly on small features): {quaternary}"
+        )
+    if kind_forced:
+        constraints.append(
+            f"kind MUST be \"{kind_forced}\" and attach MUST match that kind "
+            f"({KIND_DEFAULTS[kind_forced]['attach']})."
+        )
+        if kind_forced == "prop":
+            constraints.append(
+                "HAND PROP: grip at origin; blade/body extend +Y (and slight +Z). "
+                "Do not center the whole item on the origin or it will sit inside the arm."
+            )
+    color_usage = (
+        "Use primaryColor on most parts and secondaryColor on accents"
     )
+    if tertiary or quaternary:
+        extras = []
+        if tertiary:
+            extras.append("tertiaryColor")
+        if quaternary:
+            extras.append("quaternaryColor")
+        color_usage += f"; weave in {' and '.join(extras)} for extra detail"
+    constraints.append(
+        "Return JSON keys: label, kind, attach, price, color, parts, meshyPrompt, chatReply. "
+        f"Make parts clearly recognizable. {color_usage}. "
+        "Size and place parts using the AVATAR RIG attach points "
+        "(origin at the weld; relative pos[]; keep on-body scale)."
+    )
+    user = "\n".join(constraints)
 
     data = None
     llm = None
@@ -394,12 +543,16 @@ def _llm_metadata(user_prompt: str) -> dict:
     if data is None:
         return fallback
 
-    kind = str(data.get("kind") or "prop").strip().lower()
+    kind = str(data.get("kind") or kind_forced or "prop").strip().lower()
+    if kind_forced:
+        kind = kind_forced
     if kind not in ACCESSORY_KINDS:
         kind = "prop"
     defaults = KIND_DEFAULTS[kind]
     attach = str(data.get("attach") or defaults["attach"]).strip()
     if attach not in _VALID_ATTACH:
+        attach = defaults["attach"]
+    if kind_forced:
         attach = defaults["attach"]
     try:
         price = int(data.get("price") or 2000)
@@ -407,26 +560,27 @@ def _llm_metadata(user_prompt: str) -> dict:
         price = 2000
     price = max(500, min(8000, price))
     label = str(data.get("label") or fallback["label"]).strip()[:40] or fallback["label"]
-    color = str(data.get("color") or defaults["color"]).strip()
-    if not re.fullmatch(r"#?[0-9a-fA-F]{6}", color):
-        color = defaults["color"]
-    if not color.startswith("#"):
-        color = f"#{color}"
-    meshy = str(data.get("meshyPrompt") or fallback["meshyPrompt"]).strip()[:800]
-    chat = str(data.get("chatReply") or fallback["chatReply"]).strip()[:280]
+    color = primary
+    accent = secondary
     parts = normalize_parts(data.get("parts"), fallback_color=color)
     if parts_look_weak(parts, label, prompt_text):
         parts = fallback_parts(f"{label} {prompt_text}", kind, color)
+    meshy_prompt = str(data.get("meshyPrompt") or fallback["meshyPrompt"]).strip()[:800]
+    chat_reply = str(data.get("chatReply") or fallback["chatReply"]).strip()[:240]
     return {
         "label": label,
         "kind": kind,
         "attach": attach,
         "price": price,
         "color": color,
-        "meshyPrompt": meshy,
+        "accent": accent,
+        "tertiary": tertiary,
+        "quaternary": quaternary,
+        "meshyPrompt": meshy_prompt,
         "parts": parts,
-        "chatReply": chat,
+        "chatReply": chat_reply,
         "llm": llm,
+        "style": style_key,
     }
 
 
@@ -616,7 +770,18 @@ def _upload_bytes_to_storage(class_id: str, path_suffix: str, data: bytes, conte
             ) from exc
 
 
-def start_draft(class_id: str, student_id: str, prompt: str) -> dict:
+def start_draft(
+    class_id: str,
+    student_id: str,
+    prompt: str,
+    *,
+    primary_color: str | None = None,
+    secondary_color: str | None = None,
+    tertiary_color: str | None = None,
+    quaternary_color: str | None = None,
+    kind: str | None = None,
+    style: str | None = None,
+) -> dict:
     student, err = require_creator(class_id, student_id)
     if err:
         raise PermissionError(err)
@@ -631,7 +796,15 @@ def start_draft(class_id: str, student_id: str, prompt: str) -> dict:
             f"Daily create limit reached ({MAX_PUBLISHES_PER_DAY}). Try again tomorrow."
         )
 
-    meta = _llm_metadata(text)
+    meta = _llm_metadata(
+        text,
+        primary_color=primary_color,
+        secondary_color=secondary_color,
+        tertiary_color=tertiary_color,
+        quaternary_color=quaternary_color,
+        kind_hint=kind,
+        style=style,
+    )
     job_id = f"job_{uuid.uuid4().hex[:16]}"
     from firebase_admin import firestore as fs
 
@@ -642,13 +815,26 @@ def start_draft(class_id: str, student_id: str, prompt: str) -> dict:
         "status": "queued",
         "phase": "queued",
         "sourcePrompt": text,
+        "brief": {
+            "primaryColor": meta.get("color"),
+            "secondaryColor": meta.get("accent"),
+            "tertiaryColor": meta.get("tertiary"),
+            "quaternaryColor": meta.get("quaternary"),
+            "kind": meta.get("kind"),
+            "style": meta.get("style") or style,
+        },
         "createdBy": student_id,
         "creatorName": student.get("name") or "Student",
         "label": meta["label"],
         "kind": meta["kind"],
         "attach": meta["attach"],
+        "offset": list(ATTACH_DEFAULT_OFFSETS.get(meta["attach"]) or [0, 0, 0]),
+        "rotation": list(ATTACH_DEFAULT_ROTATION.get(meta["attach"]) or [0, 0, 0]),
         "price": meta["price"],
         "color": meta["color"],
+        "accent": meta.get("accent"),
+        "tertiary": meta.get("tertiary"),
+        "quaternary": meta.get("quaternary"),
         "meshyPrompt": meta["meshyPrompt"],
         "parts": meta.get("parts") or [],
         "chatReply": meta["chatReply"],
@@ -942,6 +1128,8 @@ def serialize_job(job: dict, job_id: str | None = None) -> dict:
         "label": job.get("label"),
         "kind": job.get("kind"),
         "attach": job.get("attach"),
+        "offset": job.get("offset"),
+        "rotation": job.get("rotation"),
         "price": job.get("price"),
         "color": job.get("color"),
         "chatReply": job.get("chatReply"),
@@ -1051,15 +1239,24 @@ def publish_job(class_id: str, student_id: str, job_id: str, price=None, crew_sl
     ) or job.get("parts"):
         # Blocky recipes are ~character-local units already.
         scale = max(scale, 1.0)
+    attach = (
+        job.get("attach")
+        if job.get("attach") in _VALID_ATTACH
+        else defaults["attach"]
+    )
     item = {
         "id": item_id,
         "kind": kind,
         "label": str(job.get("label") or "Class item")[:40],
         "url": public_url,
         "thumbnailUrl": thumb_url,
-        "attach": job.get("attach")
-        if job.get("attach") in _VALID_ATTACH
-        else defaults["attach"],
+        "attach": attach,
+        "offset": list(
+            job.get("offset") or ATTACH_DEFAULT_OFFSETS.get(attach) or [0, 0, 0]
+        ),
+        "rotation": list(
+            job.get("rotation") or ATTACH_DEFAULT_ROTATION.get(attach) or [0, 0, 0]
+        ),
         "scale": scale,
         "color": job.get("color") or defaults["color"],
         "price": sell_price,
@@ -1069,6 +1266,7 @@ def publish_job(class_id: str, student_id: str, job_id: str, price=None, crew_sl
         "sourcePrompt": job.get("sourcePrompt") or "",
         "createdAtMs": int(time.time() * 1000),
         "aiSprite": is_sprite,
+        "aiCreated": True,
         "parts": job.get("parts") or [],
         # Hidden until teacher approves after quiz.
         "live": False,
@@ -2437,12 +2635,26 @@ def review_submission(
 def _item_from_job(job: dict) -> dict:
     kind = job.get("kind") if job.get("kind") in ACCESSORY_KINDS else "prop"
     defaults = KIND_DEFAULTS[kind]
+    attach = job.get("attach") or defaults["attach"]
+    snap = job.get("itemSnapshot") or {}
     return {
         "id": job.get("itemId"),
         "kind": kind,
         "label": job.get("label"),
         "url": job.get("publishedUrl") or job.get("glbUrl"),
-        "attach": job.get("attach") or defaults["attach"],
+        "attach": attach,
+        "offset": list(
+            snap.get("offset")
+            or job.get("offset")
+            or ATTACH_DEFAULT_OFFSETS.get(attach)
+            or [0, 0, 0]
+        ),
+        "rotation": list(
+            snap.get("rotation")
+            or job.get("rotation")
+            or ATTACH_DEFAULT_ROTATION.get(attach)
+            or [0, 0, 0]
+        ),
         "scale": defaults["scale"],
         "color": job.get("color") or defaults["color"],
         "price": job.get("sellPrice") or job.get("price"),
@@ -2450,6 +2662,7 @@ def _item_from_job(job: dict) -> dict:
         "live": job.get("status") == "published",
         "quizPending": job.get("status") == "pending_quiz",
         "reviewPending": job.get("status") == "pending_review",
+        "aiCreated": True,
         "parts": job.get("parts") or [],
     }
 
