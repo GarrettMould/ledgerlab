@@ -872,6 +872,109 @@ def start_draft(
     return serialize_job(payload, job_id)
 
 
+def redo_draft(
+    class_id: str,
+    student_id: str,
+    job_id: str,
+    prompt: str | None = None,
+) -> dict:
+    """One redo per student: rebuild from a ready job, optional new prompt."""
+    student, err = require_creator(class_id, student_id)
+    if err:
+        raise PermissionError(err)
+
+    stu_ref = fs_ledger.student_ref(class_id, student_id)
+    stu_snap = stu_ref.get()
+    stu_data = (stu_snap.to_dict() if stu_snap.exists else None) or {}
+    if stu_data.get("closetAiRedoUsed"):
+        raise RuntimeError("You've already used your one redo.")
+
+    ref = _job_ref(class_id, job_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise ValueError("Job not found")
+    job = snap.to_dict() or {}
+    if job.get("createdBy") != student_id:
+        raise PermissionError("Not your create job")
+    if job.get("status") != "ready":
+        raise RuntimeError("Only a finished preview can be redone")
+    if job.get("redoUsed") or job.get("isRedo"):
+        raise RuntimeError("This build already used your redo")
+
+    brief = job.get("brief") if isinstance(job.get("brief"), dict) else {}
+    text = str(prompt or "").strip() or str(job.get("sourcePrompt") or "").strip()
+    if len(text) < 2:
+        raise ValueError("Describe what to make (at least a couple of words).")
+    if len(text) > 400:
+        raise ValueError("Keep your idea under 400 characters.")
+
+    primary = brief.get("primaryColor") or job.get("color")
+    secondary = brief.get("secondaryColor") or job.get("accent")
+    tertiary = brief.get("tertiaryColor") or job.get("tertiary")
+    quaternary = brief.get("quaternaryColor") or job.get("quaternary")
+    kind = brief.get("kind") or job.get("kind")
+    style = brief.get("style")
+
+    from firebase_admin import firestore as fs
+
+    # Mark old preview first so a double-click can't burn two redos.
+    ref.update(
+        {
+            "redoUsed": True,
+            "updatedAt": fs.SERVER_TIMESTAMP,
+        }
+    )
+
+    try:
+        new_job = start_draft(
+            class_id,
+            student_id,
+            text,
+            primary_color=primary,
+            secondary_color=secondary,
+            tertiary_color=tertiary,
+            quaternary_color=quaternary,
+            kind=kind,
+            style=style,
+        )
+    except Exception:
+        # Allow another attempt if generation never started.
+        ref.update(
+            {
+                "redoUsed": False,
+                "updatedAt": fs.SERVER_TIMESTAMP,
+            }
+        )
+        raise
+
+    # Consume the student's single redo only after a new job is created.
+    stu_ref.update(
+        {
+            "closetAiRedoUsed": True,
+            "closetAiRedoUsedAt": fs.SERVER_TIMESTAMP,
+            "closetAiRedoFromJobId": job_id,
+        }
+    )
+    new_id = new_job.get("id")
+    if new_id:
+        _job_ref(class_id, new_id).update(
+            {
+                "isRedo": True,
+                "redoOfJobId": job_id,
+                "redoUsed": True,
+                "updatedAt": fs.SERVER_TIMESTAMP,
+            }
+        )
+        new_job["isRedo"] = True
+        new_job["redoUsed"] = True
+        new_job["redoOfJobId"] = job_id
+    return {
+        "job": new_job,
+        "redoAvailable": False,
+        "previousJobId": job_id,
+    }
+
+
 def _advance_blocky(class_id: str, job: dict, ref) -> dict:
     """Build a real blocky GLB from the AI parts recipe (same style as catalog accessories)."""
     from firebase_admin import firestore as fs
@@ -1139,6 +1242,8 @@ def serialize_job(job: dict, job_id: str | None = None) -> dict:
         "parts": job.get("parts") or [],
         "error": job.get("error"),
         "category": KIND_TO_CATEGORY.get(job.get("kind") or "prop", "accessories"),
+        "redoUsed": bool(job.get("redoUsed")),
+        "isRedo": bool(job.get("isRedo")),
     }
 
 
@@ -2678,6 +2783,9 @@ def creator_status(class_id: str, student_id: str) -> dict:
     except Exception:
         engine = None
     cash = float(student.get("cash") or 0)
+    stu_snap = fs_ledger.student_ref(class_id, student_id).get()
+    stu_raw = (stu_snap.to_dict() if stu_snap.exists else None) or {}
+    redo_available = not bool(stu_raw.get("closetAiRedoUsed"))
     return {
         "allowed": True,
         "email": CLOSET_CREATOR_EMAIL,
@@ -2688,6 +2796,7 @@ def creator_status(class_id: str, student_id: str) -> dict:
         "tiers": [crew_tier(n) for n in (1, 3, 5)],
         "cash": cash,
         "canAffordPublish": True,
+        "redoAvailable": redo_available,
         "engine": engine,
         "meshyConfigured": bool(_meshy_api_key()),
         "claudeConfigured": bool(_anthropic_api_key()),

@@ -5461,6 +5461,35 @@ def closet_ai_draft():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.post("/api/closet/ai/redo")
+def closet_ai_redo():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    job_id = (data.get("jobId") or "").strip()
+    prompt = data.get("prompt")
+    try:
+        import closet_ai
+
+        result = closet_ai.redo_draft(
+            class_id,
+            student_id,
+            job_id,
+            prompt=prompt,
+        )
+        return jsonify(result)
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.get("/api/closet/ai/jobs/<job_id>")
 def closet_ai_job(job_id: str):
     class_id, err = require_firestore_class_id()

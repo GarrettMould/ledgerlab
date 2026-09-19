@@ -12,6 +12,7 @@ import {
   activateClosetAiJob,
   seedClosetAiTestReview,
   startClosetAiDraft,
+  redoClosetAiDraft,
   inviteCrewPartner,
 } from "./api";
 import {
@@ -2807,6 +2808,9 @@ function ClosetAiCreator({
   const [strategyAnswer, setStrategyAnswer] = useState("");
   const [pendingBrief, setPendingBrief] = useState(null);
   const [quizDone, setQuizDone] = useState(false);
+  const [redoPrompt, setRedoPrompt] = useState("");
+  const [redoOpen, setRedoOpen] = useState(false);
+  const [redoAvailable, setRedoAvailable] = useState(true);
   const [quizTestMode, setQuizTestMode] = useState(false);
   const [quizHostEl, setQuizHostEl] = useState(null);
   const [partnerRoster, setPartnerRoster] = useState([]);
@@ -2856,6 +2860,9 @@ function ClosetAiCreator({
     setStrategyAnswer("");
     setPendingBrief(null);
     setQuizDone(false);
+    setRedoPrompt("");
+    setRedoOpen(false);
+    setRedoAvailable(true);
     setQuizTestMode(false);
     setPartnerRoster([]);
     setSelectedPartnerId("");
@@ -2950,7 +2957,11 @@ function ClosetAiCreator({
     let cancelled = false;
     getClosetAiStatus(studentId, classId)
       .then((data) => {
-        if (!cancelled) setStatus(data);
+        if (cancelled) return;
+        setStatus(data);
+        if (typeof data?.redoAvailable === "boolean") {
+          setRedoAvailable(data.redoAvailable);
+        }
       })
       .catch(() => {
         if (!cancelled) setStatus({ allowed: false });
@@ -3151,6 +3162,67 @@ function ClosetAiCreator({
         answer: String(strategyAnswer || "").trim(),
       },
     ];
+  }
+
+  async function handleRedo() {
+    if (!job?.id || job.status !== "ready" || busy || !redoAvailable) return;
+    const nextPrompt = String(redoPrompt || "").trim();
+    const prevJobId = job.id;
+    setBusy(true);
+    setError("");
+    setRedoOpen(false);
+    onPreviewChange?.(null);
+    setJob((prev) =>
+      prev
+        ? { ...prev, status: "generating", phase: "blocky", progress: 5 }
+        : prev
+    );
+    setMessages((prev) => [
+      ...prev.filter((m) => !m.previewJobId),
+      {
+        role: "user",
+        text: nextPrompt
+          ? `Redo with new prompt:\n${nextPrompt}`
+          : "Redo — build it again",
+      },
+      {
+        role: "assistant",
+        text: "Rebuilding with your one redo…",
+        buildingHint: true,
+      },
+    ]);
+    try {
+      const data = await redoClosetAiDraft(
+        studentId,
+        prevJobId,
+        classId,
+        nextPrompt || null
+      );
+      setRedoAvailable(false);
+      setStatus((prev) =>
+        prev ? { ...prev, redoAvailable: false } : prev
+      );
+      const next = data.job;
+      setJob(next);
+      if (nextPrompt && pendingBrief) {
+        setPendingBrief({ ...pendingBrief, text: nextPrompt });
+      }
+      if (next?.chatReply) {
+        setMessages((prev) => [
+          ...prev.filter((m) => !m.buildingHint),
+          { role: "assistant", text: next.chatReply },
+        ]);
+      }
+      if (next?.id) startPoll(next.id);
+    } catch (err) {
+      setBusy(false);
+      setJob((prev) =>
+        prev && prev.id === prevJobId
+          ? { ...prev, status: "ready", phase: "ready", progress: 100 }
+          : prev
+      );
+      setError(err.message || "Could not redo build");
+    }
   }
 
   async function handlePublish() {
@@ -3806,6 +3878,64 @@ function ClosetAiCreator({
                 ? "Publish"
                 : "Post to Job board"}
           </button>
+          {redoAvailable && !job?.isRedo && !job?.redoUsed ? (
+            <div className="closet-ai-redo">
+              {!redoOpen ? (
+                <button
+                  type="button"
+                  className="ghost-btn closet-ai-redo-toggle"
+                  data-click="select"
+                  disabled={busy}
+                  onClick={() => {
+                    setRedoOpen(true);
+                    setRedoPrompt(pendingBrief?.text || job?.sourcePrompt || "");
+                  }}
+                >
+                  Redo build (1 left)
+                </button>
+              ) : (
+                <div className="closet-ai-redo-panel">
+                  <label className="closet-ai-brief-field closet-ai-brief-describe">
+                    <span className="closet-ai-brief-label">
+                      Optional new prompt
+                    </span>
+                    <textarea
+                      value={redoPrompt}
+                      onChange={(e) => setRedoPrompt(e.target.value)}
+                      placeholder="Leave as-is to rebuild the same idea, or tweak the description"
+                      maxLength={400}
+                      rows={2}
+                      disabled={busy}
+                      aria-label="Optional new prompt for redo"
+                    />
+                  </label>
+                  <p className="closet-ai-redo-note">
+                    You only get one redo — colors and style stay the same.
+                  </p>
+                  <div className="closet-ai-redo-actions">
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      data-click="confirm"
+                      disabled={busy}
+                      onClick={handleRedo}
+                    >
+                      {busy ? "Rebuilding…" : "Rebuild item"}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-btn"
+                      data-click="select"
+                      disabled={busy}
+                      onClick={() => setRedoOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
       ) : (
         <>

@@ -210,6 +210,19 @@ export function startClosetAiDraft(studentId, prompt, classId, options = {}) {
   });
 }
 
+export function redoClosetAiDraft(studentId, jobId, classId, prompt = null) {
+  return request("/closet/ai/redo", {
+    method: "POST",
+    classId,
+    timeoutMs: 90000,
+    body: JSON.stringify({
+      studentId,
+      jobId,
+      prompt: prompt || null,
+    }),
+  });
+}
+
 export function pollClosetAiJob(studentId, jobId, classId) {
   const q = new URLSearchParams({ studentId: String(studentId || "") });
   return request(`/closet/ai/jobs/${encodeURIComponent(jobId)}?${q}`, {
