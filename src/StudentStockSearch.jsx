@@ -92,6 +92,7 @@ export default function StudentStockSearch({
       price: live?.price != null ? live.price : null,
       change_pct: live?.change_pct ?? null,
       asset_type: live?.asset_type || "equity",
+      info: live?.info || row?.info || null,
     });
   }
 

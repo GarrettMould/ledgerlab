@@ -17,6 +17,7 @@ import HeadToHeadModal, {
   HeadToHeadLiveMatchups,
 } from "./HeadToHeadModal";
 import TradeSuccessModal from "./TradeSuccessModal";
+import StockBuyModal from "./StockBuyModal";
 import { AvatarCanvas, CLASS_FISH_OUTFIT, loadSavedOutfit } from "./StudentCharacter";
 import {
   DEFAULT_MARKETS,
@@ -37,6 +38,7 @@ import { setClickMuted } from "./clickSounds";
 import FloridaRealEstateMap from "./FloridaRealEstateMap";
 import MarketGlyph from "./MarketGlyph";
 import PopularStocksTicker from "./PopularStocksTicker";
+import CryptoEtfsTicker from "./CryptoEtfsTicker";
 import StockRequestForm from "./StockRequestForm";
 import StudentStockSearch from "./StudentStockSearch";
 import FearGreedMeter from "./FearGreedMeter";
@@ -146,7 +148,7 @@ const CATEGORIES = [
   },
   {
     id: "etfs",
-    title: "ETFs",
+    title: "ETFs and Crypto",
     blurb: "One trade that spreads your risk",
     mark: "02",
     tag: "Basket",
@@ -735,10 +737,6 @@ function StudentPortfolio({
   const availableCategories = categoriesForGoal(investmentGoal).filter(
     (c) => (enabledMarkets || DEFAULT_MARKETS)[c.id] !== false
   );
-  const jobBoardUnlocked =
-    String(studentEmail || "")
-      .trim()
-      .toLowerCase() === "test@gmail.com";
   const heldTickers = new Set((portfolio?.holdings || []).map((h) => h.ticker));
   const stockIndustries = [
     "All",
@@ -1187,7 +1185,7 @@ function StudentPortfolio({
             />
           )}
 
-          {showJobs && jobBoardUnlocked && !showClass && !showNews && !showBoard && (
+          {showJobs && !showClass && !showNews && !showBoard && (
             <JobBoard
               classId={classId}
               studentId={firestoreStudentId || portfolio?.id || ""}
@@ -1291,48 +1289,26 @@ function StudentPortfolio({
                     →
                   </span>
                 </button>
-                {jobBoardUnlocked ? (
-                  <button
-                    type="button"
-                    className="home-tool home-tool-jobs"
-                    data-click="select"
-                    title="Job board"
-                    onClick={() => {
-                      setShowJobs(true);
-                      setShowNews(false);
-                      setShowClass(false);
-                      setShowBoard(false);
-                      setSelectedAsset(null);
-                      setTradeDraft(null);
-                    }}
-                  >
-                    <span className="home-tool-kicker">Classroom</span>
-                    <strong>Job board</strong>
-                    <span className="home-tool-go" aria-hidden="true">
-                      →
-                    </span>
-                  </button>
-                ) : (
-                  <span
-                    className="home-tool-locked-wrap"
-                    title="Coming soon"
-                  >
-                    <button
-                      type="button"
-                      className="home-tool home-tool-jobs is-locked"
-                      data-click="select"
-                      disabled
-                      aria-disabled="true"
-                      aria-label="Job board — Coming soon"
-                    >
-                      <span className="home-tool-kicker">Classroom</span>
-                      <strong>Job board</strong>
-                      <span className="home-tool-go" aria-hidden="true">
-                        Soon
-                      </span>
-                    </button>
+                <button
+                  type="button"
+                  className="home-tool home-tool-jobs"
+                  data-click="select"
+                  title="Job board"
+                  onClick={() => {
+                    setShowJobs(true);
+                    setShowNews(false);
+                    setShowClass(false);
+                    setShowBoard(false);
+                    setSelectedAsset(null);
+                    setTradeDraft(null);
+                  }}
+                >
+                  <span className="home-tool-kicker">Classroom</span>
+                  <strong>Job board</strong>
+                  <span className="home-tool-go" aria-hidden="true">
+                    →
                   </span>
-                )}
+                </button>
               </div>
 
               <div className="market-menu">
@@ -1359,6 +1335,7 @@ function StudentPortfolio({
                         setCategory(c.id);
                         setSelectedAsset(null);
                         setChartTicker(null);
+                        setStockBuyTarget(null);
                       }}
                     >
                       <span className="market-lane-visual" aria-hidden="true">
@@ -1437,6 +1414,7 @@ function StudentPortfolio({
                         price,
                         change_pct: item?.change_pct ?? null,
                         asset_type: item?.asset_type || "equity",
+                        info: item?.info || null,
                       });
                       setSelectedAsset(null);
                       setChartTicker(null);
@@ -1456,6 +1434,66 @@ function StudentPortfolio({
                       setError={setError}
                       onBought={(data, trade) => {
                         if (data) setPortfolio(data);
+                        if (trade) {
+                          setTradePulse({ ticker: trade.ticker, action: "buy" });
+                          setTradeSuccess(trade);
+                        }
+                      }}
+                    />
+                  ) : null}
+                </>
+              )}
+
+              {category === "etfs" && (
+                <>
+                  <CryptoEtfsTicker
+                    marketItems={marketItems}
+                    onPickTicker={async (row) => {
+                      const ticker = String(row?.ticker || row || "").toUpperCase();
+                      if (!ticker) return;
+                      const item = marketItems.find(
+                        (m) => String(m.ticker).toUpperCase() === ticker
+                      );
+                      let price = item?.price != null ? Number(item.price) : null;
+                      let name = item?.name || row?.name || ticker;
+                      if (!(price > 0)) {
+                        try {
+                          const q = await getQuote(ticker);
+                          price = q?.price != null ? Number(q.price) : null;
+                          if (q?.name) name = q.name;
+                        } catch {
+                          /* ignore */
+                        }
+                      }
+                      if (!(price > 0)) {
+                        setError?.(
+                          `Couldn’t load a live price for ${ticker} yet — try again in a moment.`
+                        );
+                        return;
+                      }
+                      setStockBuyTarget({
+                        ticker,
+                        name,
+                        price,
+                        change_pct: item?.change_pct ?? null,
+                        asset_type: item?.asset_type || "etf",
+                        info: item?.info || null,
+                      });
+                      setSelectedAsset(null);
+                      setChartTicker(null);
+                      setTradeDraft(null);
+                    }}
+                  />
+                  {selectedId && stockBuyTarget ? (
+                    <StockBuyModal
+                      target={stockBuyTarget}
+                      classId={classId}
+                      studentId={selectedId}
+                      cash={portfolio?.cash ?? 0}
+                      onClose={() => setStockBuyTarget(null)}
+                      onBought={(data, trade) => {
+                        if (data) setPortfolio(data);
+                        setStockBuyTarget(null);
                         if (trade) {
                           setTradePulse({ ticker: trade.ticker, action: "buy" });
                           setTradeSuccess(trade);

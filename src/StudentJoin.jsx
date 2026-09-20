@@ -36,7 +36,7 @@ const MARKET_GUIDE = [
   },
   {
     id: "etfs",
-    title: "ETFs",
+    title: "ETFs and Crypto",
     blurb: "One trade that spreads your risk",
     tag: "Basket",
   },

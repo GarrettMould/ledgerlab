@@ -10,6 +10,11 @@ function money(n) {
   });
 }
 
+function companySummary(info) {
+  if (!info || typeof info !== "object") return "";
+  return String(info.summary || "").trim();
+}
+
 /**
  * PayPal-style buy modal for classroom stocks.
  * On a successful buy it closes itself and lets the parent show TradeSuccessModal.
@@ -27,17 +32,21 @@ export default function StockBuyModal({
   const [buyError, setBuyError] = useState("");
   const [livePrice, setLivePrice] = useState(null);
   const [quoteBusy, setQuoteBusy] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
   const titleId = useId();
+  const infoTitleId = useId();
 
   useEffect(() => {
     if (!target?.ticker) {
       setLivePrice(null);
       setQuoteBusy(false);
+      setShowInfo(false);
       return undefined;
     }
     setQty(1);
     setBuyError("");
     setBuyBusy(false);
+    setShowInfo(false);
 
     const seeded = Number(target.price);
     if (seeded > 0) {
@@ -76,7 +85,13 @@ export default function StockBuyModal({
     if (!target) return undefined;
     const onKey = (e) => {
       if (buyBusy) return;
-      if (e.key === "Escape") close();
+      if (e.key === "Escape") {
+        if (showInfo) {
+          setShowInfo(false);
+          return;
+        }
+        close();
+      }
     };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
@@ -85,7 +100,7 @@ export default function StockBuyModal({
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
-  }, [target, buyBusy]);
+  }, [target, buyBusy, showInfo]);
 
   function close() {
     setBuyError("");
@@ -93,6 +108,7 @@ export default function StockBuyModal({
     setBuyBusy(false);
     setLivePrice(null);
     setQuoteBusy(false);
+    setShowInfo(false);
     onClose?.();
   }
 
@@ -144,6 +160,9 @@ export default function StockBuyModal({
     : price > 0
       ? ` · ${money(price)}`
       : " · price pending";
+  const summary = companySummary(target.info);
+  const hasInfo = Boolean(summary);
+  const displayName = target.name || target.ticker;
 
   return createPortal(
     <div
@@ -154,98 +173,152 @@ export default function StockBuyModal({
       }}
     >
       <div
-        className="stock-suggest-modal"
+        className={
+          showInfo
+            ? "stock-suggest-modal stock-buy-flip is-flipped"
+            : "stock-suggest-modal stock-buy-flip"
+        }
         role="dialog"
         aria-modal="true"
-        aria-labelledby={titleId}
+        aria-labelledby={showInfo ? infoTitleId : titleId}
         onClick={(e) => e.stopPropagation()}
       >
-        <button
-          type="button"
-          className="stock-suggest-close"
-          data-click="select"
-          aria-label="Close"
-          disabled={buyBusy}
-          onClick={close}
-        >
-          ×
-        </button>
-        <p className="stock-suggest-kicker">Buy shares</p>
-        <h2 id={titleId} className="stock-suggest-title">
-          {target.ticker}
-        </h2>
-        <p className="stock-suggest-sub">
-          {target.name}
-          {priceLabel}
-        </p>
-        <form
-          className="stock-suggest-modal-form stock-buy-modal-form"
-          onSubmit={handleBuy}
-        >
-          <label className="stock-suggest-field-label" htmlFor="stock-buy-qty">
-            Shares
-          </label>
-          <div className="stock-buy-qty-row">
+        <div className="stock-buy-flip-inner">
+          <div className="stock-buy-face stock-buy-face-front" aria-hidden={showInfo}>
             <button
               type="button"
-              className="stock-buy-step"
+              className="stock-suggest-close"
               data-click="select"
-              disabled={buyBusy || shares <= 1}
-              onClick={() => setQty(Math.max(1, shares - 1))}
-              aria-label="Fewer shares"
+              aria-label="Close"
+              disabled={buyBusy}
+              onClick={close}
             >
-              −
+              ×
             </button>
-            <input
-              id="stock-buy-qty"
-              type="number"
-              min={1}
-              step={1}
-              value={shares}
-              disabled={buyBusy}
-              onChange={(e) =>
-                setQty(Math.max(1, Math.round(Number(e.target.value)) || 1))
-              }
-            />
+            <p className="stock-suggest-kicker">Buy shares</p>
+            <div className="stock-buy-title-row">
+              <h2 id={titleId} className="stock-suggest-title">
+                {target.ticker}
+              </h2>
+              {hasInfo ? (
+                <button
+                  type="button"
+                  className="stock-buy-info-btn"
+                  data-click="select"
+                  aria-label={`About ${displayName}`}
+                  disabled={buyBusy}
+                  onClick={() => setShowInfo(true)}
+                >
+                  i
+                </button>
+              ) : null}
+            </div>
+            <p className="stock-suggest-sub">
+              {displayName}
+              {priceLabel}
+            </p>
+            <form
+              className="stock-suggest-modal-form stock-buy-modal-form"
+              onSubmit={handleBuy}
+            >
+              <label className="stock-suggest-field-label" htmlFor="stock-buy-qty">
+                Shares
+              </label>
+              <div className="stock-buy-qty-row">
+                <button
+                  type="button"
+                  className="stock-buy-step"
+                  data-click="select"
+                  disabled={buyBusy || shares <= 1}
+                  onClick={() => setQty(Math.max(1, shares - 1))}
+                  aria-label="Fewer shares"
+                >
+                  −
+                </button>
+                <input
+                  id="stock-buy-qty"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={shares}
+                  disabled={buyBusy}
+                  onChange={(e) =>
+                    setQty(Math.max(1, Math.round(Number(e.target.value)) || 1))
+                  }
+                />
+                <button
+                  type="button"
+                  className="stock-buy-step"
+                  data-click="select"
+                  disabled={buyBusy}
+                  onClick={() => setQty(shares + 1)}
+                  aria-label="More shares"
+                >
+                  +
+                </button>
+              </div>
+              <p className="stock-buy-est">
+                Est. cost{" "}
+                <strong>
+                  {quoteBusy ? "…" : estCost != null ? money(estCost) : "—"}
+                </strong>
+                <span> · Cash {money(cash)}</span>
+              </p>
+              {buyError ? (
+                <p className="stock-suggest-modal-error">{buyError}</p>
+              ) : null}
+              <button
+                type="submit"
+                className="stock-suggest-submit"
+                data-click="confirm"
+                disabled={buyBusy || quoteBusy || !(price > 0) || !canAfford}
+              >
+                {buyBusy ? "Buying…" : quoteBusy ? "Loading price…" : "Buy now"}
+              </button>
+              <button
+                type="button"
+                className="stock-suggest-cancel"
+                data-click="select"
+                disabled={buyBusy}
+                onClick={close}
+              >
+                Cancel
+              </button>
+            </form>
+          </div>
+
+          <div
+            className="stock-buy-face stock-buy-face-back"
+            aria-hidden={!showInfo}
+          >
             <button
               type="button"
-              className="stock-buy-step"
+              className="stock-suggest-close"
               data-click="select"
+              aria-label="Close"
               disabled={buyBusy}
-              onClick={() => setQty(shares + 1)}
-              aria-label="More shares"
+              onClick={close}
             >
-              +
+              ×
+            </button>
+            <p className="stock-suggest-kicker">Company info</p>
+            <h2 id={infoTitleId} className="stock-suggest-title">
+              {target.ticker}
+            </h2>
+            <p className="stock-suggest-sub stock-buy-info-name">{displayName}</p>
+            <p className="stock-buy-info-body">
+              {summary || "No company summary is available for this stock yet."}
+            </p>
+            <button
+              type="button"
+              className="stock-suggest-submit"
+              data-click="select"
+              onClick={() => setShowInfo(false)}
+            >
+              Back to buy
             </button>
           </div>
-          <p className="stock-buy-est">
-            Est. cost{" "}
-            <strong>
-              {quoteBusy ? "…" : estCost != null ? money(estCost) : "—"}
-            </strong>
-            <span> · Cash {money(cash)}</span>
-          </p>
-          {buyError ? (
-            <p className="stock-suggest-modal-error">{buyError}</p>
-          ) : null}
-          <button
-            type="submit"
-            className="stock-suggest-submit"
-            data-click="confirm"
-            disabled={buyBusy || quoteBusy || !(price > 0) || !canAfford}
-          >
-            {buyBusy ? "Buying…" : quoteBusy ? "Loading price…" : "Buy now"}
-          </button>
-          <button
-            type="button"
-            className="stock-suggest-cancel"
-            data-click="select"
-            disabled={buyBusy}
-            onClick={close}
-          >
-            Cancel
-          </button>
-        </form>
+        </div>
       </div>
     </div>,
     document.body

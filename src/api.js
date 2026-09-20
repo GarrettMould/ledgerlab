@@ -200,6 +200,7 @@ export function startClosetAiDraft(studentId, prompt, classId, options = {}) {
     body: JSON.stringify({
       studentId,
       prompt,
+      productName: options.productName || null,
       primaryColor: options.primaryColor || null,
       secondaryColor: options.secondaryColor || null,
       tertiaryColor: options.tertiaryColor || null,
@@ -298,14 +299,9 @@ export function activateClosetAiJob(studentId, jobId, classId, answers) {
   });
 }
 
-/** Dev-only: seed a fake pending_review item for the teacher dashboard UI. */
-export function seedClosetAiTestReview(studentId, classId, answers) {
-  return request("/closet/ai/test-review", {
-    method: "POST",
-    classId,
-    timeoutMs: 60000,
-    body: JSON.stringify({ studentId, answers }),
-  });
+/** Disabled — real create → teacher review path only. */
+export function seedClosetAiTestReview() {
+  return Promise.reject(new Error("Test review seeding is disabled"));
 }
 
 export function listClosetAiReviews(classId, teacherUid) {

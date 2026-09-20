@@ -5,6 +5,7 @@ import {
   leaveCrewJob,
   listCrewJobs,
 } from "./api";
+import ClosetReviewPreview from "./ClosetReviewPreview";
 import {
   AvatarCanvas,
   loadSavedOutfit,
@@ -62,8 +63,32 @@ function MemberAvatar({ outfit, name }) {
   );
 }
 
+function JobProductPreview({ job }) {
+  const label = job?.itemLabel || job?.jobTitle || "Item";
+  const thumb = String(job?.thumbnailUrl || "").trim();
+  const glb = String(job?.glbUrl || "").trim();
+  const parts = Array.isArray(job?.parts) ? job.parts : [];
+  if (!thumb && !glb && !parts.length) {
+    return (
+      <div className="job-board-product-preview is-empty" aria-hidden="true">
+        <span>?</span>
+      </div>
+    );
+  }
+  return (
+    <ClosetReviewPreview
+      thumbnailUrl={thumb}
+      glbUrl={glb}
+      parts={parts}
+      label={label}
+      className="job-board-product-preview"
+      lowerInFrame
+    />
+  );
+}
+
 /**
- * H2H-style crew row: filled classmates + empty “+” slots to join.
+ * Crew row: creator profile first, then hireable join slots.
  */
 function CrewSlotRow({
   job,
@@ -77,15 +102,36 @@ function CrewSlotRow({
 }) {
   const slots = Math.max(1, Number(job.slots) || 1);
   const members = Array.isArray(job.members) ? job.members : [];
-  const joined = members.some((m) => m.studentId === studentId);
-  const isOwner = job.creatorId === studentId;
+  const creatorId = String(job.creatorId || "");
+  const hireMembers = members.filter(
+    (m) => String(m?.studentId || "") !== creatorId
+  );
+  const joined = hireMembers.some((m) => m.studentId === studentId);
+  const isOwner = creatorId === String(studentId || "");
   const hiring = job.status === "open" && Number(job.openSlots) > 0;
   const openJoin = hiring && canJoin && !joined && !isOwner;
 
+  const creatorSeat = rosterById.get(creatorId);
+  const creatorName =
+    job.creatorName || creatorSeat?.name || "Creator";
+  const creatorOutfit = creatorId
+    ? outfitForMember(
+        { studentId: creatorId, studentName: creatorName },
+        rosterById
+      )
+    : null;
+
   return (
     <ul className="job-crew-slots" aria-label="Crew slots">
+      <li key={`${job.id}-creator`}>
+        <div className="job-crew-slot is-filled is-creator">
+          <MemberAvatar outfit={creatorOutfit} name={creatorName} />
+          <span className="job-crew-slot-name">{creatorName}</span>
+          <span className="job-crew-slot-role">Creator</span>
+        </div>
+      </li>
       {Array.from({ length: slots }, (_, i) => {
-        const member = members[i];
+        const member = hireMembers[i];
         if (member) {
           const mine = member.studentId === studentId;
           const outfit = outfitForMember(member, rosterById);
@@ -139,7 +185,7 @@ function CrewSlotRow({
                 +
               </span>
               <span className="job-crew-slot-name">
-                {openJoin ? "Join" : isOwner ? "Yours" : "Open"}
+                {openJoin ? "Join" : isOwner ? "Open" : "Open"}
               </span>
             </button>
           </li>
@@ -393,6 +439,7 @@ export default function JobBoard({
           <div className="job-board-list">
             {invites.map((job) => (
               <article key={job.id} className="job-board-card is-invite">
+                <JobProductPreview job={job} />
                 <div className="job-board-card-main">
                   <strong>{job.jobTitle || job.itemLabel}</strong>
                   <span>
@@ -454,25 +501,28 @@ export default function JobBoard({
                   : "";
               return (
                 <article key={job.id} className="job-board-card job-board-card-crew">
-                  <div className="job-board-card-main">
-                    <strong>{job.itemLabel || job.jobTitle}</strong>
-                    <span>
-                      by {job.creatorName}
-                      {` · ${job.slots} seats · ${jobMeta(job)}`}
-                      {job.id === "local-preview-team3" ? " · preview" : ""}
-                      {isOwner ? " · your project" : ""}
-                    </span>
-                    <CrewSlotRow
-                      job={job}
-                      studentId={studentId}
-                      rosterById={rosterById}
-                      busy={busyId === job.id}
-                      canJoin={canJoin || job.id === "local-preview-team3"}
-                      lockReason={lockReason}
-                      onJoin={() => handleJoin(job.id)}
-                      onLeave={() => handleLeave(job.id)}
-                    />
+                  <div className="job-board-card-top">
+                    <JobProductPreview job={job} />
+                    <div className="job-board-card-main">
+                      <strong>{job.itemLabel || job.jobTitle}</strong>
+                      <span>
+                        by {job.creatorName}
+                        {` · ${job.slots} seats · ${jobMeta(job)}`}
+                        {job.id === "local-preview-team3" ? " · preview" : ""}
+                        {isOwner ? " · your project" : ""}
+                      </span>
+                    </div>
                   </div>
+                  <CrewSlotRow
+                    job={job}
+                    studentId={studentId}
+                    rosterById={rosterById}
+                    busy={busyId === job.id}
+                    canJoin={canJoin || job.id === "local-preview-team3"}
+                    lockReason={lockReason}
+                    onJoin={() => handleJoin(job.id)}
+                    onLeave={() => handleLeave(job.id)}
+                  />
                 </article>
               );
             })}
@@ -497,22 +547,25 @@ export default function JobBoard({
                       : "job-board-card job-board-card-crew is-filled"
                   }
                 >
-                  <div className="job-board-card-main">
-                    <strong>{job.itemLabel || job.jobTitle}</strong>
-                    <span>
-                      by {job.creatorName}
-                      {` · ${isLive ? "Approved · live" : "Filled · pending review"} · ${money(job.sellPrice)}`}
-                    </span>
-                    <CrewSlotRow
-                      job={{ ...job, status: "filled", openSlots: 0 }}
-                      studentId={studentId}
-                      rosterById={rosterById}
-                      busy={false}
-                      canJoin={false}
-                      onJoin={() => {}}
-                      onLeave={() => {}}
-                    />
+                  <div className="job-board-card-top">
+                    <JobProductPreview job={job} />
+                    <div className="job-board-card-main">
+                      <strong>{job.itemLabel || job.jobTitle}</strong>
+                      <span>
+                        by {job.creatorName}
+                        {` · ${isLive ? "Approved · live" : "Filled · pending review"} · ${money(job.sellPrice)}`}
+                      </span>
+                    </div>
                   </div>
+                  <CrewSlotRow
+                    job={{ ...job, status: "filled", openSlots: 0 }}
+                    studentId={studentId}
+                    rosterById={rosterById}
+                    busy={false}
+                    canJoin={false}
+                    onJoin={() => {}}
+                    onLeave={() => {}}
+                  />
                 </article>
               );
             })}

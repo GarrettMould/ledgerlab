@@ -221,13 +221,13 @@ def list_crew_tiers() -> dict:
 
 
 def job_title_from_product(label: str = "", prompt: str = "") -> str:
-    """Short Job-board title tied to the product the student described."""
+    """Short Job-board title — prefer the student-chosen product name."""
     name = str(label or "").strip()
-    if not name:
-        words = str(prompt or "").strip().split()
-        name = " ".join(words[:5]).strip()
+    if name:
+        return name[:42]
+    words = str(prompt or "").strip().split()
+    name = " ".join(words[:5]).strip()
     name = name[:42] or "Class creation"
-    # Soft title-case without wrecking acronyms the model already set.
     if name == name.lower() or name == name.upper():
         name = name.title()
     return name
@@ -775,6 +775,7 @@ def start_draft(
     student_id: str,
     prompt: str,
     *,
+    product_name: str | None = None,
     primary_color: str | None = None,
     secondary_color: str | None = None,
     tertiary_color: str | None = None,
@@ -790,6 +791,9 @@ def start_draft(
         raise ValueError("Describe what to make (at least a couple of words).")
     if len(text) > 400:
         raise ValueError("Keep your idea under 400 characters.")
+    name = str(product_name or "").strip()[:40]
+    if name and len(name) < 2:
+        raise ValueError("Product name must be at least 2 characters.")
     engine = _generation_engine()
     if _publishes_today(class_id, student_id) >= MAX_PUBLISHES_PER_DAY:
         raise RuntimeError(
@@ -805,6 +809,8 @@ def start_draft(
         kind_hint=kind,
         style=style,
     )
+    if name:
+        meta["label"] = name
     job_id = f"job_{uuid.uuid4().hex[:16]}"
     from firebase_admin import firestore as fs
 
@@ -815,7 +821,9 @@ def start_draft(
         "status": "queued",
         "phase": "queued",
         "sourcePrompt": text,
+        "productName": name or meta["label"],
         "brief": {
+            "productName": name or meta["label"],
             "primaryColor": meta.get("color"),
             "secondaryColor": meta.get("accent"),
             "tertiaryColor": meta.get("tertiary"),
@@ -914,6 +922,11 @@ def redo_draft(
     quaternary = brief.get("quaternaryColor") or job.get("quaternary")
     kind = brief.get("kind") or job.get("kind")
     style = brief.get("style")
+    product_name = (
+        brief.get("productName")
+        or job.get("productName")
+        or job.get("label")
+    )
 
     from firebase_admin import firestore as fs
 
@@ -930,6 +943,7 @@ def redo_draft(
             class_id,
             student_id,
             text,
+            product_name=product_name,
             primary_color=primary,
             secondary_color=secondary,
             tertiary_color=tertiary,
@@ -1899,6 +1913,7 @@ def list_crew_jobs(class_id: str, student_id: str | None = None) -> dict:
             "invitedStudentId": data.get("invitedStudentId"),
             "invitedStudentName": data.get("invitedStudentName"),
             "thumbnailUrl": data.get("thumbnailUrl") or "",
+            "glbUrl": data.get("glbUrl") or "",
             "parts": data.get("parts") or [],
             "createdAtMs": int(data.get("createdAtMs") or 0),
         }

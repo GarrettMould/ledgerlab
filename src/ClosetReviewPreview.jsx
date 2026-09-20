@@ -30,11 +30,11 @@ function partRotationRad(rot) {
   return vals;
 }
 
-function BlockyPartsModel({ parts }) {
+function BlockyPartsModel({ parts, yOffset = 0 }) {
   const safe = Array.isArray(parts) ? parts.slice(0, 24) : [];
   if (!safe.length) return null;
   return (
-    <group position={[0, 0, 0]} scale={0.85}>
+    <group position={[0, yOffset, 0]} scale={0.85}>
       {safe.map((part, i) => {
         const color = part.color || "#888888";
         const pos = Array.isArray(part.pos) ? part.pos : [0, 0, 0];
@@ -73,7 +73,7 @@ function BlockyPartsModel({ parts }) {
   );
 }
 
-function GlbPreviewModel({ url }) {
+function GlbPreviewModel({ url, yOffset = 0 }) {
   const bust = useMemo(() => {
     const sep = String(url).includes("?") ? "&" : "?";
     return `${url}${sep}v=review`;
@@ -98,17 +98,17 @@ function GlbPreviewModel({ url }) {
 
   return (
     <Float speed={1.2} rotationIntensity={0.15} floatIntensity={0.25}>
-      <group ref={group} scale={0.95}>
+      <group ref={group} position={[0, yOffset, 0]} scale={0.95}>
         <primitive object={cloned} />
       </group>
     </Float>
   );
 }
 
-function PreviewCanvas({ children }) {
+function PreviewCanvas({ children, cameraY = 1.15 }) {
   return (
     <Canvas
-      camera={{ position: [1.6, 1.15, 2.1], fov: 36, near: 0.1, far: 40 }}
+      camera={{ position: [1.6, cameraY, 2.1], fov: 36, near: 0.1, far: 40 }}
       dpr={[1, 1.5]}
       gl={{ antialias: true, alpha: true }}
     >
@@ -129,14 +129,19 @@ export default function ClosetReviewPreview({
   parts = [],
   label = "Item",
   className = "closet-review-preview",
+  /** Shift the product lower in the preview frame (job board thumbs). */
+  lowerInFrame = false,
 }) {
   const hasParts = Array.isArray(parts) && parts.length > 0;
   const thumb = String(thumbnailUrl || "").trim();
   const glb = String(glbUrl || "").trim();
+  const yOffset = lowerInFrame ? -0.45 : 0;
+  const cameraY = lowerInFrame ? 0.85 : 1.15;
+  const frameClass = lowerInFrame ? `${className} is-lower` : className;
 
   if (thumb) {
     return (
-      <div className={className}>
+      <div className={frameClass}>
         <img src={thumb} alt={`Preview of ${label}`} />
       </div>
     );
@@ -144,11 +149,11 @@ export default function ClosetReviewPreview({
 
   if (hasParts) {
     return (
-      <div className={className} aria-label={`3D preview of ${label}`}>
+      <div className={frameClass} aria-label={`3D preview of ${label}`}>
         <PreviewBoundary fallback={<p className="closet-review-preview-empty">Preview unavailable</p>}>
-          <PreviewCanvas>
+          <PreviewCanvas cameraY={cameraY}>
             <Float speed={1.2} rotationIntensity={0.2} floatIntensity={0.3}>
-              <BlockyPartsModel parts={parts} />
+              <BlockyPartsModel parts={parts} yOffset={yOffset} />
             </Float>
           </PreviewCanvas>
         </PreviewBoundary>
@@ -158,10 +163,10 @@ export default function ClosetReviewPreview({
 
   if (glb) {
     return (
-      <div className={className} aria-label={`3D preview of ${label}`}>
+      <div className={frameClass} aria-label={`3D preview of ${label}`}>
         <PreviewBoundary fallback={<p className="closet-review-preview-empty">Preview unavailable</p>}>
-          <PreviewCanvas>
-            <GlbPreviewModel url={glb} />
+          <PreviewCanvas cameraY={cameraY}>
+            <GlbPreviewModel url={glb} yOffset={yOffset} />
           </PreviewCanvas>
         </PreviewBoundary>
       </div>
@@ -169,7 +174,7 @@ export default function ClosetReviewPreview({
   }
 
   return (
-    <div className={`${className} is-empty`}>
+    <div className={`${frameClass} is-empty`}>
       <p className="closet-review-preview-empty">No preview</p>
     </div>
   );

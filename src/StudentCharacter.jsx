@@ -10,7 +10,6 @@ import {
   pollClosetAiJob,
   publishClosetAiJob,
   activateClosetAiJob,
-  seedClosetAiTestReview,
   startClosetAiDraft,
   redoClosetAiDraft,
   inviteCrewPartner,
@@ -1120,7 +1119,8 @@ function BlenderAvatarModel({ outfit, waving, spin = false, still = false }) {
       if (still) {
         group.current.rotation.y = 0;
       } else {
-        group.current.rotation.y = spin ? t * 0.35 : Math.sin(t * 0.55) * 0.18;
+        // Closet modal: tiny yaw sway (not a full 360 spin).
+        group.current.rotation.y = Math.sin(t * (spin ? 0.65 : 0.55)) * (spin ? 0.22 : 0.18);
       }
       group.current.position.y = AVATAR_BASE_Y + (still ? 0 : Math.sin(t * 1.4) * 0.02);
     }
@@ -1188,9 +1188,7 @@ function ProceduralAvatarModel({ outfit, waving, spin = false, still = false }) 
       if (still) {
         group.current.rotation.y = 0;
       } else {
-        group.current.rotation.y = spin
-          ? t * 0.35
-          : Math.sin(t * 0.55) * 0.18;
+        group.current.rotation.y = Math.sin(t * (spin ? 0.65 : 0.55)) * (spin ? 0.22 : 0.18);
       }
       group.current.position.y = AVATAR_BASE_Y + (still ? 0 : Math.sin(t * 1.4) * 0.02);
     }
@@ -1268,9 +1266,7 @@ function FishAvatarModel({ outfit, waving, spin = false, still = false }) {
       if (still) {
         group.current.rotation.y = 0;
       } else {
-        group.current.rotation.y = spin
-          ? t * 0.35
-          : Math.sin(t * 0.55) * 0.18;
+        group.current.rotation.y = Math.sin(t * (spin ? 0.65 : 0.55)) * (spin ? 0.22 : 0.18);
       }
       group.current.position.y = AVATAR_BASE_Y + (still ? 0 : Math.sin(t * 1.4) * 0.02);
     }
@@ -1434,9 +1430,7 @@ function FruitFlyAvatarModel({ outfit, waving, spin = false, still = false }) {
         group.current.rotation.y = 0;
         group.current.position.y = AVATAR_BASE_Y;
       } else {
-        group.current.rotation.y = spin
-          ? t * 0.35
-          : Math.sin(t * 0.55) * 0.18;
+        group.current.rotation.y = Math.sin(t * (spin ? 0.65 : 0.55)) * (spin ? 0.22 : 0.18);
         group.current.position.y = AVATAR_BASE_Y + Math.sin(t * 1.4) * 0.02;
       }
     }
@@ -2607,9 +2601,9 @@ function crewTierFor(slots) {
 }
 
 const CLOSET_AI_SCENARIO = {
-  id: "strategy",
+  id: "opportunity-cost",
   prompt:
-    "Markets just swung hard: popular tech stocks dropped about 8% in a week, and the Fear & Greed meter flipped from Extreme Greed toward Fear. Several classmates are panic-selling into cash. How would you change your investment strategy, if at all, and why? Be specific about what you’d buy, sell, or hold, and how risk and time horizon factor into your decision.",
+    "You’re about to put classroom cash into building and selling a product — money that could instead stay invested in stocks, bonds, or other assets. What’s the opportunity cost of spending on consumption (or this project) today instead of investing? Explain what you give up, how time horizon and risk change your answer, and when spending now could still be the smarter choice.",
 };
 
 const CLOSET_AI_STRATEGY_MIN_CHARS = 80;
@@ -2791,6 +2785,7 @@ function ClosetAiCreator({
   const [status, setStatus] = useState(null);
   const [gateStep, setGateStep] = useState("crew"); // crew | notice | create | partner | quiz | review
   const [prompt, setPrompt] = useState("");
+  const [productName, setProductName] = useState("");
   const [primaryColorId, setPrimaryColorId] = useState("tee-forest");
   const [secondaryColorId, setSecondaryColorId] = useState("tee-ink");
   const [tertiaryColorId, setTertiaryColorId] = useState(null);
@@ -2811,7 +2806,6 @@ function ClosetAiCreator({
   const [redoPrompt, setRedoPrompt] = useState("");
   const [redoOpen, setRedoOpen] = useState(false);
   const [redoAvailable, setRedoAvailable] = useState(true);
-  const [quizTestMode, setQuizTestMode] = useState(false);
   const [quizHostEl, setQuizHostEl] = useState(null);
   const [partnerRoster, setPartnerRoster] = useState([]);
   const [partnerLoading, setPartnerLoading] = useState(false);
@@ -2843,6 +2837,7 @@ function ClosetAiCreator({
     if (!open) return;
     setGateStep("crew");
     setPrompt("");
+    setProductName("");
     setPrimaryColorId("tee-forest");
     setSecondaryColorId("tee-ink");
     setTertiaryColorId(null);
@@ -2863,7 +2858,6 @@ function ClosetAiCreator({
     setRedoPrompt("");
     setRedoOpen(false);
     setRedoAvailable(true);
-    setQuizTestMode(false);
     setPartnerRoster([]);
     setSelectedPartnerId("");
     setInvitedPartnerName("");
@@ -3064,6 +3058,7 @@ function ClosetAiCreator({
     });
     try {
       const data = await startClosetAiDraft(studentId, brief.text, classId, {
+        productName: brief.productName || null,
         primaryColor: brief.primaryColor,
         secondaryColor: brief.secondaryColor,
         tertiaryColor: brief.tertiaryColor || null,
@@ -3097,7 +3092,12 @@ function ClosetAiCreator({
     }
 
     const text = prompt.trim();
+    const name = productName.trim();
     if (!text) return;
+    if (name.length < 2) {
+      setError("Give your product a name (at least 2 characters).");
+      return;
+    }
 
     const primary = closetAiColorById(primaryColorId);
     const secondary = closetAiColorById(secondaryColorId);
@@ -3114,9 +3114,10 @@ function ClosetAiCreator({
       tertiary?.label,
       quaternary?.label,
     ].filter(Boolean);
-    const briefLine = `${kindMeta.label} · ${styleMeta.label} · ${colorLabels.join(" / ")}`;
+    const briefLine = `${name} · ${kindMeta.label} · ${styleMeta.label} · ${colorLabels.join(" / ")}`;
     const brief = {
       text,
+      productName: name.slice(0, 40),
       primaryColor: primary.color,
       secondaryColor: secondary.color,
       tertiaryColor: tertiary?.color || null,
@@ -3127,6 +3128,7 @@ function ClosetAiCreator({
     };
     setError("");
     setPrompt("");
+    setProductName("");
     setPaletteOpen(null);
     setPendingBrief(brief);
     setJob(null);
@@ -3338,27 +3340,8 @@ function ClosetAiCreator({
       );
       return;
     }
-    const answers = strategyAnswersPayload();
     setError("");
     try {
-      if (quizTestMode) {
-        setBusy(true);
-        const result = await seedClosetAiTestReview(
-          studentId,
-          classId,
-          answers
-        );
-        setJob((prev) => ({
-          ...(prev || {}),
-          id: result?.jobId || prev?.id,
-          status: "pending_review",
-          isTest: true,
-        }));
-        setQuizDone(true);
-        setGateStep("review");
-        setBusy(false);
-        return;
-      }
       if (!pendingBrief?.text) {
         setError("Describe your item first, then come back to this scenario.");
         setGateStep("create");
@@ -3372,23 +3355,6 @@ function ClosetAiCreator({
       setError(err.message || "Could not submit strategy response");
       setBusy(false);
     }
-  }
-
-  function skipToQuizForTesting() {
-    stopPoll();
-    setBusy(false);
-    setError("");
-    setQuizTestMode(true);
-    setQuizDone(false);
-    setStrategyAnswer("");
-    setPendingBrief(null);
-    setJob({
-      id: "test-quiz",
-      status: "pending_quiz",
-      label: "Test item",
-      kind: "prop",
-    });
-    setGateStep("quiz");
   }
 
   if (status && !status.allowed) return null;
@@ -3613,7 +3579,7 @@ function ClosetAiCreator({
   }
 
   if (gateStep === "review") {
-    const waitingOnCrew = !quizTestMode && job?.status === "awaiting_crew";
+    const waitingOnCrew = job?.status === "awaiting_crew";
     return (
       <div className="closet-ai-panel closet-ai-gate closet-ai-review-done">
         <p className="closet-kicker">Submitted</p>
@@ -3654,9 +3620,6 @@ function ClosetAiCreator({
             {money(0)}.
           </li>
         </ul>
-        {quizTestMode ? (
-          <p className="closet-note">Test mode — nothing was sent to Firebase.</p>
-        ) : null}
         <div className="closet-ai-gate-actions">
           <button
             type="button"
@@ -3668,7 +3631,6 @@ function ClosetAiCreator({
                 label: job?.label || "Item",
                 pendingReview: !waitingOnCrew,
                 awaitingCrew: waitingOnCrew,
-                quizTest: quizTestMode,
               })
             }
           >
@@ -3691,14 +3653,13 @@ function ClosetAiCreator({
           rows={9}
           value={strategyAnswer}
           disabled={busy}
-          placeholder="Explain what you’d buy, sell, or hold — and why…"
+          placeholder="Explain the opportunity cost — what you give up by spending now vs investing…"
           maxLength={1200}
           aria-label="Strategy response"
           onChange={(e) => setStrategyAnswer(e.target.value)}
         />
         <p className="closet-ai-quiz-progress">
           {trimmed.length}/{CLOSET_AI_STRATEGY_MIN_CHARS}+ characters
-          {quizTestMode ? " · test" : ""}
         </p>
         {error ? <p className="closet-note closet-note-error">{error}</p> : null}
         <div className="closet-ai-gate-actions">
@@ -3721,13 +3682,9 @@ function ClosetAiCreator({
           <strong className="closet-ai-gate-title">Strategy scenario</strong>
           <p className="closet-ai-gate-copy">
             Answer the scenario to the right. When you submit, we’ll build your
-            item.
-            {quizTestMode ? " (Test mode.)" : ""}
-            {!quizTestMode
-              ? " Your teacher only sees this once the crew is full."
-              : ""}
+            item. Your teacher only sees this once the crew is full.
           </p>
-          {!quizTestMode && crewSlots === 1 && !invitedPartnerName ? (
+          {crewSlots === 1 && !invitedPartnerName ? (
             <div className="closet-ai-gate-actions">
               <button
                 type="button"
@@ -4111,6 +4068,18 @@ function ClosetAiCreator({
                   </div>
                 </div>
                 <label className="closet-ai-brief-field closet-ai-brief-describe">
+                  <span className="closet-ai-brief-label">Product name</span>
+                  <input
+                    type="text"
+                    value={productName}
+                    onChange={(e) => setProductName(e.target.value)}
+                    placeholder="e.g. Neon Boombox"
+                    maxLength={40}
+                    disabled={formLocked}
+                    aria-label="Product name"
+                  />
+                </label>
+                <label className="closet-ai-brief-field closet-ai-brief-describe">
                   <span className="closet-ai-brief-label">Describe the item</span>
                   <textarea
                     value={prompt}
@@ -4127,21 +4096,15 @@ function ClosetAiCreator({
                   className="primary-btn closet-ai-brief-submit"
                   data-click="confirm"
                   disabled={
-                    formLocked || !prompt.trim() || prompt.trim().length < 2
+                    formLocked ||
+                    !prompt.trim() ||
+                    prompt.trim().length < 2 ||
+                    productName.trim().length < 2
                   }
                 >
                   Continue
                 </button>
               </form>
-              <button
-                type="button"
-                className="closet-ai-skip-test"
-                data-click="select"
-                disabled={busy}
-                onClick={skipToQuizForTesting}
-              >
-                Skip to quiz (test)
-              </button>
             </>
           ) : null}
         </>
@@ -4497,7 +4460,7 @@ function ClosetModal({
                 />
                 <p className="closet-hint">
                   {aiPreviewAccessory
-                    ? "Your creation is on the character — spin to inspect"
+                    ? "Your creation is on the character"
                     : "Try buyables free — only purchases leave with you"}
                 </p>
               </>

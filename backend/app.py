@@ -1034,6 +1034,30 @@ MARKET_CATALOG = {
                 "holdings": ["Tesla", "Coinbase", "Roku", "CRISPR Therapeutics", "Robinhood"],
             },
         },
+        {
+            "ticker": "IBIT",
+            "name": "iShares Bitcoin Trust",
+            "info": {
+                "summary": "A spot Bitcoin ETF that holds bitcoin and aims to track its U.S. dollar price. Shares trade on a stock exchange like other ETFs.",
+                "holdings": ["Bitcoin (spot)", "Cash for fund operations"],
+            },
+        },
+        {
+            "ticker": "ETHA",
+            "name": "iShares Ethereum Trust",
+            "info": {
+                "summary": "A spot Ethereum ETF that holds ether and aims to track its U.S. dollar price. Shares trade on a stock exchange like other ETFs.",
+                "holdings": ["Ethereum / ether (spot)", "Cash for fund operations"],
+            },
+        },
+        {
+            "ticker": "BSOL",
+            "name": "Bitwise Solana Staking ETF",
+            "info": {
+                "summary": "A spot Solana ETF that holds SOL and aims to track its U.S. dollar price, with staking as a secondary goal. Shares trade on a stock exchange like other ETFs.",
+                "holdings": ["Solana / SOL (spot)", "Staking-related SOL exposure", "Cash for fund operations"],
+            },
+        },
     ],
     # Bond shelf for class: purchasable $100-face units.
     # U.S. Treasuries pull the latest Daily Treasury Par Yield Curve each day.
@@ -2249,6 +2273,201 @@ def classify_classroom_industry(
                 return mapped
     mapped = _industry_from_text(name)
     return mapped or "Consumer"
+
+
+_PLACEHOLDER_SUMMARY_RE = re.compile(
+    r"was added to the shared classroom market by a teacher\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_placeholder_company_summary(summary: str | None, name: str | None = None) -> bool:
+    text = str(summary or "").strip()
+    if not text:
+        return True
+    if _PLACEHOLDER_SUMMARY_RE.search(text):
+        return True
+    # Legacy exact template
+    display = str(name or "").strip()
+    if display and text.lower() == f"{display} was added to the shared classroom market by a teacher.".lower():
+        return True
+    return False
+
+
+def _finnhub_company_profile(ticker: str) -> dict:
+    symbol = str(ticker or "").strip().upper()
+    if not symbol or not finnhub_configured() or _finnhub_on_cooldown():
+        return {}
+    payload, _err = _finnhub_get("/stock/profile2", {"symbol": symbol})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _template_company_summary(
+    ticker: str,
+    *,
+    name: str | None = None,
+    industry: str | None = None,
+    profile: dict | None = None,
+) -> str:
+    profile = profile or {}
+    display = (
+        str(name or "").strip()
+        or str(profile.get("name") or "").strip()
+        or str(ticker or "").strip().upper()
+        or "This company"
+    )
+    sector = (
+        str(industry or "").strip()
+        or str(profile.get("finnhubIndustry") or "").strip()
+    )
+    country = str(profile.get("country") or "").strip()
+    exchange = str(profile.get("exchange") or "").strip()
+    blob = f"{display} {sector} {profile.get('finnhubIndustry') or ''}".lower()
+    is_etf = "etf" in blob or "exchange traded" in blob
+
+    if is_etf:
+        lead = f"{display} is an exchange-traded fund"
+    else:
+        lead = f"{display} is a publicly traded company"
+    if sector and sector.lower() not in ("custom",):
+        lead += f" in the {sector} sector"
+    if country:
+        lead += f", based in {country}"
+    lead += "."
+    if exchange:
+        lead += f" Its shares trade on {exchange}."
+    elif ticker:
+        lead += f" Students can buy shares of {str(ticker).upper()} in the classroom market."
+    return lead[:420]
+
+
+def _llm_company_summary(
+    ticker: str,
+    *,
+    name: str,
+    industry: str | None = None,
+    profile: dict | None = None,
+) -> str | None:
+    """Ask OpenAI (preferred for blurbs) or Claude for a short classroom company description."""
+    profile = profile or {}
+    facts = {
+        "ticker": str(ticker or "").upper(),
+        "name": name,
+        "classroomIndustry": industry or None,
+        "finnhubIndustry": profile.get("finnhubIndustry"),
+        "country": profile.get("country"),
+        "exchange": profile.get("exchange"),
+        "ipo": profile.get("ipo"),
+        "marketCap": profile.get("marketCapitalization"),
+        "weburl": profile.get("weburl"),
+    }
+    system = (
+        "You write short company descriptions for Ledger Lab, a high-school classroom "
+        "investing game. Explain what the company (or ETF) actually does in plain English. "
+        "2 sentences max. Grade 9–11 reading level. No URLs, no stock tips, no hype, "
+        "no politics. School-safe. Return ONLY the description text — no quotes or labels."
+    )
+    user = (
+        "Write a factual classroom blurb for this listed company or fund.\n"
+        f"FACTS:\n{json.dumps(facts, indent=2)}"
+    )
+
+    openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    openai_model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    if openai_key:
+        try:
+            res = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {openai_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": openai_model,
+                    "temperature": 0.3,
+                    "max_tokens": 160,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                },
+                timeout=25,
+            )
+            res.raise_for_status()
+            text = (
+                res.json()
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content")
+                or ""
+            ).strip()
+            text = text.strip("\"'` \n")
+            if len(text) >= 40:
+                return text[:420]
+        except Exception:
+            pass
+
+    anthropic_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    anthropic_model = (os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-5").strip()
+    if anthropic_key:
+        try:
+            res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": anthropic_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": anthropic_model,
+                    "max_tokens": 200,
+                    "system": system,
+                    "messages": [{"role": "user", "content": user}],
+                },
+                timeout=25,
+            )
+            res.raise_for_status()
+            parts = res.json().get("content") or []
+            text = "".join(
+                str(p.get("text") or "")
+                for p in parts
+                if isinstance(p, dict) and p.get("type") == "text"
+            ).strip()
+            text = text.strip("\"'` \n")
+            if len(text) >= 40:
+                return text[:420]
+        except Exception:
+            pass
+    return None
+
+
+def generate_classroom_company_summary(
+    ticker: str,
+    *,
+    name: str | None = None,
+    industry: str | None = None,
+) -> str:
+    """Real company blurb for teacher-added tickers (LLM + Finnhub profile, with template fallback)."""
+    symbol = str(ticker or "").strip().upper()
+    profile = _finnhub_company_profile(symbol) if symbol else {}
+    display = (
+        str(name or "").strip()
+        or str(profile.get("name") or "").strip()
+        or symbol
+        or "This company"
+    )
+    sector = str(industry or "").strip() or None
+    llm = _llm_company_summary(
+        symbol,
+        name=display,
+        industry=sector,
+        profile=profile,
+    )
+    if llm and not is_placeholder_company_summary(llm, display):
+        return llm
+    return _template_company_summary(
+        symbol, name=display, industry=sector, profile=profile
+    )
 
 
 def _finnhub_quote_one(local_symbol: str) -> tuple[str, float | None, float | None]:
@@ -4107,6 +4326,35 @@ def append_class_extra_market(
         except Exception:
             pass
 
+    # Backfill placeholder "added by a teacher" blurbs (a few per request).
+    summary_updates: dict[str, str] = {}
+    backfill_budget = 8
+    for extra in pending:
+        if backfill_budget <= 0:
+            break
+        ticker = extra["ticker"]
+        name = extra.get("name") or ticker
+        info = extra.get("info") if isinstance(extra.get("info"), dict) else {}
+        summary = str(info.get("summary") or "")
+        if not is_placeholder_company_summary(summary, name):
+            continue
+        try:
+            blurb = generate_classroom_company_summary(
+                ticker, name=name, industry=extra.get("industry")
+            )
+        except Exception:
+            continue
+        if not blurb or is_placeholder_company_summary(blurb, name):
+            continue
+        summary_updates[ticker] = blurb
+        extra["info"] = {**info, "summary": blurb}
+        backfill_budget -= 1
+    if summary_updates:
+        try:
+            fs_ledger.update_extra_market_summaries(summary_updates)
+        except Exception:
+            pass
+
     quotes: dict[str, tuple[float | None, float | None]] = {}
     if not catalog_only and pending:
         quotes = fetch_quotes_batch(
@@ -4122,6 +4370,15 @@ def append_class_extra_market(
         industry = extra.get("industry") or "Consumer"
         if industry not in CLASSROOM_INDUSTRIES:
             industry = "Consumer"
+        info = extra.get("info") if isinstance(extra.get("info"), dict) else {}
+        summary = str(info.get("summary") or "").strip()
+        if not summary or is_placeholder_company_summary(summary, extra.get("name")):
+            # Prefer any just-generated blurb; otherwise leave a short non-placeholder fallback.
+            summary = summary_updates.get(ticker) or _template_company_summary(
+                ticker,
+                name=extra.get("name"),
+                industry=industry,
+            )
         out.append(
             {
                 "ticker": ticker,
@@ -4131,13 +4388,7 @@ def append_class_extra_market(
                 "change_pct": round(change_pct, 2) if change_pct is not None else None,
                 "asset_type": "equity",
                 "custom": True,
-                "info": extra.get("info")
-                or {
-                    "summary": (
-                        f"{extra.get('name') or ticker} was added to the shared "
-                        "classroom market by a teacher."
-                    )
-                },
+                "info": {"summary": summary},
             }
         )
     return out
@@ -4391,6 +4642,13 @@ def add_market_extra():
     )
 
     try:
+        summary = generate_classroom_company_summary(
+            ticker, name=name, industry=industry
+        )
+    except Exception:
+        summary = None
+
+    try:
         existing = fs_ledger.get_extra_market_items(class_id)
         if len(existing) >= 80 and not any(
             str(r.get("ticker") or "").upper() == ticker for r in existing
@@ -4403,6 +4661,7 @@ def add_market_extra():
             category=category,
             industry=industry,
             added_by=teacher_uid,
+            summary=summary,
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -5432,6 +5691,7 @@ def closet_ai_draft():
     data = request.get_json(silent=True) or {}
     student_id = (data.get("studentId") or "").strip()
     prompt = data.get("prompt") or ""
+    product_name = data.get("productName") or data.get("product_name")
     primary_color = data.get("primaryColor") or data.get("primary_color")
     secondary_color = data.get("secondaryColor") or data.get("secondary_color")
     tertiary_color = data.get("tertiaryColor") or data.get("tertiary_color")
@@ -5445,6 +5705,7 @@ def closet_ai_draft():
             class_id,
             student_id,
             prompt,
+            product_name=product_name,
             primary_color=primary_color,
             secondary_color=secondary_color,
             tertiary_color=tertiary_color,
@@ -5675,26 +5936,8 @@ def closet_ai_activate():
 
 @app.post("/api/closet/ai/test-review")
 def closet_ai_test_review():
-    """Seed a fake pending_review job for teacher-dashboard UI testing."""
-    class_id, err = require_firestore_class_id()
-    if err:
-        return err
-    data = request.get_json(silent=True) or {}
-    student_id = (data.get("studentId") or "").strip()
-    answers = data.get("answers")
-    try:
-        import closet_ai
-
-        result = closet_ai.seed_test_review_submission(
-            class_id, student_id, answers=answers
-        )
-        return jsonify(result)
-    except PermissionError as exc:
-        return jsonify({"error": str(exc)}), 403
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    """Dev-only fake pending_review seed — disabled in production flows."""
+    return jsonify({"error": "Test review seeding is disabled"}), 404
 
 
 @app.get("/api/closet/ai/reviews")

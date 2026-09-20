@@ -1830,7 +1830,8 @@ button {
   cursor: not-allowed;
 }
 
-.closet-ai-brief-describe textarea {
+.closet-ai-brief-describe textarea,
+.closet-ai-brief-describe input[type="text"] {
   width: 100%;
   box-sizing: border-box;
   margin: 0;
@@ -1842,11 +1843,15 @@ button {
   font-size: 0.92rem;
   font-weight: 600;
   color: var(--ink);
+}
+
+.closet-ai-brief-describe textarea {
   resize: vertical;
   min-height: 3.4rem;
   line-height: 1.35;
 }
 
+.closet-ai-brief-describe input[type="text"]:focus,
 .closet-ai-brief-describe textarea:focus {
   outline: none;
   border-color: var(--accent);
@@ -2704,6 +2709,119 @@ select:focus {
   box-shadow: var(--shadow);
   text-align: center;
   animation: closetRise 0.28s ease both;
+}
+
+.stock-buy-flip {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  perspective: 1400px;
+  text-align: center;
+}
+
+.stock-buy-flip-inner {
+  position: relative;
+  display: grid;
+  transform-style: preserve-3d;
+  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.stock-buy-flip.is-flipped .stock-buy-flip-inner {
+  transform: rotateY(180deg);
+}
+
+.stock-buy-face {
+  grid-area: 1 / 1;
+  position: relative;
+  width: 100%;
+  padding: 1.75rem 1.55rem 1.45rem;
+  border-radius: 24px;
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  box-shadow: var(--shadow);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.stock-buy-face-back {
+  transform: rotateY(180deg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.stock-buy-flip.is-flipped .stock-buy-face-front {
+  pointer-events: none;
+}
+
+.stock-buy-flip:not(.is-flipped) .stock-buy-face-back {
+  pointer-events: none;
+}
+
+.stock-buy-title-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  margin: 0.35rem 0 0;
+}
+
+.stock-buy-title-row .stock-suggest-title {
+  margin: 0;
+}
+
+.stock-buy-info-btn {
+  flex-shrink: 0;
+  width: 1.55rem;
+  height: 1.55rem;
+  margin: 0;
+  padding: 0;
+  border-radius: 999px;
+  border: 1.5px solid rgba(47, 107, 79, 0.35);
+  background: #f4faf6;
+  color: var(--accent-deep);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  font-style: italic;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.stock-buy-info-btn:hover:not(:disabled) {
+  background: #e7f4eb;
+  border-color: var(--accent);
+}
+
+.stock-buy-info-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.stock-buy-info-name {
+  margin-bottom: 0.85rem;
+}
+
+.stock-buy-info-body {
+  margin: 0 0 1.15rem;
+  max-width: 22rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink);
+  text-align: left;
+}
+
+.stock-buy-face-back .stock-suggest-submit {
+  margin-top: auto;
+  width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stock-buy-flip-inner {
+    transition: none;
+  }
 }
 
 .stock-suggest-modal--success {
@@ -4103,10 +4221,64 @@ select:focus {
 .job-board-card.is-invite {
   border-color: rgba(34, 120, 72, 0.45);
   background: rgba(34, 120, 72, 0.06);
+  grid-template-columns: 4.75rem 1fr;
+  align-items: center;
+}
+
+@media (min-width: 640px) {
+  .job-board-card.is-invite {
+    grid-template-columns: 4.75rem 1fr auto;
+  }
 }
 
 .job-board-card-crew {
   grid-template-columns: 1fr;
+}
+
+.job-board-card-top {
+  display: grid;
+  grid-template-columns: 4.75rem 1fr;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.job-board-product-preview {
+  width: 4.75rem;
+  height: 4.75rem;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(47, 107, 79, 0.16);
+  background: linear-gradient(160deg, #f4faf6, #e8f2ec);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.job-board-product-preview img,
+.job-board-product-preview canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.job-board-product-preview.is-lower img {
+  object-position: center 78%;
+}
+
+.job-board-product-preview.is-empty {
+  color: var(--muted);
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.job-board-product-preview .closet-review-preview-empty {
+  margin: 0;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-align: center;
+  padding: 0.35rem;
 }
 
 .job-crew-slots {
@@ -4150,6 +4322,19 @@ button.job-crew-slot:disabled,
 
 .job-crew-slot.is-filled {
   background: #f4faf6;
+}
+
+.job-crew-slot.is-creator {
+  background: #eef6f1;
+  border-color: rgba(47, 107, 79, 0.35);
+}
+
+.job-crew-slot-role {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
 }
 
 .job-crew-slot.is-mine {
@@ -7933,6 +8118,25 @@ button.job-crew-slot:disabled,
     linear-gradient(180deg, #f3f8fc 0%, #fff 70%);
 }
 
+.popular-ticker.is-crypto {
+  border-color: color-mix(in srgb, #b45309 22%, var(--line-soft));
+  background:
+    linear-gradient(180deg, #fff8f1 0%, #fff 70%);
+}
+
+.popular-ticker.is-crypto .popular-ticker-label {
+  color: #b45309;
+}
+
+.popular-ticker.is-crypto .popular-ticker-card strong {
+  color: #9a3412;
+}
+
+.popular-ticker.is-crypto button.popular-ticker-card:hover {
+  border-color: color-mix(in srgb, #b45309 40%, var(--line-soft));
+  background: #fff6ed;
+}
+
 .popular-ticker-head {
   display: flex;
   flex-wrap: wrap;
@@ -8054,6 +8258,19 @@ button.popular-ticker-card:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.popular-ticker-price {
+  margin-top: 0.15rem;
+  font-size: 0.88rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.popular-ticker.is-crypto .popular-ticker-price {
+  color: #9a3412;
 }
 
 .student-stock-search {

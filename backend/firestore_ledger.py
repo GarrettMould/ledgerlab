@@ -637,6 +637,7 @@ def add_extra_market_item(
     category: str = "stocks",
     industry: str = "Consumer",
     added_by: str | None = None,
+    summary: str | None = None,
 ) -> dict:
     from firebase_admin import firestore as fs
 
@@ -649,6 +650,11 @@ def add_extra_market_item(
         cat = "stocks"
     display_name = str(name or ticker_u).strip()[:80] or ticker_u
     industry_s = str(industry or "Consumer").strip()[:40] or "Consumer"
+    blurb = str(summary or "").strip()[:420]
+    if not blurb:
+        blurb = (
+            f"{display_name} was added to the shared classroom market by a teacher."
+        )
     item = {
         "ticker": ticker_u,
         "name": display_name,
@@ -657,11 +663,7 @@ def add_extra_market_item(
         "addedBy": (added_by or "").strip() or None,
         "addedAtMs": int(_time.time() * 1000),
         "custom": True,
-        "info": {
-            "summary": (
-                f"{display_name} was added to the shared classroom market by a teacher."
-            )
-        },
+        "info": {"summary": blurb},
     }
     _ensure_global_extra_market()
     ref = _global_market_ref()
@@ -750,6 +752,51 @@ def update_extra_market_industries(updates: dict[str, str]) -> int:
         ticker = str(row.get("ticker") or "").strip().upper()
         if ticker in normalized and row.get("industry") != normalized[ticker]:
             next_rows.append({**row, "industry": normalized[ticker]})
+            changed += 1
+        else:
+            next_rows.append(row)
+    if not changed:
+        return 0
+    ref.set(
+        {"extraMarketItems": next_rows, "updatedAt": fs.SERVER_TIMESTAMP},
+        merge=True,
+    )
+    return changed
+
+
+def update_extra_market_summaries(updates: dict[str, str]) -> int:
+    """Patch info.summary on global extras (replace teacher-added placeholders)."""
+    from firebase_admin import firestore as fs
+
+    if not updates:
+        return 0
+    normalized = {
+        str(ticker or "").strip().upper(): str(summary or "").strip()[:420]
+        for ticker, summary in updates.items()
+        if str(ticker or "").strip() and str(summary or "").strip()
+    }
+    if not normalized:
+        return 0
+    _ensure_global_extra_market()
+    ref = _global_market_ref()
+    snap = ref.get()
+    if not snap.exists:
+        return 0
+    rows = list((snap.to_dict() or {}).get("extraMarketItems") or [])
+    changed = 0
+    next_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if ticker in normalized:
+            prev_info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            next_rows.append(
+                {
+                    **row,
+                    "info": {**prev_info, "summary": normalized[ticker]},
+                }
+            )
             changed += 1
         else:
             next_rows.append(row)
