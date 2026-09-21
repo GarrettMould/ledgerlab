@@ -32,6 +32,8 @@ export const TICKER_CATEGORY = {
   AXP: "stocks",
   BLK: "stocks",
   SCHW: "stocks",
+  MSTR: "stocks",
+  COIN: "stocks",
   // Healthcare
   JNJ: "stocks",
   UNH: "stocks",

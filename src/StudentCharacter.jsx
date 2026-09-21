@@ -3383,9 +3383,9 @@ function ClosetAiCreator({
         <p className="closet-kicker">Hire a crew</p>
         <strong className="closet-ai-gate-title">Choose your team</strong>
         <p className="closet-ai-gate-copy">
-          Partnership: invite one classmate directly. Team of 3 or Crew of 3+:
-          your role posts to the Job board for classmates to join. Bigger crews
-          cost more when approved, but unlock a higher sell price.
+          Choose a business model. Enter a partnership and split profits with a
+          co-founder, or hire a few classmates to help build and sell your
+          product. If you hire a team, the job will be added to the Job board.
         </p>
         <div className="closet-ai-crew-choices" role="radiogroup" aria-label="Crew size">
           {activeTier.map((t) => {
@@ -4522,7 +4522,8 @@ export default function StudentCharacter({
   }, [classId, firestoreStudentId]);
 
   const displayOutfit = useMemo(() => outfit, [outfit]);
-  const canCreateAi = studentEmail === "test@gmail.com";
+  // Create Item is open to every enrolled student in the class.
+  const canCreateAi = Boolean(firestoreStudentId || studentId);
   const creatorStudentId = firestoreStudentId || studentId;
 
   function handleOutfitChange(next) {

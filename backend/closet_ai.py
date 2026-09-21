@@ -160,13 +160,12 @@ def is_closet_creator_email(email: str | None) -> bool:
 
 
 def require_creator(class_id: str, student_id: str) -> tuple[dict | None, str | None]:
+    """Any enrolled student can create closet items for their class."""
     if not class_id or not student_id:
         return None, "classId and studentId are required"
     student = fs_ledger.get_student(class_id, student_id)
     if not student:
         return None, "Student not found"
-    if not is_closet_creator_email(student.get("email")):
-        return None, "This account cannot create closet items"
     return student, None
 
 
@@ -2803,7 +2802,7 @@ def creator_status(class_id: str, student_id: str) -> dict:
     redo_available = not bool(stu_raw.get("closetAiRedoUsed"))
     return {
         "allowed": True,
-        "email": CLOSET_CREATOR_EMAIL,
+        "email": normalize_email(student.get("email")),
         "name": student.get("name"),
         "publishesToday": used,
         "maxPerDay": MAX_PUBLISHES_PER_DAY,

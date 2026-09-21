@@ -546,6 +546,22 @@ MARKET_CATALOG = {
                 "summary": "Charles Schwab helps people invest and trade stocks, ETFs, and other assets through brokerage accounts and banking services.",
             },
         },
+        {
+            "ticker": "MSTR",
+            "name": "Strategy (MicroStrategy)",
+            "industry": "Finance",
+            "info": {
+                "summary": "Strategy (formerly MicroStrategy) sells business software and is widely known for holding a large amount of bitcoin on its balance sheet.",
+            },
+        },
+        {
+            "ticker": "COIN",
+            "name": "Coinbase",
+            "industry": "Finance",
+            "info": {
+                "summary": "Coinbase is a cryptocurrency exchange where people buy, sell, and store digital assets like bitcoin and ethereum.",
+            },
+        },
         # Healthcare
         {
             "ticker": "JNJ",
@@ -5664,7 +5680,7 @@ def market_news():
     )
 
 
-# --- Privileged AI closet creator (test@gmail.com) ---
+# --- Closet AI creator (any enrolled class student) ---
 
 
 @app.get("/api/closet/ai/status")

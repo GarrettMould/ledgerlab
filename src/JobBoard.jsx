@@ -210,7 +210,6 @@ export default function JobBoard({
   const [roster, setRoster] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [previewMembers, setPreviewMembers] = useState([]);
   const [busyId, setBusyId] = useState(null);
 
   const rosterById = useMemo(() => {
@@ -221,26 +220,6 @@ export default function JobBoard({
     }
     return map;
   }, [roster]);
-
-  const previewJob = useMemo(() => {
-    const slots = 3;
-    const members = previewMembers;
-    return {
-      id: "local-preview-team3",
-      itemLabel: "Demo Boombox (slot preview)",
-      jobTitle: "Demo Boombox (slot preview)",
-      creatorId: "preview-creator",
-      creatorName: "Class demo",
-      slots,
-      members,
-      openSlots: Math.max(0, slots - members.length),
-      status: members.length >= slots ? "filled" : "open",
-      payMode: "wages",
-      wageEach: 700,
-      sellPrice: 2500,
-      profitSharePct: 0,
-    };
-  }, [previewMembers]);
 
   const refresh = useCallback(async () => {
     if (!classId) {
@@ -293,22 +272,7 @@ export default function JobBoard({
 
   async function handleJoin(jobId) {
     if (!studentId || !jobId || busyId) return;
-    if (jobId === "local-preview-team3") {
-      setPreviewMembers((prev) => {
-        if (prev.some((m) => m.studentId === studentId)) return prev;
-        if (prev.length >= 3) return prev;
-        const seat = rosterById.get(String(studentId));
-        return [
-          ...prev,
-          {
-            studentId,
-            studentName: seat?.name || "You",
-          },
-        ];
-      });
-      return;
-    }
-    if (String(jobId).startsWith("closet-")) {
+    if (String(jobId).startsWith("closet-") || jobId === "demo-parrot-filled") {
       setError("This posting isn’t open for joining.");
       return;
     }
@@ -352,8 +316,8 @@ export default function JobBoard({
 
   async function handleLeave(jobId) {
     if (!studentId || !jobId || busyId) return;
-    if (jobId === "local-preview-team3") {
-      setPreviewMembers((prev) => prev.filter((m) => m.studentId !== studentId));
+    if (jobId === "demo-parrot-filled") {
+      setError("This demo crew can’t be left.");
       return;
     }
     setBusyId(jobId);
@@ -375,22 +339,15 @@ export default function JobBoard({
       Number(j.slots) >= 3 &&
       Number(j.openSlots) > 0
   );
-  // Always show a local preview card so empty + / joined faces are visible.
-  const displayOpenJobs =
-    previewJob.openSlots > 0
-      ? [previewJob, ...openJobs]
-      : openJobs;
+  const displayOpenJobs = openJobs;
   // Filled crews (waiting on review or already live) — show who joined.
-  const filledJobs = [
-    ...(previewJob.openSlots <= 0 ? [previewJob] : []),
-    ...jobs.filter(
-      (j) =>
-        Number(j.slots) >= 3 &&
-        (j.status === "filled" ||
-          j.status === "paid" ||
-          (Number(j.openSlots) <= 0 && Number(j.slots) > 0))
-    ),
-  ];
+  const filledJobs = jobs.filter(
+    (j) =>
+      Number(j.slots) >= 3 &&
+      (j.status === "filled" ||
+        j.status === "paid" ||
+        (Number(j.openSlots) <= 0 && Number(j.slots) > 0))
+  );
 
   function jobMeta(job) {
     const wage =
@@ -508,7 +465,6 @@ export default function JobBoard({
                       <span>
                         by {job.creatorName}
                         {` · ${job.slots} seats · ${jobMeta(job)}`}
-                        {job.id === "local-preview-team3" ? " · preview" : ""}
                         {isOwner ? " · your project" : ""}
                       </span>
                     </div>
@@ -518,7 +474,7 @@ export default function JobBoard({
                     studentId={studentId}
                     rosterById={rosterById}
                     busy={busyId === job.id}
-                    canJoin={canJoin || job.id === "local-preview-team3"}
+                    canJoin={canJoin}
                     lockReason={lockReason}
                     onJoin={() => handleJoin(job.id)}
                     onLeave={() => handleLeave(job.id)}
