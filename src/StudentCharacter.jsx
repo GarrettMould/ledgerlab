@@ -6,6 +6,7 @@ import { useLoader } from "@react-three/fiber";
 import { createPortal } from "react-dom";
 import {
   adjustCash,
+  buyClosetItem,
   getClosetAiStatus,
   pollClosetAiJob,
   publishClosetAiJob,
@@ -208,6 +209,7 @@ export const CLOSET_CATALOG = {
       color: "#0a0a0d",
       accent: "#d9401a",
       price: 2200,
+      keepHair: true,
     },
     {
       id: "acc-sunglasses",
@@ -288,7 +290,12 @@ export const CLOSET_CATALOG = {
 };
 
 function isAccessoryItem(item) {
-  return Boolean(item?.kind && (item?.url || item?.procedural));
+  return Boolean(
+    item?.kind &&
+      (item?.url ||
+        item?.procedural ||
+        (Array.isArray(item?.parts) && item.parts.length > 0))
+  );
 }
 
 /** Interlocking gold oval links draped as a necklace (not a single hoop). */
@@ -415,12 +422,15 @@ export function catalogWithClassItems(classItems = []) {
     Object.entries(CLOSET_CATALOG).map(([key, rows]) => [key, [...rows]])
   );
   if (!merged.accessories) merged.accessories = [];
+  // Class creations first so Extras opens on student products, not catalog filler.
+  const classRows = [];
   for (const item of classItems) {
     if (!isAccessoryItem(item)) continue;
-    // All class creations land on the Accessories (Extras) shelf.
     if (merged.accessories.some((row) => row.id === item.id)) continue;
-    merged.accessories.push(item);
+    if (classRows.some((row) => row.id === item.id)) continue;
+    classRows.push(item);
   }
+  merged.accessories = [...classRows, ...merged.accessories];
   return merged;
 }
 
@@ -465,6 +475,19 @@ function hairMeshForOutfit(outfit) {
   if (!found) return "Hair_Block";
   // Bald uses mesh: null — do not coalesce that back to a default style.
   return found.mesh;
+}
+
+/** Hats like tophat/helmet hide hair; headphones / keepHair items do not. */
+function hatHidesHair(outfit) {
+  const hatId = outfit?.hat;
+  if (!hatId) return false;
+  const item = allAccessoryItems().find((entry) => entry.id === hatId);
+  if (item?.keepHair) return false;
+  const label = String(item?.label || "").toLowerCase();
+  if (label.includes("headphone") || label.includes("earbud") || label.includes("earphone")) {
+    return false;
+  }
+  return true;
 }
 
 function outfitStorageKey(studentId) {
@@ -609,7 +632,7 @@ function HeadHairPreviewModel({ outfit, hairStyleId, hatItem = null }) {
     (CLOSET_CATALOG.hairStyle || []).find((h) => h.id === hairStyleId && !isAccessoryItem(h)) ||
     null;
   const hairMesh = style?.mesh ?? null;
-  const hideHair = Boolean(hatItem);
+  const hideHair = Boolean(hatItem) && !hatItem?.keepHair && !String(hatItem?.label || "").toLowerCase().includes("headphone");
 
   return (
     <group position={[0, -0.42, 0]} scale={0.88}>
@@ -1059,7 +1082,7 @@ function colorForMeshName(name, outfit) {
 
 function applyOutfitColors(root, outfit) {
   const activeHair = hairMeshForOutfit(outfit);
-  const hideHair = Boolean(outfit.hat);
+  const hideHair = hatHidesHair(outfit);
   root.traverse((obj) => {
     if (!obj.isMesh) return;
     const n = String(obj.name || "");
@@ -1143,7 +1166,7 @@ function BlenderAvatarModel({ outfit, waving, spin = false, still = false }) {
         }
         color={outfit.hair}
         hairTop={4.5}
-        hideHair={Boolean(outfit.hat)}
+        hideHair={hatHidesHair(outfit)}
       />
       <AccessoryProps outfit={outfit} />
     </group>
@@ -1211,7 +1234,7 @@ function ProceduralAvatarModel({ outfit, waving, spin = false, still = false }) 
   const armX = 1.0 + 0.3;
   const hairMesh = hairMeshForOutfit(outfit);
   const hairTop = headZ + headS / 2;
-  const hideHair = Boolean(outfit.hat);
+  const hideHair = hatHidesHair(outfit);
 
   return (
     <group ref={group} position={[0, AVATAR_BASE_Y, 0]} scale={AVATAR_SCALE}>
@@ -2123,6 +2146,8 @@ function ClosetShelf({
   const owned = new Set(outfit.ownedLuxuries || []);
   const freeItems = items.filter((item) => !isPaidItem(item));
   const paidItems = freeOnly ? [] : items.filter((item) => isPaidItem(item));
+  const classCreations = paidItems.filter((item) => item.aiCreated);
+  const catalogPaid = paidItems.filter((item) => !item.aiCreated);
 
   function renderFreeItem(item) {
     const selectedId = outfit[`${category}Id`];
@@ -2297,11 +2322,22 @@ function ClosetShelf({
     <div className="closet-shelf" role="tabpanel">
       {isAccessoriesShelf ? (
         <>
+          {classCreations.length > 0 ? (
+            <>
+              <p className="closet-shelf-label">
+                Class creations
+                <span className="closet-shelf-count"> · {classCreations.length}</span>
+              </p>
+              {classCreations.map(renderPaidItem)}
+            </>
+          ) : null}
           <p className="closet-shelf-label">Shop</p>
-          {paidItems.length === 0 ? (
+          {catalogPaid.length === 0 && classCreations.length === 0 ? (
             <p className="closet-ai-empty">No accessories yet.</p>
+          ) : catalogPaid.length === 0 ? (
+            <p className="closet-ai-empty">Catalog gear loads with the app.</p>
           ) : (
-            paidItems.map(renderPaidItem)
+            catalogPaid.map(renderPaidItem)
           )}
         </>
       ) : category === "hairStyle" ? (
@@ -2680,22 +2716,30 @@ function pickClosetAiScenario(answeredIds = []) {
 
 const CLOSET_AI_STRATEGY_MIN_CHARS = 80;
 
-/** Classroom palette for Create-an-Item (same colors as closet clothing). */
+/** Classroom palette for Create-an-Item — major hues + neutrals for products. */
 const CLOSET_AI_COLORS = [
-  { id: "tee-forest", label: "Forest", color: "#3f8f68" },
-  { id: "tee-sky", label: "Sky", color: "#4a90a4" },
-  { id: "tee-sun", label: "Gold", color: "#c4a035" },
-  { id: "tee-berry", label: "Berry", color: "#a0455c" },
-  { id: "tee-ink", label: "Ink", color: "#24312b" },
-  { id: "pants-denim", label: "Denim", color: "#3d5a80" },
-  { id: "pants-khaki", label: "Khaki", color: "#8a7a4f" },
-  { id: "pants-slate", label: "Slate", color: "#4a5560" },
-  { id: "shoes-white", label: "White", color: "#f2f5f3" },
+  // Warm
   { id: "shoes-red", label: "Red", color: "#b04040" },
+  { id: "ai-orange", label: "Orange", color: "#e07a2f" },
+  { id: "tee-sun", label: "Gold", color: "#c4a035" },
+  { id: "ai-yellow", label: "Yellow", color: "#e8c84a" },
+  // Cool / green–blue
+  { id: "ai-lime", label: "Lime", color: "#7cb342" },
+  { id: "tee-forest", label: "Forest", color: "#3f8f68" },
+  { id: "tee-sky", label: "Teal", color: "#4a90a4" },
+  { id: "pants-denim", label: "Blue", color: "#3d5a80" },
   { id: "shoes-navy", label: "Navy", color: "#1e3a5f" },
-  { id: "hair-copper", label: "Copper", color: "#8a4f28" },
-  { id: "hair-sand", label: "Blonde", color: "#c9a66b" },
+  // Purple / pink
+  { id: "ai-purple", label: "Purple", color: "#6b4ea2" },
+  { id: "tee-berry", label: "Berry", color: "#a0455c" },
+  { id: "ai-pink", label: "Pink", color: "#d47a9c" },
+  // Earth + neutrals
+  { id: "hair-copper", label: "Brown", color: "#8a4f28" },
+  { id: "pants-khaki", label: "Khaki", color: "#8a7a4f" },
+  { id: "shoes-white", label: "White", color: "#f2f5f3" },
   { id: "hair-silver", label: "Silver", color: "#9a9590" },
+  { id: "pants-slate", label: "Slate", color: "#4a5560" },
+  { id: "tee-ink", label: "Ink", color: "#24312b" },
   { id: "hair-black", label: "Black", color: "#1f1a16" },
 ];
 
@@ -4445,8 +4489,23 @@ function ClosetModal({
 
     setBuyingId(item.id);
     try {
-      const updated = await adjustCash(studentId, -item.price);
-      onCashChange?.(updated);
+      let updated;
+      if (item.aiCreated && classId) {
+        const result = await buyClosetItem(
+          classId,
+          studentId,
+          item.id,
+          studentName || ""
+        );
+        updated = result?.cash != null ? { cash: result.cash } : null;
+        if (updated) onCashChange?.(updated);
+        setShopNote(
+          result?.message || `Bought ${item.label} — creators were paid.`
+        );
+      } else {
+        updated = await adjustCash(studentId, -item.price);
+        onCashChange?.(updated);
+      }
       const next = {
         ...equipPaidItem(item),
         ownedLuxuries: [...(draft.ownedLuxuries || []), item.id],

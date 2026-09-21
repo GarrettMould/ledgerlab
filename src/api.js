@@ -104,6 +104,22 @@ export function getFearGreed() {
   return request("/fear-greed", { timeoutMs: 10000 });
 }
 
+/** Recent STOCK Act congressional disclosures (optional member / memberSlug filter). */
+export function getCongressTrades({
+  member = "",
+  memberSlug = "",
+  catalogOnly = true,
+  limit = 18,
+} = {}) {
+  const params = new URLSearchParams();
+  if (member) params.set("member", String(member));
+  if (memberSlug) params.set("memberSlug", String(memberSlug));
+  if (!catalogOnly) params.set("catalogOnly", "0");
+  if (limit) params.set("limit", String(limit));
+  const q = params.toString();
+  return request(`/congress/trades${q ? `?${q}` : ""}`, { timeoutMs: 20000 });
+}
+
 export function getPopularStocks(classId, { rebuild = false } = {}) {
   const q = rebuild ? "?rebuild=1" : "";
   return request(`/class/popular-stocks${q}`, { classId, timeoutMs: 20000 });
@@ -287,6 +303,20 @@ export function leaveCrewJob(classId, studentId, crewJobId) {
     classId,
     timeoutMs: 60000,
     body: JSON.stringify({ studentId, crewJobId }),
+  });
+}
+
+/** Buy a shared class creation — pays creators and queues sale notifications. */
+export function buyClosetItem(classId, studentId, itemId, buyerName) {
+  return request("/closet/buy", {
+    method: "POST",
+    classId,
+    timeoutMs: 30000,
+    body: JSON.stringify({
+      studentId,
+      itemId,
+      buyerName: buyerName || "",
+    }),
   });
 }
 

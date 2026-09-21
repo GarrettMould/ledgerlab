@@ -809,6 +809,259 @@ def update_extra_market_summaries(updates: dict[str, str]) -> int:
     return changed
 
 
+def _global_closet_ref():
+    """Shared teacher-approved AI closet items — one catalog for every class."""
+    return db().collection("config").document("classroomCloset")
+
+
+def _closet_item_is_shelf_ready(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+    item_id = str(row.get("id") or "").strip()
+    kind = str(row.get("kind") or "").strip()
+    url = str(row.get("url") or "").strip()
+    parts = row.get("parts") if isinstance(row.get("parts"), list) else []
+    if not item_id or not kind:
+        return False
+    # Dev seed fakes — never share across classes.
+    if item_id.startswith("test-") or str(row.get("label") or "").startswith(
+        "Test item"
+    ):
+        return False
+    if not url and not parts:
+        return False
+    if row.get("live") is False:
+        return False
+    if row.get("quizPending") is True or row.get("reviewPending") is True:
+        return False
+    return True
+
+
+def upsert_global_closet_item(item: dict, *, source_class_id: str | None = None) -> dict | None:
+    """Publish (or refresh) a live closet item for every class's Extras shelf."""
+    from firebase_admin import firestore as fs
+
+    if not isinstance(item, dict):
+        return None
+    row = dict(item)
+    row["live"] = True
+    row["quizPending"] = False
+    row["reviewPending"] = False
+    row["awaitingCrew"] = False
+    row["aiCreated"] = True
+    if source_class_id:
+        row["sourceClassId"] = source_class_id
+    if not row.get("approvedAtMs"):
+        row["approvedAtMs"] = int(_time.time() * 1000)
+    if not _closet_item_is_shelf_ready(row):
+        return None
+
+    item_id = str(row.get("id") or "").strip()
+    ref = _global_closet_ref()
+    snap = ref.get()
+    rows = list((snap.to_dict() or {}).get("closetItems") or []) if snap.exists else []
+    next_rows = []
+    found = False
+    for existing in rows:
+        if not isinstance(existing, dict):
+            continue
+        if existing.get("id") == item_id:
+            next_rows.append({**existing, **row})
+            found = True
+        else:
+            next_rows.append(existing)
+    if not found:
+        next_rows.append(row)
+    ref.set(
+        {
+            "closetItems": next_rows,
+            "updatedAt": fs.SERVER_TIMESTAMP,
+            "scope": "global",
+        },
+        merge=True,
+    )
+    return row
+
+
+def remove_global_closet_item(item_id: str) -> bool:
+    from firebase_admin import firestore as fs
+
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        return False
+    ref = _global_closet_ref()
+    snap = ref.get()
+    if not snap.exists:
+        return False
+    rows = list((snap.to_dict() or {}).get("closetItems") or [])
+    next_rows = [
+        r for r in rows if not (isinstance(r, dict) and r.get("id") == item_id)
+    ]
+    if len(next_rows) == len(rows):
+        return False
+    ref.set(
+        {"closetItems": next_rows, "updatedAt": fs.SERVER_TIMESTAMP},
+        merge=True,
+    )
+    return True
+
+
+def migrate_live_closet_items_to_global() -> dict:
+    """One-shot: pull already-live per-class closet items into the shared catalog."""
+    from firebase_admin import firestore as fs
+
+    ref = _global_closet_ref()
+    snap = ref.get()
+    existing = list((snap.to_dict() or {}).get("closetItems") or []) if snap.exists else []
+    by_id: dict[str, dict] = {}
+    for row in existing:
+        if isinstance(row, dict) and _closet_item_is_shelf_ready(row) and row.get("id"):
+            by_id[str(row["id"])] = row
+
+    classes_scanned = 0
+    added = 0
+    for class_snap in db().collection("classes").stream():
+        classes_scanned += 1
+        data = class_snap.to_dict() or {}
+        for row in list(data.get("closetItems") or []):
+            if not isinstance(row, dict) or not _closet_item_is_shelf_ready(row):
+                continue
+            item_id = str(row.get("id") or "").strip()
+            if not item_id:
+                continue
+            enriched = {
+                **row,
+                "live": True,
+                "quizPending": False,
+                "reviewPending": False,
+                "aiCreated": True,
+                "sourceClassId": class_snap.id,
+            }
+            prev = by_id.get(item_id)
+            if not prev or int(enriched.get("approvedAtMs") or 0) >= int(
+                prev.get("approvedAtMs") or 0
+            ):
+                if item_id not in by_id:
+                    added += 1
+                by_id[item_id] = enriched
+
+    merged = list(by_id.values())
+    merged.sort(
+        key=lambda r: (-int(r.get("approvedAtMs") or 0), str(r.get("label") or ""))
+    )
+    ref.set(
+        {
+            "closetItems": merged,
+            "updatedAt": fs.SERVER_TIMESTAMP,
+            "migratedFromClassesAt": fs.SERVER_TIMESTAMP,
+            "scope": "global",
+        },
+        merge=True,
+    )
+    return {
+        "count": len(merged),
+        "added": added,
+        "classesScanned": classes_scanned,
+    }
+
+
+def ensure_global_closet_items() -> list[dict]:
+    """Return shared live closet items, migrating per-class leftovers once if needed."""
+    ref = _global_closet_ref()
+    snap = ref.get()
+    data = snap.to_dict() or {} if snap.exists else {}
+    if not data.get("migratedFromClassesAt"):
+        try:
+            migrate_live_closet_items_to_global()
+            snap = ref.get()
+            data = snap.to_dict() or {} if snap.exists else {}
+        except Exception:
+            pass
+    return [
+        row
+        for row in list(data.get("closetItems") or [])
+        if isinstance(row, dict) and _closet_item_is_shelf_ready(row)
+    ]
+
+
+def get_global_closet_item(item_id: str) -> dict | None:
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        return None
+    for row in ensure_global_closet_items():
+        if str(row.get("id") or "") == item_id:
+            return row
+    return None
+
+
+def queue_student_transfer(
+    class_id: str,
+    student_id: str,
+    *,
+    amount: float,
+    note: str,
+    kind: str = "transfer",
+    pre_applied: bool = False,
+    meta: dict | None = None,
+) -> str | None:
+    """Queue a PayPal-style transfer alert on the student (Admin SDK)."""
+    from firebase_admin import firestore as fs
+
+    amt = float(amount)
+    if not class_id or not student_id or amt == 0:
+        return None
+    direction = "credit" if amt > 0 else "debit"
+    abs_amount = abs(amt)
+    payload = {
+        "amount": amt,
+        "absAmount": abs_amount,
+        "direction": direction,
+        "status": "pending",
+        "note": str(note or "")[:400],
+        "kind": str(kind or "transfer")[:40],
+        "preApplied": bool(pre_applied),
+        "createdAt": fs.SERVER_TIMESTAMP,
+        "acceptedAt": None,
+    }
+    if isinstance(meta, dict):
+        payload["meta"] = meta
+    ref = (
+        student_ref(class_id, student_id)
+        .collection("transfers")
+        .document()
+    )
+    ref.set(payload)
+    stu = student_ref(class_id, student_id)
+    snap = stu.get()
+    prev = 0
+    if snap.exists:
+        prev = int((snap.to_dict() or {}).get("pendingTransferCount") or 0)
+    stu.set(
+        {
+            "pendingTransferCount": prev + 1,
+            "updatedAt": fs.SERVER_TIMESTAMP,
+        },
+        merge=True,
+    )
+    return ref.id
+
+
+def credit_student_cash(class_id: str, student_id: str, amount: float) -> float | None:
+    """Add cash to a student ledger. Returns new cash or None if missing."""
+    student = get_student(class_id, student_id)
+    if not student:
+        return None
+    amt = float(amount)
+    if amt == 0:
+        return float(student.get("cash") or 0)
+    new_cash = float(student.get("cash") or 0) + amt
+    if new_cash < -0.0001:
+        raise RuntimeError("Balance cannot go below $0")
+    holdings = list_holdings(class_id, student_id)
+    set_cash(class_id, student_id, new_cash, holdings_count=len(holdings))
+    return new_cash
+
+
 def _rank_popular_stocks(rows: list[dict]) -> list[dict]:
     cleaned = []
     for row in rows:

@@ -202,6 +202,7 @@ export default function JobBoard({
   classId,
   studentId = "",
   onBack,
+  readOnly = false,
 }) {
   const [jobs, setJobs] = useState([]);
   const [invites, setInvites] = useState([]);
@@ -361,7 +362,7 @@ export default function JobBoard({
     <div className="job-board">
       <div className="market-toolbar">
         <button type="button" className="ghost-btn" data-click="select" onClick={onBack}>
-          ← Markets
+          {readOnly ? "← Dashboard" : "← Markets"}
         </button>
         <h3>Job board</h3>
         <button
@@ -383,14 +384,24 @@ export default function JobBoard({
       </div>
 
       <p className="job-board-lead">
-        Tap a <strong>+</strong> slot to join a Team of 3 or Crew of 3+. You can
-        work on up to {maxJoins} jobs at once ({joinedCount}/{maxJoins} joined).
-        You can’t join your own business.
+        {readOnly ? (
+          <>
+            Live crew postings for this class — open roles, who joined, and
+            filled / live products. Students hire and join from their own Job
+            board.
+          </>
+        ) : (
+          <>
+            Tap a <strong>+</strong> slot to join a Team of 3 or Crew of 3+. You can
+            work on up to {maxJoins} jobs at once ({joinedCount}/{maxJoins} joined).
+            You can’t join your own business.
+          </>
+        )}
       </p>
 
       {error ? <p className="closet-note closet-note-error">{error}</p> : null}
 
-      {invites.length > 0 ? (
+      {!readOnly && invites.length > 0 ? (
         <section className="job-board-section">
           <h4>Partnership invites</h4>
           <div className="job-board-list">
@@ -448,10 +459,13 @@ export default function JobBoard({
                 (m) => m.studentId === studentId
               );
               const canJoin =
+                !readOnly &&
                 Boolean(studentId) &&
                 !isOwner &&
                 (alreadyOn || !atCap);
-              const lockReason = isOwner
+              const lockReason = readOnly
+                ? ""
+                : isOwner
                 ? "You can’t join your own business"
                 : atCap && !alreadyOn
                   ? `Already on ${maxJoins} jobs — leave one first`
@@ -471,7 +485,7 @@ export default function JobBoard({
                   </div>
                   <CrewSlotRow
                     job={job}
-                    studentId={studentId}
+                    studentId={readOnly ? "" : studentId}
                     rosterById={rosterById}
                     busy={busyId === job.id}
                     canJoin={canJoin}

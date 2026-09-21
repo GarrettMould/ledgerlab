@@ -66,6 +66,8 @@ export default function CashTransferAlert({
   }, [classId, firestoreStudentId]);
 
   const current = queue[0] || null;
+  const isSale = current?.kind === "closet_sale";
+  const preApplied = current?.preApplied === true || isSale;
   const isCredit = current
     ? current.direction === "credit" || current.amount > 0
     : false;
@@ -177,10 +179,18 @@ export default function CashTransferAlert({
         }
       }
 
-      const updated = await adjustCash(apiStudentId, current.amount);
+      let updated = null;
+      if (preApplied) {
+        // Sale payouts (and any pre-deposited credits) — cash already moved.
+        updated = await getStudent(apiStudentId);
+      } else {
+        updated = await adjustCash(apiStudentId, current.amount);
+      }
       await markTransferAccepted(classId, firestoreStudentId, current.id);
       setPortfolio((prev) =>
-        prev ? { ...prev, ...updated, holdings: prev.holdings } : updated
+        prev
+          ? { ...prev, ...updated, holdings: updated?.holdings || prev.holdings }
+          : updated
       );
       onAccepted?.(updated);
     } catch (err) {
@@ -205,14 +215,22 @@ export default function CashTransferAlert({
         }`}
       >
         <p className="transfer-kicker">
-          {isCredit ? "Money received" : needsLiquidate ? "Payment due — sell to pay" : "Payment due"}
+          {isSale
+            ? "Closet sale"
+            : isCredit
+              ? "Money received"
+              : needsLiquidate
+                ? "Payment due — sell to pay"
+                : "Payment due"}
         </p>
         <h3 id="transfer-title">
-          {isCredit
-            ? "Accept payment"
-            : needsLiquidate
-              ? "Not enough cash"
-              : "Pay your teacher"}
+          {isSale
+            ? "You made a sale!"
+            : isCredit
+              ? "Accept payment"
+              : needsLiquidate
+                ? "Not enough cash"
+                : "Pay your teacher"}
         </h3>
         <p className="transfer-amount">
           {isCredit ? "+" : "−"}
@@ -223,6 +241,7 @@ export default function CashTransferAlert({
           <p className="transfer-cash">
             Your cash: {money(cash)}
             {needsLiquidate ? ` · short ${money(shortfall)}` : ""}
+            {isSale && preApplied ? " · already deposited" : ""}
           </p>
         )}
         {queue.length > 1 && (
@@ -302,9 +321,11 @@ export default function CashTransferAlert({
           >
             {busy
               ? "Working…"
-              : isCredit
-                ? `Accept ${money(abs)}`
-                : `Pay ${money(abs)}`}
+              : isSale
+                ? "Got it"
+                : isCredit
+                  ? `Accept ${money(abs)}`
+                  : `Pay ${money(abs)}`}
           </button>
         )}
       </div>

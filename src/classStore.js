@@ -170,59 +170,77 @@ export function subscribeClassExtraMarketItems(_classId, onData, onError) {
   );
 }
 
-/** Live class closet catalog (AI-published + future class items). */
+/** Shared teacher-approved AI closet catalog (every class sees the same Extras). */
 export function subscribeClassClosetItems(classId, onData, onError) {
+  // Still require a class session — guests shouldn't load the shared shelf.
   if (!classId) {
     onData?.([]);
     return () => {};
   }
+
+  function mapRows(rows) {
+    return (Array.isArray(rows) ? rows : [])
+      .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const id = String(row.id || "").trim();
+        const kind = String(row.kind || "").trim();
+        const url = String(row.url || "").trim();
+        const parts = Array.isArray(row.parts) ? row.parts : [];
+        // Need a renderable asset: GLB url and/or blocky parts recipe.
+        if (!id || !kind || (!url && parts.length === 0)) return null;
+        // Pending quiz / teacher review — keep out of the buyable shelf.
+        if (
+          row.live === false ||
+          row.quizPending === true ||
+          row.reviewPending === true
+        ) {
+          return null;
+        }
+        const offset = Array.isArray(row.offset) ? row.offset.map(Number) : undefined;
+        const rotation = Array.isArray(row.rotation)
+          ? row.rotation.map(Number)
+          : undefined;
+        return {
+          id,
+          kind,
+          label: String(row.label || id).slice(0, 48),
+          url: url || undefined,
+          thumbnailUrl: row.thumbnailUrl ? String(row.thumbnailUrl) : undefined,
+          attach: String(row.attach || "handR"),
+          offset,
+          rotation,
+          scale: Number(row.scale) > 0 ? Number(row.scale) : undefined,
+          color: String(row.color || "#888888"),
+          accent: row.accent ? String(row.accent) : undefined,
+          price: Math.max(0, Math.round(Number(row.price) || 0)),
+          category: String(row.category || "").trim() || undefined,
+          createdBy: row.createdBy || null,
+          createdByName: row.createdByName || null,
+          sourcePrompt: row.sourcePrompt || "",
+          aiCreated: true,
+          aiSprite: row.aiSprite === true,
+          keepHair: row.keepHair === true,
+          parts: parts.length ? parts : undefined,
+          approvedAtMs: Math.max(0, Number(row.approvedAtMs) || 0),
+        };
+      })
+      .filter(Boolean)
+      // Newest class creations first so they aren't buried under catalog gear.
+      .sort(
+        (a, b) =>
+          (b.approvedAtMs || 0) - (a.approvedAtMs || 0) ||
+          String(a.label || "").localeCompare(String(b.label || ""))
+      );
+  }
+
   return onSnapshot(
-    doc(db, "classes", classId),
+    doc(db, "config", "classroomCloset"),
     (snap) => {
       if (!snap.exists()) {
         onData?.([]);
         return;
       }
-      const rows = Array.isArray(snap.data()?.closetItems)
-        ? snap.data().closetItems
-        : [];
-      const items = rows
-        .map((row) => {
-          if (!row || typeof row !== "object") return null;
-          const id = String(row.id || "").trim();
-          const kind = String(row.kind || "").trim();
-          const url = String(row.url || "").trim();
-          if (!id || !kind || !url) return null;
-          // Pending quiz / teacher review — keep out of the buyable shelf.
-          if (
-            row.live === false ||
-            row.quizPending === true ||
-            row.reviewPending === true
-          ) {
-            return null;
-          }
-          return {
-            id,
-            kind,
-            label: String(row.label || id).slice(0, 48),
-            url,
-            thumbnailUrl: row.thumbnailUrl ? String(row.thumbnailUrl) : undefined,
-            attach: String(row.attach || "handR"),
-            scale: Number(row.scale) > 0 ? Number(row.scale) : undefined,
-            color: String(row.color || "#888888"),
-            accent: row.accent ? String(row.accent) : undefined,
-            price: Math.max(0, Math.round(Number(row.price) || 0)),
-            category: String(row.category || "").trim() || undefined,
-            createdBy: row.createdBy || null,
-            createdByName: row.createdByName || null,
-            sourcePrompt: row.sourcePrompt || "",
-            aiCreated: true,
-            aiSprite: row.aiSprite === true,
-            parts: Array.isArray(row.parts) ? row.parts : undefined,
-          };
-        })
-        .filter(Boolean);
-      onData?.(items);
+      onData?.(mapRows(snap.data()?.closetItems));
     },
     (err) => {
       onError?.(err);

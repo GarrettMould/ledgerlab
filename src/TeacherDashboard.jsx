@@ -13,6 +13,7 @@ import ClassInviteCard from "./ClassInviteCard";
 import ClassMessageBoard from "./ClassMessageBoard";
 import ClassView from "./ClassView";
 import ClosetReviewPreview from "./ClosetReviewPreview";
+import JobBoard from "./JobBoard";
 import SpinWheelModal, { SpinWheelFab } from "./SpinWheel";
 import {
   DEFAULT_MARKETS,
@@ -92,6 +93,7 @@ export default function TeacherDashboard({
   const [inviteCopied, setInviteCopied] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(null);
   const [showStandings, setShowStandings] = useState(false);
+  const [showJobs, setShowJobs] = useState(false);
   const [showSpinWheel, setShowSpinWheel] = useState(false);
   const [headToHead, setHeadToHead] = useState(null);
   const [confirmH2H, setConfirmH2H] = useState(false);
@@ -586,6 +588,10 @@ export default function TeacherDashboard({
       setShowStandings(false);
       return;
     }
+    if (showJobs) {
+      setShowJobs(false);
+      return;
+    }
     if (view === "roster" || view === "settings") {
       setView("class");
       return;
@@ -1056,6 +1062,14 @@ export default function TeacherDashboard({
             >
               Class standings
             </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              data-click="select"
+              onClick={() => setShowJobs(true)}
+            >
+              Job board
+            </button>
             {headToHead ? (
               <button
                 type="button"
@@ -1340,6 +1354,17 @@ export default function TeacherDashboard({
           onBack={() => setShowStandings(false)}
         />
       )}
+
+      {showJobs && activeClass ? (
+        <div className="teacher-job-board-shell">
+          <JobBoard
+            classId={activeClass.id}
+            studentId=""
+            readOnly
+            onBack={() => setShowJobs(false)}
+          />
+        </div>
+      ) : null}
 
       {pendingRemove && activeClass
         ? createPortal(

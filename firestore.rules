@@ -21,7 +21,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Shared classroom market extras (teacher-added tickers for every class).
+    // Shared classroom catalogs (teacher-added tickers + approved closet creations).
     // Writes go through Admin SDK / Flask only.
     match /config/{docId} {
       allow read: if true;

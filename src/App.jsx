@@ -8,6 +8,7 @@ import ClassView from "./ClassView";
 import ClassMessageBoard from "./ClassMessageBoard";
 import NewsFeed from "./NewsFeed";
 import JobBoard from "./JobBoard";
+import HomeJobsPanel from "./HomeJobsPanel";
 import TeacherDashboard from "./TeacherDashboard";
 import TeacherGate from "./TeacherGate";
 import CashTransferAlert from "./CashTransferAlert";
@@ -38,6 +39,7 @@ import { setClickMuted } from "./clickSounds";
 import FloridaRealEstateMap from "./FloridaRealEstateMap";
 import MarketGlyph from "./MarketGlyph";
 import PopularStocksTicker from "./PopularStocksTicker";
+import CongressTradesPanel from "./CongressTradesPanel";
 import CryptoEtfsTicker from "./CryptoEtfsTicker";
 import StockRequestForm from "./StockRequestForm";
 import StudentStockSearch from "./StudentStockSearch";
@@ -49,6 +51,8 @@ const StudentCharacter = lazy(() => import("./StudentCharacter"));
 
 /** Set true to restore class chat on student home + teacher dashboard. */
 const SHOW_CLASS_CHAT = false;
+/** STOCK Act disclosures strip under Popular Stocks — hide until ready for class. */
+const SHOW_CONGRESS_TRADES = false;
 const STRATEGY_BIO_MAX = 280;
 const StudentJoin = lazy(() => import("./StudentJoin"));
 
@@ -1227,6 +1231,20 @@ function StudentPortfolio({
                   }}
                 />
               )}
+              {classId ? (
+                <HomeJobsPanel
+                  classId={classId}
+                  studentId={firestoreStudentId || portfolio?.id || ""}
+                  onOpenBoard={() => {
+                    setShowJobs(true);
+                    setShowNews(false);
+                    setShowClass(false);
+                    setShowBoard(false);
+                    setSelectedAsset(null);
+                    setTradeDraft(null);
+                  }}
+                />
+              ) : null}
               <div className="home-tools" aria-label="Classroom">
                 <button
                   type="button"
@@ -1421,6 +1439,45 @@ function StudentPortfolio({
                       setTradeDraft(null);
                     }}
                   />
+                  {SHOW_CONGRESS_TRADES ? (
+                    <CongressTradesPanel
+                      onPickTicker={async (row) => {
+                        const ticker = String(row?.ticker || row || "").toUpperCase();
+                        if (!ticker) return;
+                        const item = marketItems.find(
+                          (m) => String(m.ticker).toUpperCase() === ticker
+                        );
+                        let price = item?.price != null ? Number(item.price) : null;
+                        let name = item?.name || row?.name || ticker;
+                        if (!(price > 0)) {
+                          try {
+                            const q = await getQuote(ticker);
+                            price = q?.price != null ? Number(q.price) : null;
+                            if (q?.name) name = q.name;
+                          } catch {
+                            /* ignore */
+                          }
+                        }
+                        if (!(price > 0)) {
+                          setError?.(
+                            `Couldn’t load a live price for ${ticker} yet — try again in a moment.`
+                          );
+                          return;
+                        }
+                        setStockBuyTarget({
+                          ticker,
+                          name,
+                          price,
+                          change_pct: item?.change_pct ?? null,
+                          asset_type: item?.asset_type || "equity",
+                          info: item?.info || null,
+                        });
+                        setSelectedAsset(null);
+                        setChartTicker(null);
+                        setTradeDraft(null);
+                      }}
+                    />
+                  ) : null}
                   {selectedId ? (
                     <StudentStockSearch
                       classId={classId}

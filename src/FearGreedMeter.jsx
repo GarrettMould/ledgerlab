@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getFearGreed } from "./api";
+import CommodityInfoTip from "./CommodityInfoTip";
 
 const RATING_LABEL = {
   "extreme fear": "Extreme Fear",
@@ -7,6 +8,11 @@ const RATING_LABEL = {
   neutral: "Neutral",
   greed: "Greed",
   "extreme greed": "Extreme Greed",
+};
+
+const MOOD_TIP = {
+  summary:
+    "This is the CNN Fear & Greed Index — a 0–100 score of how nervous or excited stock investors seem right now. It blends signals like price swings, momentum, and demand for safer assets into one mood reading. Low scores mean fear (people are cautious or selling); high scores mean greed (people are chasing gains). Use it for classroom discussion — it is not a buy or sell signal.",
 };
 
 function ratingClass(rating) {
@@ -55,7 +61,14 @@ export default function FearGreedMeter() {
       }
     >
       <div className="fear-greed-top">
-        <p className="fear-greed-kicker">Market mood</p>
+        <div className="fear-greed-kicker-row">
+          <p className="fear-greed-kicker">Market mood</p>
+          <CommodityInfoTip
+            name="Fear & Greed Index"
+            kind="Market mood"
+            info={MOOD_TIP}
+          />
+        </div>
         <div className="fear-greed-score-block">
           <strong className={`fear-greed-score is-${ratingClass(rating)}`}>
             {score == null ? "—" : Math.round(score)}

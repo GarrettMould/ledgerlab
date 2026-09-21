@@ -3887,6 +3887,52 @@ def fear_greed():
     return jsonify(data)
 
 
+@app.get("/api/congress/trades")
+def congress_trades():
+    """Recent STOCK Act congressional trade disclosures (Bargo free API).
+
+    Query:
+      member / memberSlug — filter to one politician (Capitol-style tracker)
+      catalogOnly=1 — prefer tickers in the classroom stock catalog
+    """
+    import congress_trades as congress
+
+    force = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+    member = (request.args.get("member") or "").strip() or None
+    member_slug = (request.args.get("memberSlug") or "").strip() or None
+    catalog_only = str(request.args.get("catalogOnly") or "1").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    try:
+        limit = int(request.args.get("limit") or 18)
+    except (TypeError, ValueError):
+        limit = 18
+    limit = max(1, min(limit, 40))
+
+    stock_items = list(MARKET_CATALOG.get("stocks") or [])
+    etf_items = list(MARKET_CATALOG.get("etfs") or [])
+    catalog_names = {
+        str(item.get("ticker") or "").upper(): str(item.get("name") or item.get("ticker") or "")
+        for item in stock_items + etf_items
+        if item.get("ticker")
+    }
+    catalog_tickers = set(catalog_names) if catalog_only else None
+
+    data = congress.fetch_congress_trades(
+        member=member,
+        member_slug=member_slug,
+        catalog_tickers=catalog_tickers,
+        catalog_names=catalog_names,
+        limit=limit,
+        force_refresh=force,
+    )
+    if not data.get("trades") and not data.get("members"):
+        return jsonify({"error": "Congress trade data is unavailable right now."}), 503
+    return jsonify(data)
+
+
 @app.get("/api/class/popular-stocks")
 def class_popular_stocks():
     """
@@ -5952,6 +5998,39 @@ def closet_crew_join():
     except PermissionError as exc:
         return jsonify({"error": str(exc)}), 403
     except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/closet/buy")
+def closet_buy_item():
+    """Buy a shared class creation — pays creator/partners and queues sale alerts."""
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    item_id = (data.get("itemId") or "").strip()
+    buyer_name = (data.get("buyerName") or data.get("studentName") or "").strip() or None
+    if not student_id or not item_id:
+        return jsonify({"error": "studentId and itemId are required"}), 400
+    try:
+        import closet_ai
+
+        return jsonify(
+            closet_ai.purchase_closet_item(
+                class_id,
+                student_id,
+                item_id,
+                buyer_name=buyer_name,
+            )
+        )
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

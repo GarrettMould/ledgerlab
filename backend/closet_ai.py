@@ -2591,7 +2591,22 @@ def review_submission(
         raise ValueError("Submission not found")
     job = snap.to_dict() or {}
     if job.get("status") == "published" and action_norm == "approve":
-        return {"alreadyLive": True, "item": _item_from_job(job)}
+        item = _item_from_job(job)
+        try:
+            snap_item = dict(job.get("itemSnapshot") or item or {})
+            snap_item.update(
+                {
+                    "id": job.get("itemId") or snap_item.get("id"),
+                    "live": True,
+                    "quizPending": False,
+                    "reviewPending": False,
+                    "aiCreated": True,
+                }
+            )
+            fs_ledger.upsert_global_closet_item(snap_item, source_class_id=class_id)
+        except Exception:
+            pass
+        return {"alreadyLive": True, "item": item}
     if job.get("status") == "rejected" and action_norm == "reject":
         return {"alreadyRejected": True}
     if job.get("status") != "pending_review":
@@ -2646,6 +2661,10 @@ def review_submission(
             _crew_job_ref(class_id, crew_job_id).update(
                 {"status": "rejected", "updatedAt": fs.SERVER_TIMESTAMP}
             )
+        try:
+            fs_ledger.remove_global_closet_item(item_id)
+        except Exception:
+            pass
         return {
             "action": "reject",
             "feeCharged": 0,
@@ -2663,40 +2682,78 @@ def review_submission(
             f"Student only has {cash:,.0f} cash — need {fee:,.0f} payroll to approve."
         )
 
+    # Rebuild a complete shelf row from the job so we never go live with a
+    # sparse closetItems entry (missing url/parts would hide it in Extras).
+    base = dict(job.get("itemSnapshot") or {})
+    if not base:
+        base = dict(_item_from_job(job) or {})
+    shelf_url = (
+        base.get("url")
+        or job.get("publishedUrl")
+        or job.get("glbUrl")
+        or ""
+    )
+    shelf_parts = list(base.get("parts") or job.get("parts") or [])
+    if not shelf_url and not shelf_parts:
+        raise RuntimeError(
+            "Can't approve — this item has no model file or parts recipe to show in the closet."
+        )
+
+    live_patch = {
+        "id": item_id,
+        "kind": base.get("kind") or job.get("kind") or "prop",
+        "label": str(base.get("label") or job.get("label") or "Class item")[:40],
+        "url": shelf_url or None,
+        "thumbnailUrl": base.get("thumbnailUrl") or job.get("thumbnailUrl") or None,
+        "attach": base.get("attach") or job.get("attach") or "handR",
+        "offset": list(base.get("offset") or job.get("offset") or [0, 0, 0]),
+        "rotation": list(base.get("rotation") or job.get("rotation") or [0, 0, 0]),
+        "scale": float(base.get("scale") or 1) or 1,
+        "color": base.get("color") or job.get("color") or "#888888",
+        "price": int(
+            base.get("price")
+            or job.get("sellPrice")
+            or job.get("price")
+            or 100
+        ),
+        "category": base.get("category")
+        or KIND_TO_CATEGORY.get(str(job.get("kind") or "prop"), "accessories"),
+        "createdBy": base.get("createdBy") or student_id,
+        "createdByName": base.get("createdByName")
+        or student.get("name")
+        or "Student",
+        "sourcePrompt": base.get("sourcePrompt") or job.get("sourcePrompt") or "",
+        "aiSprite": bool(base.get("aiSprite")),
+        "aiCreated": True,
+        "parts": shelf_parts,
+        "jobId": job_id,
+        "live": True,
+        "quizPending": False,
+        "reviewPending": False,
+        "awaitingCrew": False,
+        "approvedAtMs": int(time.time() * 1000),
+        "crewMembers": members,
+        "crewSlots": slots,
+        "crewPayroll": fee,
+        "crewPayMode": job.get("crewPayMode") or crew_tier(slots or 1)["payMode"],
+        "crewProfitSharePct": int(
+            job.get("crewProfitSharePct")
+            or crew_tier(slots or 1)["profitSharePct"]
+        ),
+    }
+
     updated = None
     next_rows = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         if row.get("id") == item_id:
-            updated = {
-                **row,
-                "live": True,
-                "quizPending": False,
-                "reviewPending": False,
-                "approvedAtMs": int(time.time() * 1000),
-                "crewMembers": members,
-                "crewPayMode": job.get("crewPayMode") or crew_tier(slots)["payMode"],
-                "crewProfitSharePct": int(
-                    job.get("crewProfitSharePct")
-                    or crew_tier(slots)["profitSharePct"]
-                ),
-            }
+            updated = {**row, **live_patch}
             next_rows.append(updated)
         else:
             next_rows.append(row)
     if not updated:
-        snapshot = dict(job.get("itemSnapshot") or _item_from_job(job) or {})
-        snapshot.update(
-            {
-                "id": item_id,
-                "live": True,
-                "quizPending": False,
-                "reviewPending": False,
-                "approvedAtMs": int(time.time() * 1000),
-            }
-        )
-        updated = snapshot
+        updated = live_patch
         next_rows.append(updated)
 
     new_cash = cash - fee
@@ -2720,6 +2777,11 @@ def review_submission(
         {"closetItems": next_rows, "updatedAt": fs.SERVER_TIMESTAMP},
         merge=True,
     )
+    # Shared Extras shelf — every class sees teacher-approved creations.
+    try:
+        fs_ledger.upsert_global_closet_item(updated, source_class_id=class_id)
+    except Exception:
+        pass
     ref.update(
         {
             "status": "published",
@@ -2783,6 +2845,137 @@ def _item_from_job(job: dict) -> dict:
         "reviewPending": job.get("status") == "pending_review",
         "aiCreated": True,
         "parts": job.get("parts") or [],
+    }
+
+
+def purchase_closet_item(
+    buyer_class_id: str,
+    buyer_student_id: str,
+    item_id: str,
+    *,
+    buyer_name: str | None = None,
+) -> dict:
+    """Charge buyer for a class creation; pay creator/partners and queue sale alerts."""
+    buyer_class_id = (buyer_class_id or "").strip()
+    buyer_student_id = (buyer_student_id or "").strip()
+    item_id = (item_id or "").strip()
+    if not buyer_class_id or not buyer_student_id or not item_id:
+        raise ValueError("classId, studentId, and itemId are required")
+
+    item = fs_ledger.get_global_closet_item(item_id)
+    if not item:
+        raise ValueError("That class creation isn't for sale anymore")
+    try:
+        price = int(round(float(item.get("price") or 0)))
+    except (TypeError, ValueError):
+        price = 0
+    if price <= 0:
+        raise ValueError("This item has no sale price")
+
+    buyer = fs_ledger.get_student(buyer_class_id, buyer_student_id)
+    if not buyer:
+        raise ValueError("Buyer not found in this class")
+    buyer_cash = float(buyer.get("cash") or 0)
+    if buyer_cash < price:
+        raise RuntimeError(
+            f"You need at least {price:,.0f} cash — you have {buyer_cash:,.0f}."
+        )
+
+    label = str(item.get("label") or "Class item")[:40]
+    creator_id = str(item.get("createdBy") or "").strip()
+    source_class = str(item.get("sourceClassId") or buyer_class_id).strip()
+    pay_mode = str(item.get("crewPayMode") or "wages")
+    share_pct = int(item.get("crewProfitSharePct") or 0)
+    partners = [
+        m
+        for m in list(item.get("crewMembers") or [])
+        if isinstance(m, dict)
+        and m.get("studentId")
+        and str(m.get("studentId")) != creator_id
+    ]
+    buyer_display = (
+        (buyer_name or "").strip()
+        or buyer.get("name")
+        or "A classmate"
+    )[:40]
+
+    # Split sale proceeds.
+    payouts: list[tuple[str, int, str]] = []  # student_id, amount, role
+    if (
+        pay_mode == "profit_share"
+        and share_pct > 0
+        and partners
+        and creator_id
+    ):
+        partner_pool = int(round(price * (share_pct / 100.0)))
+        creator_amt = max(0, price - partner_pool)
+        if creator_id:
+            payouts.append((creator_id, creator_amt, "creator"))
+        each = partner_pool // len(partners)
+        rem = partner_pool - each * len(partners)
+        for i, member in enumerate(partners):
+            sid = str(member.get("studentId"))
+            amt = each + (rem if i == 0 else 0)
+            if amt > 0:
+                payouts.append((sid, amt, "partner"))
+    elif creator_id:
+        payouts.append((creator_id, price, "creator"))
+
+    # Charge buyer first.
+    new_buyer_cash = fs_ledger.credit_student_cash(
+        buyer_class_id, buyer_student_id, -price
+    )
+    if new_buyer_cash is None:
+        raise RuntimeError("Could not charge buyer")
+
+    paid = []
+    for sid, amt, role in payouts:
+        if amt <= 0:
+            continue
+        # Same-student wash (creator buying own item): still notify net movement.
+        credited = fs_ledger.credit_student_cash(source_class, sid, amt)
+        if credited is None:
+            continue
+        role_word = "your creation" if role == "creator" else "your partnership"
+        note = (
+            f"{buyer_display} bought “{label}” for ${price:,.0f}. "
+            f"${amt:,.0f} from {role_word} was deposited to your cash."
+        )
+        transfer_id = fs_ledger.queue_student_transfer(
+            source_class,
+            sid,
+            amount=amt,
+            note=note,
+            kind="closet_sale",
+            pre_applied=True,
+            meta={
+                "itemId": item_id,
+                "itemLabel": label,
+                "salePrice": price,
+                "payout": amt,
+                "role": role,
+                "buyerId": buyer_student_id,
+                "buyerName": buyer_display,
+                "buyerClassId": buyer_class_id,
+            },
+        )
+        paid.append(
+            {
+                "studentId": sid,
+                "amount": amt,
+                "role": role,
+                "transferId": transfer_id,
+                "cash": credited,
+            }
+        )
+
+    return {
+        "itemId": item_id,
+        "label": label,
+        "price": price,
+        "cash": new_buyer_cash,
+        "payouts": paid,
+        "message": f"Bought “{label}” for ${price:,.0f}.",
     }
 
 
