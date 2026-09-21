@@ -384,6 +384,54 @@ MARKET_CATALOG = {
                 "summary": "Broadcom makes chips and software that power networking, phones, data centers, and other electronics. Its products help devices connect and process data.",
             },
         },
+        {
+            "ticker": "GRMN",
+            "name": "Garmin",
+            "industry": "Technology",
+            "info": {
+                "summary": "Garmin designs GPS devices and wearables used for navigation, fitness tracking, aviation, and outdoor activities.",
+            },
+        },
+        {
+            "ticker": "ARM",
+            "name": "Arm Holdings",
+            "industry": "Technology",
+            "info": {
+                "summary": "Arm designs the chip architecture used in most smartphones and many other devices. Other companies license Arm’s designs to build their own processors.",
+            },
+        },
+        {
+            "ticker": "PLTR",
+            "name": "Palantir",
+            "industry": "Technology",
+            "info": {
+                "summary": "Palantir builds software that helps governments and companies analyze large amounts of data for defense, intelligence, and business decisions.",
+            },
+        },
+        {
+            "ticker": "MRVL",
+            "name": "Marvell",
+            "industry": "Technology",
+            "info": {
+                "summary": "Marvell designs semiconductors used in data centers, networking, storage, and other high-speed computing systems.",
+            },
+        },
+        {
+            "ticker": "QCOM",
+            "name": "Qualcomm",
+            "industry": "Technology",
+            "info": {
+                "summary": "Qualcomm designs wireless chips and technologies that power mobile phones and other connected devices, especially for 5G and cellular networks.",
+            },
+        },
+        {
+            "ticker": "IONQ",
+            "name": "IonQ",
+            "industry": "Technology",
+            "info": {
+                "summary": "IonQ develops quantum computers and related technology aimed at solving problems that are hard for classical computers.",
+            },
+        },
         # Consumer
         {
             "ticker": "AMZN",
@@ -1027,6 +1075,14 @@ MARKET_CATALOG = {
             "name": "Technology Sector",
             "info": {
                 "holdings": ["NVIDIA", "Apple", "Microsoft", "Broadcom", "Meta"],
+            },
+        },
+        {
+            "ticker": "SOXX",
+            "name": "Semiconductor ETF",
+            "info": {
+                "summary": "An ETF that tracks a basket of U.S. semiconductor companies — chip designers and makers used in phones, PCs, cars, and data centers.",
+                "holdings": ["Broadcom", "NVIDIA", "AMD", "Intel", "Qualcomm"],
             },
         },
         {
