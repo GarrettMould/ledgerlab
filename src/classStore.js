@@ -1,5 +1,6 @@
 import {
   addDoc,
+  arrayUnion,
   collection,
   collectionGroup,
   deleteDoc,
@@ -963,6 +964,25 @@ export async function buildStudentSessionFromAuth(authUid, profile = {}) {
 export async function updateClassStudent(classId, studentId, patch) {
   await updateDoc(doc(db, "classes", classId, "students", studentId), {
     ...patch,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Record a strategy scenario the student has already answered (Create Item). */
+export async function markClosetAiScenarioAnswered(classId, studentId, scenarioId) {
+  const id = String(scenarioId || "").trim();
+  if (!classId || !studentId || !id) return;
+  await updateDoc(doc(db, "classes", classId, "students", studentId), {
+    closetAiAnsweredScenarios: arrayUnion(id),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Clear answered-scenario history so a new unique cycle can begin. */
+export async function resetClosetAiAnsweredScenarios(classId, studentId) {
+  if (!classId || !studentId) return;
+  await updateDoc(doc(db, "classes", classId, "students", studentId), {
+    closetAiAnsweredScenarios: [],
     updatedAt: serverTimestamp(),
   });
 }

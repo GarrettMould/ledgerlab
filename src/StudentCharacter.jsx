@@ -17,6 +17,8 @@ import {
 import {
   getClassStudent,
   listClassStudents,
+  markClosetAiScenarioAnswered,
+  resetClosetAiAnsweredScenarios,
   subscribeClassClosetItems,
   updateClassStudent,
 } from "./classStore";
@@ -2600,11 +2602,81 @@ function crewTierFor(slots) {
   return CREW_TIERS.find((t) => t.slots === n) || CREW_TIERS[0];
 }
 
-const CLOSET_AI_SCENARIO = {
-  id: "opportunity-cost",
-  prompt:
-    "You’re about to put classroom cash into building and selling a product — money that could instead stay invested in stocks, bonds, or other assets. What’s the opportunity cost of spending on consumption (or this project) today instead of investing? Explain what you give up, how time horizon and risk change your answer, and when spending now could still be the smarter choice.",
-};
+const CLOSET_AI_SCENARIOS = [
+  {
+    id: "opportunity-cost-chain",
+    title: "Gold chain vs investing",
+    prompt:
+      "A classmate spends $5,000 of classroom cash on the gold chain for their character in the closet. If they invested that $5,000 instead, it could grow to about $87,000 in 30 years at roughly 10% average annual return. What is the real opportunity cost of buying that necklace? Explain what they give up, why the long-term number matters, and when spending on something fun could still make sense.",
+    modelAnswer:
+      "The opportunity cost isn’t just “$5,000.” It’s also the future growth that money might have earned: around $87,000 in 30 years at ~10% if left invested (before fees/taxes, and with returns that aren’t guaranteed). Buying the chain trades long-term wealth for short-term enjoyment and style on their avatar. That can still be a good choice if they value the fun now, already have other savings invested, and understand they’re choosing consumption over compound growth. A thoughtful answer names both the cash spent and the forgone future value, plus time horizon and risk.",
+    placeholder:
+      "What’s the real opportunity cost of the $5,000 gold chain vs investing it…",
+  },
+  {
+    id: "panic-sell",
+    title: "Market drop & Fear",
+    prompt:
+      "Markets just swung hard: popular tech stocks dropped about 8% in a week, and the Fear & Greed meter flipped toward Fear. Several classmates are panic-selling into cash so they can “feel safe,” even if it locks in losses. How would you change your investment strategy (if at all)? Be specific about buy, sell, or hold, and how risk and time horizon factor in.",
+    modelAnswer:
+      "A short-term drop doesn’t automatically mean sell. If your time horizon is years (not days), panic-selling often turns a temporary loss into a permanent one and can miss the rebound. A calmer plan reviews goals and diversification: maybe rebalance, buy quality assets on sale if you still believe in them, or hold rather than dump everything into cash from fear. Selling can make sense if you truly need cash soon or your risk level was too high, but “everyone is scared” alone isn’t a strategy.",
+    placeholder:
+      "Would you buy, sell, or hold, and why? Tie it to risk and time horizon…",
+  },
+  {
+    id: "crew-payroll",
+    title: "Paying a crew",
+    prompt:
+      "Hiring a Team of 3 or bigger means you’ll owe crew wages if the teacher approves your product: money that could have stayed invested instead. Why might paying classmates still be worth it, and what opportunity cost should you weigh before you hire?",
+    modelAnswer:
+      "Crew wages are a real cost: cash that won’t stay invested and won’t compound for you. The upside is help finishing the product, shared work, and possibly a higher sell price with a bigger team. Worth it if the extra help/price potential outweighs the payroll and you can still afford it after approval. Not worth it if you’re hiring just to “look big” while draining cash you’d rather keep growing in the market. Weigh payroll vs expected profit and your remaining portfolio.",
+    placeholder:
+      "When is hiring a crew worth the opportunity cost of those wages…",
+  },
+  {
+    id: "diversify-project",
+    title: "All-in on one product",
+    prompt:
+      "A classmate says you should put almost all your classroom cash into this one product because “it’ll print money.” What’s risky about that plan, and how would you balance funding the project with keeping some money diversified in stocks, ETFs, or cash?",
+    modelAnswer:
+      "Putting almost all cash into one product concentrates risk: if the item doesn’t sell, the crew costs money, or the teacher rejects it, you can lose a large share of your portfolio at once. Diversification means keeping some money in broader assets (stocks/ETFs) and cash reserves so one project can’t wipe you out. A smart plan funds the product with an amount you can afford to risk, keeps a buffer, and doesn’t treat one classroom business like a sure thing.",
+    placeholder:
+      "Explain the risk of going all-in and how you’d still fund the project wisely…",
+  },
+];
+
+function shuffleClosetAiScenarios(list) {
+  const arr = [...list];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
+
+/**
+ * Pick a shuffled scenario the student hasn't answered yet.
+ * After every live scenario is used, clear history and start a new unique cycle.
+ */
+function pickClosetAiScenario(answeredIds = []) {
+  const answered = new Set(
+    (Array.isArray(answeredIds) ? answeredIds : [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean)
+  );
+  const liveIds = new Set(CLOSET_AI_SCENARIOS.map((s) => s.id));
+  for (const id of [...answered]) {
+    if (!liveIds.has(id)) answered.delete(id);
+  }
+  const pool = CLOSET_AI_SCENARIOS.filter((s) => !answered.has(s.id));
+  const cycleReset = pool.length === 0;
+  const list = shuffleClosetAiScenarios(
+    cycleReset ? CLOSET_AI_SCENARIOS : pool
+  );
+  return { scenario: list[0], cycleReset };
+}
 
 const CLOSET_AI_STRATEGY_MIN_CHARS = 80;
 
@@ -2801,6 +2873,11 @@ function ClosetAiCreator({
   const [sellPrice, setSellPrice] = useState("1200");
   const [crewSlots, setCrewSlots] = useState(null);
   const [strategyAnswer, setStrategyAnswer] = useState("");
+  const [answeredScenarioIds, setAnsweredScenarioIds] = useState([]);
+  const [activeScenario, setActiveScenario] = useState(
+    () => pickClosetAiScenario([]).scenario
+  );
+  const [quizShowModel, setQuizShowModel] = useState(false);
   const [pendingBrief, setPendingBrief] = useState(null);
   const [quizDone, setQuizDone] = useState(false);
   const [redoPrompt, setRedoPrompt] = useState("");
@@ -2853,6 +2930,9 @@ function ClosetAiCreator({
     setSellPrice("1500");
     setCrewSlots(null);
     setStrategyAnswer("");
+    setAnsweredScenarioIds([]);
+    setActiveScenario(pickClosetAiScenario([]).scenario);
+    setQuizShowModel(false);
     setPendingBrief(null);
     setQuizDone(false);
     setRedoPrompt("");
@@ -2959,6 +3039,20 @@ function ClosetAiCreator({
       })
       .catch(() => {
         if (!cancelled) setStatus({ allowed: false });
+      });
+    getClassStudent(classId, studentId)
+      .then((seat) => {
+        if (cancelled) return;
+        const answered = Array.isArray(seat?.closetAiAnsweredScenarios)
+          ? seat.closetAiAnsweredScenarios
+              .map((id) => String(id || "").trim())
+              .filter(Boolean)
+          : [];
+        setAnsweredScenarioIds(answered);
+        setActiveScenario(pickClosetAiScenario(answered).scenario);
+      })
+      .catch(() => {
+        if (!cancelled) setAnsweredScenarioIds([]);
       });
     return () => {
       cancelled = true;
@@ -3153,14 +3247,27 @@ function ClosetAiCreator({
     briefTeaseTokenRef.current = null;
     setBriefTeasing(false);
     setBusy(false);
+    setStrategyAnswer("");
+    setQuizShowModel(false);
+    {
+      const picked = pickClosetAiScenario(answeredScenarioIds);
+      if (picked.cycleReset) {
+        setAnsweredScenarioIds([]);
+        if (classId && studentId) {
+          resetClosetAiAnsweredScenarios(classId, studentId).catch(() => {});
+        }
+      }
+      setActiveScenario(picked.scenario);
+    }
     setGateStep("quiz");
   }
 
   function strategyAnswersPayload() {
+    const scenario = activeScenario || CLOSET_AI_SCENARIOS[0];
     return [
       {
-        id: CLOSET_AI_SCENARIO.id,
-        prompt: CLOSET_AI_SCENARIO.prompt,
+        id: scenario.id,
+        prompt: scenario.prompt,
         answer: String(strategyAnswer || "").trim(),
       },
     ];
@@ -3332,7 +3439,7 @@ function ClosetAiCreator({
 
   async function handleQuizSubmit(e) {
     e?.preventDefault?.();
-    if (busy || briefTeasing) return;
+    if (busy || briefTeasing || quizShowModel) return;
     const answer = String(strategyAnswer || "").trim();
     if (answer.length < CLOSET_AI_STRATEGY_MIN_CHARS) {
       setError(
@@ -3341,18 +3448,43 @@ function ClosetAiCreator({
       return;
     }
     setError("");
-    try {
-      if (!pendingBrief?.text) {
-        setError("Describe your item first, then come back to this scenario.");
-        setGateStep("create");
-        return;
+    if (!pendingBrief?.text) {
+      setError("Describe your item first, then come back to this scenario.");
+      setGateStep("create");
+      return;
+    }
+    // Reveal the sample answer first; Continue starts the real AI build.
+    setQuizShowModel(true);
+    const scenarioId = String(
+      (activeScenario || CLOSET_AI_SCENARIOS[0])?.id || ""
+    ).trim();
+    if (scenarioId) {
+      setAnsweredScenarioIds((prev) =>
+        prev.includes(scenarioId) ? prev : [...prev, scenarioId]
+      );
+      if (classId && studentId) {
+        markClosetAiScenarioAnswered(classId, studentId, scenarioId).catch(
+          () => {}
+        );
       }
-      // Back to the create chat with the loading box, then actually run AI.
+    }
+  }
+
+  async function handleQuizContinue() {
+    if (busy || briefTeasing || !quizShowModel) return;
+    if (!pendingBrief?.text) {
+      setError("Describe your item first, then come back to this scenario.");
+      setGateStep("create");
+      return;
+    }
+    setError("");
+    try {
       setQuizDone(true);
+      setQuizShowModel(false);
       setGateStep("create");
       await startGenerationFromBrief(pendingBrief);
     } catch (err) {
-      setError(err.message || "Could not submit strategy response");
+      setError(err.message || "Could not start building");
       setBusy(false);
     }
   }
@@ -3642,18 +3774,42 @@ function ClosetAiCreator({
   }
 
   if (gateStep === "quiz") {
+    const scenario = activeScenario || CLOSET_AI_SCENARIOS[0];
     const trimmed = String(strategyAnswer || "").trim();
     const ready = trimmed.length >= CLOSET_AI_STRATEGY_MIN_CHARS;
-    const quizForm = (
+    const quizForm = quizShowModel ? (
+      <div className="closet-ai-quiz closet-ai-quiz-stage-form closet-ai-quiz-model">
+        <p className="closet-ai-quiz-stage-kicker">Sample answer</p>
+        <p className="closet-ai-quiz-prompt">{scenario.title}</p>
+        <div className="closet-ai-quiz-model-box" role="region" aria-label="Sample answer">
+          <p>{scenario.modelAnswer}</p>
+        </div>
+        <p className="closet-ai-quiz-model-note">
+          Compare this with what you wrote, then continue to build your item.
+        </p>
+        {error ? <p className="closet-note closet-note-error">{error}</p> : null}
+        <div className="closet-ai-gate-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            data-click="confirm"
+            disabled={busy}
+            onClick={handleQuizContinue}
+          >
+            {busy ? "Starting…" : "Continue"}
+          </button>
+        </div>
+      </div>
+    ) : (
       <form className="closet-ai-quiz closet-ai-quiz-stage-form" onSubmit={handleQuizSubmit}>
         <p className="closet-ai-quiz-stage-kicker">Free response</p>
-        <p className="closet-ai-quiz-prompt">{CLOSET_AI_SCENARIO.prompt}</p>
+        <p className="closet-ai-quiz-prompt">{scenario.prompt}</p>
         <textarea
           className="closet-ai-quiz-input"
           rows={9}
           value={strategyAnswer}
           disabled={busy}
-          placeholder="Explain the opportunity cost — what you give up by spending now vs investing…"
+          placeholder={scenario.placeholder}
           maxLength={1200}
           aria-label="Strategy response"
           onChange={(e) => setStrategyAnswer(e.target.value)}
@@ -3669,7 +3825,7 @@ function ClosetAiCreator({
             data-click="confirm"
             disabled={busy || !ready}
           >
-            {busy ? "Submitting…" : "Submit response"}
+            Submit response
           </button>
         </div>
       </form>
@@ -3681,8 +3837,9 @@ function ClosetAiCreator({
           <p className="closet-kicker">Go live</p>
           <strong className="closet-ai-gate-title">Strategy scenario</strong>
           <p className="closet-ai-gate-copy">
-            Answer the scenario to the right. When you submit, we’ll build your
-            item. Your teacher only sees this once the crew is full.
+            {quizShowModel
+              ? "Read the sample answer, then continue to build your item. Your teacher only sees your response once the crew is full."
+              : "Answer the scenario to the right. After you submit, you’ll see a sample answer, then continue to build. Your teacher only sees this once the crew is full."}
           </p>
           {crewSlots === 1 && !invitedPartnerName ? (
             <div className="closet-ai-gate-actions">

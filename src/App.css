@@ -1050,6 +1050,32 @@ button {
   color: var(--ink);
 }
 
+.closet-ai-quiz-model-box {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line-soft));
+  background: linear-gradient(180deg, #f4fbf6 0%, #fff 80%);
+  max-height: min(42vh, 22rem);
+  overflow: auto;
+}
+
+.closet-ai-quiz-model-box p {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.closet-ai-quiz-model-note {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .closet-ai-quiz-input {
   width: 100%;
   min-height: 5.5rem;
