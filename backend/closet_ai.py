@@ -106,9 +106,10 @@ def _generation_engine() -> str:
         "AI closet needs ANTHROPIC_API_KEY (preferred) or OPENAI_API_KEY in backend/.env "
         "for blocky 3D, or MESHY_API_KEY for organic text-to-3D."
     )
-ACCESSORY_KINDS = ("hat", "glasses", "neck", "jersey", "backpack", "bag", "prop")
+ACCESSORY_KINDS = ("hat", "hair", "glasses", "neck", "jersey", "backpack", "bag", "prop")
 KIND_TO_CATEGORY = {
     "hat": "accessories",
+    "hair": "hairStyle",
     "glasses": "accessories",
     "jersey": "accessories",
     "backpack": "accessories",
@@ -118,8 +119,8 @@ KIND_TO_CATEGORY = {
 }
 KIND_DEFAULTS = {
     "hat": {"attach": "headTop", "scale": 0.38, "color": "#888888"},
+    "hair": {"attach": "headTop", "scale": 1.0, "color": "#3b2a1e"},
     "glasses": {"attach": "eyes", "scale": 0.9, "color": "#222222"},
-    "neck": {"attach": "neck", "scale": 0.85, "color": "#d4ad35"},
     "jersey": {"attach": "torso", "scale": 1.0, "color": "#3f8f68"},
     "backpack": {"attach": "torsoBack", "scale": 0.85, "color": "#245933"},
     "bag": {"attach": "shoulderL", "scale": 0.75, "color": "#9e6b3d"},
@@ -279,7 +280,9 @@ def _character_rig_brief() -> str:
         "each arm/leg ~0.6×1.5×0.6.\n"
         "Attach points (where the item ORIGIN is welded on the character):\n"
         "- headTop [0, 4.5, 0] — hats sit ON the scalp; brim ~0.2–0.4 above origin; "
-        "hat body ~0.9–1.3 wide (head is 1 wide).\n"
+        "hat body ~0.9–1.3 wide (head is 1 wide). "
+        "For kind=hair: REPLACE the default haircut — scalp cap + spikes/volume on the head "
+        "(~0.9–1.1 wide), no brim/hat crown; spikes go +Y above the scalp.\n"
         "- eyes [0, 4.08, 0.5] — glasses; frames ~1.0–1.2 wide, sit slightly in front (+Z).\n"
         "- neck [0, 3.48, 0.58] — necklaces; ring in XY, slightly forward so it isn’t buried.\n"
         "- torso [0, 2.5, 0] — jersey/chest; cover ~1.6–2.0 wide × ~1.4–1.8 tall.\n"
@@ -309,7 +312,7 @@ def _parts_system_prompt() -> str:
         "You design Roblox-style BLOCKY avatar accessories for a classroom game. "
         "Reply with JSON only. School-safe (no weapons, hate, NSFW).\n"
         f"{_character_rig_brief()}"
-        "kind: hat|glasses|neck|jersey|backpack|bag|prop. "
+        "kind: hat|hair|glasses|neck|jersey|backpack|bag|prop. "
         "attach: headTop|eyes|neck|torso|torsoBack|shoulderL|handR "
         "(MUST match the item type and the rig points above). "
         "price: integer 500-8000.\n"
@@ -2760,9 +2763,36 @@ def review_submission(
     holdings = fs_ledger.list_holdings(class_id, student_id)
     fs_ledger.set_cash(class_id, student_id, new_cash, holdings_count=len(holdings))
 
+    item_label = str(live_patch.get("label") or job.get("label") or "Class item")[:40]
+    # Cash already moved — queue PayPal-style notices so students see the deposit/charge.
+    if fee > 0:
+        try:
+            fs_ledger.queue_student_transfer(
+                class_id,
+                student_id,
+                amount=-float(fee),
+                note=(
+                    f"Crew payroll for “{item_label}” — "
+                    f"${fee:,.0f} paid to your team."
+                ),
+                kind="crew_payroll",
+                pre_applied=True,
+                meta={
+                    "itemId": item_id,
+                    "itemLabel": item_label,
+                    "jobId": job_id,
+                    "payroll": fee,
+                    "role": "creator",
+                },
+            )
+        except Exception:
+            pass
+
     for member in members:
         emp_id = member.get("studentId")
         if not emp_id or emp_id == student_id:
+            continue
+        if wage_each <= 0:
             continue
         emp = fs_ledger.get_student(class_id, emp_id)
         if not emp:
@@ -2772,6 +2802,32 @@ def review_submission(
         fs_ledger.set_cash(
             class_id, emp_id, emp_cash, holdings_count=len(emp_holdings)
         )
+        creator_name = (
+            str(job.get("creatorName") or student.get("name") or "A classmate")[:40]
+        )
+        try:
+            fs_ledger.queue_student_transfer(
+                class_id,
+                emp_id,
+                amount=float(wage_each),
+                note=(
+                    f"Paycheck from {creator_name} for “{item_label}” — "
+                    f"${wage_each:,.0f} deposited to your cash."
+                ),
+                kind="crew_wage",
+                pre_applied=True,
+                meta={
+                    "itemId": item_id,
+                    "itemLabel": item_label,
+                    "jobId": job_id,
+                    "wage": wage_each,
+                    "role": "employee",
+                    "creatorId": student_id,
+                    "creatorName": creator_name,
+                },
+            )
+        except Exception:
+            pass
 
     class_ref.set(
         {"closetItems": next_rows, "updatedAt": fs.SERVER_TIMESTAMP},

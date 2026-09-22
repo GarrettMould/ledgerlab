@@ -298,6 +298,10 @@ function isAccessoryItem(item) {
   );
 }
 
+function isCustomHairItem(item) {
+  return item?.kind === "hair" && isAccessoryItem(item);
+}
+
 /** Interlocking gold oval links draped as a necklace (not a single hoop). */
 function GoldChainNecklace({
   position = [0, 0, 0],
@@ -408,6 +412,7 @@ export function allAccessoryItems() {
 
 const KIND_TO_CATEGORY = {
   hat: "accessories",
+  hair: "hairStyle",
   glasses: "accessories",
   jersey: "accessories",
   backpack: "accessories",
@@ -422,15 +427,24 @@ export function catalogWithClassItems(classItems = []) {
     Object.entries(CLOSET_CATALOG).map(([key, rows]) => [key, [...rows]])
   );
   if (!merged.accessories) merged.accessories = [];
+  if (!merged.hairStyle) merged.hairStyle = [];
   // Class creations first so Extras opens on student products, not catalog filler.
   const classRows = [];
+  const hairRows = [];
   for (const item of classItems) {
     if (!isAccessoryItem(item)) continue;
+    if (isCustomHairItem(item)) {
+      if (merged.hairStyle.some((row) => row.id === item.id)) continue;
+      if (hairRows.some((row) => row.id === item.id)) continue;
+      hairRows.push(item);
+      continue;
+    }
     if (merged.accessories.some((row) => row.id === item.id)) continue;
     if (classRows.some((row) => row.id === item.id)) continue;
     classRows.push(item);
   }
   merged.accessories = [...classRows, ...merged.accessories];
+  merged.hairStyle = [...hairRows, ...merged.hairStyle];
   return merged;
 }
 
@@ -470,6 +484,7 @@ export const CLOSET_SECTIONS = [
 const SETUP_SECTIONS = CLOSET_SECTIONS.filter((s) => s.id !== "extras");
 
 function hairMeshForOutfit(outfit) {
+  if (customHairItemForOutfit(outfit)) return null;
   const id = outfit?.hairStyleId || "hair-block";
   const found = CLOSET_CATALOG.hairStyle.find((h) => h.id === id && !isAccessoryItem(h));
   if (!found) return "Hair_Block";
@@ -477,17 +492,40 @@ function hairMeshForOutfit(outfit) {
   return found.mesh;
 }
 
+/** Custom AI haircut selected via hairStyleId (not the hat slot). */
+function customHairItemForOutfit(outfit) {
+  const id = outfit?.hairStyleId;
+  if (!id) return null;
+  return (
+    allAccessoryItems().find((entry) => entry.id === id && isCustomHairItem(entry)) ||
+    null
+  );
+}
+
 /** Hats like tophat/helmet hide hair; headphones / keepHair items do not. */
 function hatHidesHair(outfit) {
   const hatId = outfit?.hat;
   if (!hatId) return false;
   const item = allAccessoryItems().find((entry) => entry.id === hatId);
+  if (!item) return true;
   if (item?.keepHair) return false;
   const label = String(item?.label || "").toLowerCase();
   if (label.includes("headphone") || label.includes("earbud") || label.includes("earphone")) {
     return false;
   }
   return true;
+}
+
+/** Move legacy “hair hats” onto hairStyleId so they stop using the hat slot. */
+function migrateHairHatSlot(outfit) {
+  if (!outfit?.hat) return outfit;
+  const hatItem = allAccessoryItems().find((entry) => entry.id === outfit.hat);
+  if (!isCustomHairItem(hatItem)) return outfit;
+  return {
+    ...outfit,
+    hairStyleId: outfit.hat,
+    hat: null,
+  };
 }
 
 function outfitStorageKey(studentId) {
@@ -628,11 +666,21 @@ function HairPieces({ hairMesh, color, hairTop, hideHair = false }) {
 function HeadHairPreviewModel({ outfit, hairStyleId, hatItem = null }) {
   const headS = 1.0;
   const hairTop = headS / 2;
+  const customHair =
+    allAccessoryItems().find(
+      (h) => h.id === hairStyleId && isCustomHairItem(h)
+    ) || null;
   const style =
-    (CLOSET_CATALOG.hairStyle || []).find((h) => h.id === hairStyleId && !isAccessoryItem(h)) ||
-    null;
+    !customHair
+      ? (CLOSET_CATALOG.hairStyle || []).find(
+          (h) => h.id === hairStyleId && !isAccessoryItem(h)
+        ) || null
+      : null;
   const hairMesh = style?.mesh ?? null;
-  const hideHair = Boolean(hatItem) && !hatItem?.keepHair && !String(hatItem?.label || "").toLowerCase().includes("headphone");
+  const hideHair =
+    Boolean(hatItem) &&
+    !hatItem?.keepHair &&
+    !String(hatItem?.label || "").toLowerCase().includes("headphone");
 
   return (
     <group position={[0, -0.42, 0]} scale={0.88}>
@@ -649,12 +697,18 @@ function HeadHairPreviewModel({ outfit, hairStyleId, hatItem = null }) {
         color={eyesForOutfit(outfit)}
         roughness={0.35}
       />
-      <HairPieces
-        hairMesh={hairMesh}
-        color={outfit.hair}
-        hairTop={hairTop}
-        hideHair={hideHair}
-      />
+      {customHair && !hideHair ? (
+        <group position={[0, hairTop + 0.02, 0]}>
+          <AccessoryAtOrigin item={customHair} scale={0.42} />
+        </group>
+      ) : (
+        <HairPieces
+          hairMesh={hairMesh}
+          color={outfit.hair}
+          hairTop={hairTop}
+          hideHair={hideHair}
+        />
+      )}
       {hatItem && (
         <group position={[0, hairTop + 0.02, 0]}>
           <AccessoryAtOrigin item={hatItem} scale={0.42} />
@@ -1018,6 +1072,38 @@ function AccessoryProps({ outfit }) {
     const kinds = ["hat", "glasses", "neck", "jersey", "backpack", "bag", "prop"];
     const preview = outfit?.aiPreviewAccessory;
     const out = [];
+    const hideDefaultHair = hatHidesHair(outfit);
+
+    // Custom AI haircut (hairStyleId) — not a hat slot.
+    if (preview && preview.kind === "hair") {
+      if (
+        !hideDefaultHair &&
+        ((Array.isArray(preview.parts) && preview.parts.length > 0) ||
+          preview.url ||
+          preview.glbUrl)
+      ) {
+        out.push({
+          id: preview.id || "ai-preview-hair",
+          kind: "hair",
+          label: preview.label || "Preview",
+          attach: preview.attach || "headTop",
+          color: preview.color || "#888888",
+          parts: preview.parts || null,
+          url: preview.glbUrl || preview.url || null,
+          aiCreated: true,
+          scale: preview.scale,
+          offset: preview.offset,
+          rotation: preview.rotation,
+        });
+      }
+    } else {
+      const hairId = outfit?.hairStyleId;
+      if (hairId && !hideDefaultHair) {
+        const hairItem = byId.get(hairId);
+        if (hairItem && isCustomHairItem(hairItem)) out.push(hairItem);
+      }
+    }
+
     for (const kind of kinds) {
       if (
         preview &&
@@ -1044,7 +1130,7 @@ function AccessoryProps({ outfit }) {
       const id = outfit?.[kind];
       if (!id) continue;
       const item = byId.get(id);
-      if (item) out.push(item);
+      if (item && !isCustomHairItem(item)) out.push(item);
     }
     return out;
   }, [outfit, classItems]);
@@ -1082,7 +1168,7 @@ function colorForMeshName(name, outfit) {
 
 function applyOutfitColors(root, outfit) {
   const activeHair = hairMeshForOutfit(outfit);
-  const hideHair = hatHidesHair(outfit);
+  const hideHair = hatHidesHair(outfit) || Boolean(customHairItemForOutfit(outfit));
   root.traverse((obj) => {
     if (!obj.isMesh) return;
     const n = String(obj.name || "");
@@ -2099,11 +2185,21 @@ const ACCESSORY_SLOTS = ["hat", "glasses", "neck", "jersey", "backpack", "bag", 
 function stripUnownedBuyables(outfit, fallback = null) {
   const owned = new Set(outfit?.ownedLuxuries || []);
   const base = fallback || DEFAULT_OUTFIT;
-  const next = stripPlayerFishForm({ ...outfit }, base);
+  let next = stripPlayerFishForm({ ...outfit }, base);
+  next = migrateHairHatSlot(next);
 
   for (const slot of ACCESSORY_SLOTS) {
     const id = next[slot];
     if (id && !owned.has(id)) next[slot] = null;
+  }
+
+  // Custom AI haircuts live on hairStyleId.
+  const styleId = next.hairStyleId;
+  if (styleId) {
+    const styleItem = allAccessoryItems().find((entry) => entry.id === styleId);
+    if (isCustomHairItem(styleItem) && !owned.has(styleId)) {
+      next.hairStyleId = base.hairStyleId || "hair-block";
+    }
   }
 
   for (const category of COLOR_STYLE_CATEGORIES) {
@@ -2229,10 +2325,10 @@ function ClosetShelf({
   function renderPaidItem(item) {
     const isOwned = owned.has(item.id);
     let isEquipped = false;
-    if (isAccessoryItem(item)) {
-      isEquipped = outfit[item.kind] === item.id;
-    } else if (category === "hairStyle") {
+    if (isCustomHairItem(item) || category === "hairStyle") {
       isEquipped = (outfit.hairStyleId || "hair-block") === item.id;
+    } else if (isAccessoryItem(item)) {
+      isEquipped = outfit[item.kind] === item.id;
     } else {
       isEquipped = outfit[`${category}Id`] === item.id || outfit[category] === item.color;
     }
@@ -2341,7 +2437,25 @@ function ClosetShelf({
           )}
         </>
       ) : category === "hairStyle" ? (
-        renderHairStyleTiles(freeItems)
+        <>
+          {classCreations.length > 0 ? (
+            <>
+              <p className="closet-shelf-label">
+                Class creations
+                <span className="closet-shelf-count"> · {classCreations.length}</span>
+              </p>
+              {classCreations.map(renderPaidItem)}
+            </>
+          ) : null}
+          <p className="closet-shelf-label">Styles</p>
+          {renderHairStyleTiles(freeItems)}
+          {catalogPaid.length > 0 ? (
+            <>
+              <p className="closet-shelf-label">Shop</p>
+              {catalogPaid.map(renderPaidItem)}
+            </>
+          ) : null}
+        </>
       ) : paletteLabels[category] ? (
         <>
           <p className="closet-shelf-label">{paletteLabels[category]}</p>
@@ -2359,7 +2473,7 @@ function ClosetShelf({
       ) : (
         freeItems.map(renderFreeItem)
       )}
-      {!isAccessoriesShelf && paidItems.length > 0 && (
+      {!isAccessoriesShelf && category !== "hairStyle" && paidItems.length > 0 && (
         <>
           <p className="closet-shelf-label">Buyables</p>
           {paidItems.map(renderPaidItem)}
@@ -2744,6 +2858,7 @@ const CLOSET_AI_COLORS = [
 ];
 
 const CLOSET_AI_KINDS = [
+  { id: "hair", label: "Hair" },
   { id: "hat", label: "Hat" },
   { id: "glasses", label: "Glasses" },
   { id: "backpack", label: "Backpack" },
@@ -4403,12 +4518,16 @@ function ClosetModal({
   const items = mergedCatalog[category] || [];
 
   function isItemEquipped(item) {
+    if (isCustomHairItem(item)) return (draft.hairStyleId || "hair-block") === item.id;
     if (isAccessoryItem(item)) return draft[item.kind] === item.id;
     if (category === "hairStyle") return (draft.hairStyleId || "hair-block") === item.id;
     return draft[`${category}Id`] === item.id || draft[category] === item.color;
   }
 
   function unequipPaidItem(item) {
+    if (isCustomHairItem(item)) {
+      return { ...draft, hairStyleId: "hair-block" };
+    }
     if (isAccessoryItem(item)) {
       return { ...draft, [item.kind]: null };
     }
@@ -4438,6 +4557,14 @@ function ClosetModal({
   }
 
   function equipPaidItem(item) {
+    if (isCustomHairItem(item)) {
+      return {
+        ...draft,
+        hairStyleId: item.id,
+        // Clear if this id was previously stuck in the hat slot.
+        hat: draft.hat === item.id ? null : draft.hat,
+      };
+    }
     if (isAccessoryItem(item)) {
       return { ...draft, [item.kind]: item.id };
     }
@@ -4478,7 +4605,8 @@ function ClosetModal({
       return;
     }
 
-    if (!studentId) {
+    const buyerId = String(studentId || creatorStudentId || "").trim();
+    if (!buyerId) {
       setShopError("Sign in to a class portfolio to buy extras.");
       return;
     }
@@ -4493,7 +4621,7 @@ function ClosetModal({
       if (item.aiCreated && classId) {
         const result = await buyClosetItem(
           classId,
-          studentId,
+          buyerId,
           item.id,
           studentName || ""
         );
@@ -4503,7 +4631,7 @@ function ClosetModal({
           result?.message || `Bought ${item.label} — creators were paid.`
         );
       } else {
-        updated = await adjustCash(studentId, -item.price);
+        updated = await adjustCash(buyerId, -item.price);
         onCashChange?.(updated);
       }
       const next = {
@@ -4719,6 +4847,22 @@ export default function StudentCharacter({
     });
   }, [classId]);
 
+  // After class creations load, move any legacy “hair hat” onto hairStyleId.
+  useEffect(() => {
+    if (!classClosetItems.length) return;
+    setOutfit((prev) => {
+      const migrated = migrateHairHatSlot(prev);
+      if (migrated === prev) return prev;
+      saveOutfit(studentId, migrated);
+      if (classId && firestoreStudentId) {
+        updateClassStudent(classId, firestoreStudentId, { outfit: migrated }).catch(
+          () => {}
+        );
+      }
+      return migrated;
+    });
+  }, [classClosetItems, classId, firestoreStudentId, studentId]);
+
   useEffect(() => {
     if (!classId || !firestoreStudentId) {
       setStudentEmail("");
@@ -4770,7 +4914,7 @@ export default function StudentCharacter({
         outfit={displayOutfit}
         onChangeOutfit={handleOutfitChange}
         studentName={name}
-        studentId={studentId}
+        studentId={firestoreStudentId || studentId}
         cash={cash}
         onCashChange={onCashChange}
         classId={classId}

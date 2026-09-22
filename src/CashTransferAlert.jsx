@@ -67,7 +67,10 @@ export default function CashTransferAlert({
 
   const current = queue[0] || null;
   const isSale = current?.kind === "closet_sale";
-  const preApplied = current?.preApplied === true || isSale;
+  const isWage = current?.kind === "crew_wage";
+  const isPayroll = current?.kind === "crew_payroll";
+  const preApplied =
+    current?.preApplied === true || isSale || isWage || isPayroll;
   const isCredit = current
     ? current.direction === "credit" || current.amount > 0
     : false;
@@ -217,20 +220,28 @@ export default function CashTransferAlert({
         <p className="transfer-kicker">
           {isSale
             ? "Closet sale"
-            : isCredit
-              ? "Money received"
-              : needsLiquidate
-                ? "Payment due — sell to pay"
-                : "Payment due"}
+            : isWage
+              ? "Job paycheck"
+              : isPayroll
+                ? "Crew payroll"
+                : isCredit
+                  ? "Money received"
+                  : needsLiquidate
+                    ? "Payment due — sell to pay"
+                    : "Payment due"}
         </p>
         <h3 id="transfer-title">
           {isSale
             ? "You made a sale!"
-            : isCredit
-              ? "Accept payment"
-              : needsLiquidate
-                ? "Not enough cash"
-                : "Pay your teacher"}
+            : isWage
+              ? "You got paid!"
+              : isPayroll
+                ? "Payroll charged"
+                : isCredit
+                  ? "Accept payment"
+                  : needsLiquidate
+                    ? "Not enough cash"
+                    : "Pay your teacher"}
         </h3>
         <p className="transfer-amount">
           {isCredit ? "+" : "−"}
@@ -241,7 +252,8 @@ export default function CashTransferAlert({
           <p className="transfer-cash">
             Your cash: {money(cash)}
             {needsLiquidate ? ` · short ${money(shortfall)}` : ""}
-            {isSale && preApplied ? " · already deposited" : ""}
+            {preApplied && isCredit ? " · already deposited" : ""}
+            {preApplied && !isCredit ? " · already deducted" : ""}
           </p>
         )}
         {queue.length > 1 && (

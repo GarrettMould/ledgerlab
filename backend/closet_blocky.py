@@ -297,6 +297,14 @@ def fallback_parts(label: str, kind: str, color: str) -> list[dict]:
             {"shape": "cylinder", "radius": 0.55, "height": 0.08, "pos": [0, 0.04, 0], "rot": [0, 0, 0], "color": c},
             {"shape": "cylinder", "radius": 0.35, "height": 0.7, "pos": [0, 0.42, 0], "rot": [0, 0, 0], "color": c},
         ]
+    if kind == "hair":
+        return [
+            {"shape": "box", "size": [1.02, 0.12, 1.02], "pos": [0, 0.06, 0], "rot": [0, 0, 0], "color": c},
+            {"shape": "box", "size": [0.88, 0.36, 0.88], "pos": [0, 0.32, 0], "rot": [0, 0, 0], "color": c},
+            {"shape": "box", "size": [0.12, 0.7, 0.08], "pos": [0, 0.95, 0.3], "rot": [20, 0, 0], "color": c},
+            {"shape": "box", "size": [0.12, 0.55, 0.08], "pos": [-0.3, 0.85, 0.2], "rot": [12, 0, -25], "color": c},
+            {"shape": "box", "size": [0.12, 0.55, 0.08], "pos": [0.3, 0.85, 0.2], "rot": [12, 0, 25], "color": c},
+        ]
     if kind == "glasses":
         return [
             {"shape": "box", "size": [0.85, 0.22, 0.08], "pos": [0, 0, 0], "rot": [0, 0, 0], "color": accent},
