@@ -432,6 +432,18 @@ MARKET_CATALOG = {
                 "summary": "IonQ develops quantum computers and related technology aimed at solving problems that are hard for classical computers.",
             },
         },
+        {
+            "ticker": "SPCX",
+            "name": "SpaceX",
+            "industry": "Technology",
+            "info": {
+                "summary": (
+                    "SpaceX (Space Exploration Technologies) builds rockets and spacecraft, "
+                    "including Falcon 9 and Starship, and operates the Starlink satellite "
+                    "internet network. Its Class A shares trade on Nasdaq as SPCX."
+                ),
+            },
+        },
         # Consumer
         {
             "ticker": "AMZN",
@@ -1655,6 +1667,12 @@ BOND_BY_TICKER = {b["ticker"]: b for b in MARKET_CATALOG["bonds"]}
 CURRENCY_BY_TICKER = {c["ticker"]: c for c in MARKET_CATALOG["currencies"]}
 COMMODITY_BY_TICKER = {c["ticker"]: c for c in MARKET_CATALOG["commodities"]}
 REALESTATE_BY_TICKER = {h["ticker"]: h for h in MARKET_CATALOG["realestate"]}
+# Equities with a fixed classroom price (e.g. private companies like SpaceX).
+CATALOG_EQUITY_BY_TICKER = {
+    item["ticker"]: item
+    for item in MARKET_CATALOG.get("stocks", [])
+    if isinstance(item, dict) and item.get("ticker") and item.get("price") is not None
+}
 
 _CURRENCY_YAHOO = {
     "EUR": "EURUSD=X",
@@ -3209,6 +3227,21 @@ def fetch_quotes_batch(
             out[symbol] = (float(home["price"]), home.get("yoy_change_pct"))
             sources_used.add("catalog")
             continue
+        catalog_equity = CATALOG_EQUITY_BY_TICKER.get(symbol)
+        if catalog_equity:
+            try:
+                px = float(catalog_equity["price"])
+            except (TypeError, ValueError):
+                px = None
+            if px is not None and px > 0:
+                chg = catalog_equity.get("change_pct")
+                try:
+                    chg = float(chg) if chg is not None else None
+                except (TypeError, ValueError):
+                    chg = None
+                out[symbol] = (px, chg)
+                sources_used.add("catalog")
+                continue
         hit = _cache_get(symbol)
         if hit[0] is None:
             derived = _commodity_quote_from_feed_cache(symbol)
@@ -3706,6 +3739,8 @@ def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
             row["unit_label"] = item["unit_label"]
         if item.get("lot"):
             row["lot"] = item["lot"]
+        if item.get("price_note"):
+            row["price_note"] = item["price_note"]
         if category == "commodities":
             src = quote_source_for(item["ticker"])
             row["price_source"] = src
@@ -4955,6 +4990,43 @@ def _fetch_chart_body(symbol: str, span: str) -> tuple[dict | None, str | None]:
     for on-demand charts only. Live quotes still come from Finnhub.
     """
     cfg = CHART_RANGES[span]
+    catalog_equity = CATALOG_EQUITY_BY_TICKER.get(symbol)
+    if catalog_equity:
+        try:
+            price = float(catalog_equity["price"])
+        except (TypeError, ValueError):
+            price = None
+        if price is not None and price > 0:
+            # Flat practice series so private/classroom tickers still open a chart.
+            days = {"1mo": 22, "3mo": 66, "6mo": 132, "1y": 252, "5y": 260}.get(span, 66)
+            step = 7 if span == "5y" else 1
+            now = datetime.now(timezone.utc)
+            points = []
+            for i in range(days, -1, -step):
+                dt = now - timedelta(days=i)
+                points.append(
+                    {
+                        "t": int(dt.timestamp()),
+                        "date": dt.strftime("%Y-%m-%d"),
+                        "close": round(price, 2),
+                    }
+                )
+            return (
+                {
+                    "ticker": symbol,
+                    "range": span,
+                    "interval": "1wk" if span == "5y" else "1d",
+                    "points": points,
+                    "start": round(price, 2),
+                    "end": round(price, 2),
+                    "change_pct": 0.0,
+                    "source": "catalog",
+                    "note": catalog_equity.get("price_note")
+                    or "Classroom estimate — not a live public chart.",
+                },
+                None,
+            )
+
     yahoo_symbol = yahoo_chart_symbol(symbol)
     cur_meta = CURRENCY_BY_TICKER.get(symbol)
 

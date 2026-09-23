@@ -78,6 +78,23 @@ function writeSoundPref(on) {
   }
 }
 
+/** Fisher–Yates — used so the Stocks “All” list isn’t the same order every visit. */
+function shuffleList(items) {
+  const arr = Array.isArray(items) ? [...items] : [];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
+
+function marketItemsForDisplay(category, items) {
+  const rows = Array.isArray(items) ? items : [];
+  return category === "stocks" ? shuffleList(rows) : rows;
+}
+
 const CURRENCY_LOTS = {
   EUR: 1,
   GBP: 1,
@@ -588,7 +605,7 @@ function StudentPortfolio({
         try {
           const catalog = await getMarket(category, false, { catalog: true });
           if (!cancelled) {
-            setMarketItems(catalog.items || []);
+            setMarketItems(marketItemsForDisplay(category, catalog.items || []));
             setMarketLoading(false);
             setPricingStatus(catalog.pricing || null);
             // Bonds/real estate often already have usable figures in the catalog.
@@ -602,7 +619,7 @@ function StudentPortfolio({
 
         const data = await getMarket(category);
         if (!cancelled) {
-          setMarketItems(data.items || []);
+          setMarketItems(marketItemsForDisplay(category, data.items || []));
           setPricingStatus(data.pricing || null);
           if (data.pricing && data.pricing.ok === false) {
             setError(
@@ -684,7 +701,7 @@ function StudentPortfolio({
       if (category) {
         setMarketPricesPending(true);
         const data = await getMarket(category, true);
-        setMarketItems(data.items || []);
+        setMarketItems(marketItemsForDisplay(category, data.items || []));
         setPricingStatus(data.pricing || null);
         if (data.pricing && data.pricing.ok === false) {
           setError(

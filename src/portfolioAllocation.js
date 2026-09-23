@@ -16,6 +16,7 @@ export const TICKER_CATEGORY = {
   MRVL: "stocks",
   QCOM: "stocks",
   IONQ: "stocks",
+  SPCX: "stocks",
   // Consumer
   AMZN: "stocks",
   WMT: "stocks",
