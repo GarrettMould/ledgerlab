@@ -446,6 +446,73 @@ def has_any_snapshot(class_id: str, student_id: str) -> bool:
     return next(snapshots_col(class_id, student_id).limit(1).stream(), None) is not None
 
 
+def list_trades(class_id: str, student_id: str, *, limit: int = 100) -> list[dict]:
+    """Recent buy/sell receipts for one student (newest first)."""
+    if not class_id or not student_id:
+        return []
+    cap = max(1, min(int(limit or 100), 250))
+    col = student_ref(class_id, student_id).collection("trades")
+
+    try:
+        from firebase_admin import firestore as fs
+
+        snaps = list(
+            col.order_by("createdAtMs", direction=fs.Query.DESCENDING)
+            .limit(cap)
+            .stream()
+        )
+        return [_normalize_trade_row(snap.to_dict() or {}, snap.id) for snap in snaps]
+    except Exception:
+        pass
+
+    try:
+        snaps = list(col.stream())
+    except Exception:
+        return []
+    rows = [_normalize_trade_row(snap.to_dict() or {}, snap.id) for snap in snaps]
+    rows.sort(key=lambda r: int(r.get("createdAtMs") or 0), reverse=True)
+    return rows[:cap]
+
+
+def _normalize_trade_row(data: dict, doc_id: str | None = None) -> dict:
+    created = data.get("createdAt")
+    if hasattr(created, "isoformat"):
+        created_at = created.isoformat()
+    else:
+        created_at = None
+    ms = data.get("createdAtMs")
+    try:
+        created_at_ms = int(ms) if ms is not None else None
+    except (TypeError, ValueError):
+        created_at_ms = None
+    if not created_at and created_at_ms:
+        try:
+            created_at = datetime.fromtimestamp(
+                created_at_ms / 1000.0, tz=timezone.utc
+            ).isoformat()
+        except (OSError, OverflowError, ValueError):
+            created_at = None
+    side = str(data.get("side") or "buy").strip().lower()
+    if side not in ("buy", "sell"):
+        side = "buy"
+    kind = str(data.get("kind") or "market").strip().lower() or "market"
+    return {
+        "id": doc_id or data.get("id"),
+        "side": side,
+        "ticker": str(data.get("ticker") or "").strip().upper(),
+        "shares": float(data.get("shares") or 0),
+        "price": float(data.get("price") or 0),
+        "notional": float(data.get("notional") or 0),
+        "kind": kind,
+        "createdAt": created_at,
+        "createdAtMs": created_at_ms,
+        "loanAmount": data.get("loanAmount"),
+        "downPayment": data.get("downPayment"),
+        "closingCosts": data.get("closingCosts"),
+        "mortgagePayoff": data.get("mortgagePayoff"),
+    }
+
+
 def add_snapshot(
     class_id: str,
     student_id: str,

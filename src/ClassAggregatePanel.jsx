@@ -47,10 +47,33 @@ export default function ClassAggregatePanel({
               width="18"
               height="18"
               aria-hidden="true"
+              fill="none"
             >
               <path
-                fill="currentColor"
-                d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7c2.76 0 5 2.24 5 5a5 5 0 0 1-8.9 3.1L6.7 16.5A7.97 7.97 0 0 0 20 12c0-2.21-.9-4.21-2.35-5.65zM6 12c0-1.66.81-3.13 2.05-4.05L9.5 6.5A7.97 7.97 0 0 0 4 12c0 3.73 2.55 6.86 6 7.74V17.7A5.99 5.99 0 0 1 6 12z"
+                d="M4.5 12a7.5 7.5 0 0 1 12.6-5.5"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+              />
+              <path
+                d="M19.5 12a7.5 7.5 0 0 1-12.6 5.5"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+              />
+              <path
+                d="M16.2 3.8v3.4h-3.4"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M7.8 20.2v-3.4h3.4"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+                strokeLinejoin="round"
               />
             </svg>
           </button>

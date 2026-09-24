@@ -28,10 +28,33 @@ function RefreshGlyph({ spinning }) {
       width="18"
       height="18"
       aria-hidden="true"
+      fill="none"
     >
       <path
-        fill="currentColor"
-        d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7c2.76 0 5 2.24 5 5a5 5 0 0 1-8.9 3.1L6.7 16.5A7.97 7.97 0 0 0 20 12c0-2.21-.9-4.21-2.35-5.65zM6 12c0-1.66.81-3.13 2.05-4.05L9.5 6.5A7.97 7.97 0 0 0 4 12c0 3.73 2.55 6.86 6 7.74V17.7A5.99 5.99 0 0 1 6 12z"
+        d="M4.5 12a7.5 7.5 0 0 1 12.6-5.5"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+      <path
+        d="M19.5 12a7.5 7.5 0 0 1-12.6 5.5"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+      <path
+        d="M16.2 3.8v3.4h-3.4"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M7.8 20.2v-3.4h3.4"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -40,16 +63,18 @@ function RefreshGlyph({ spinning }) {
 function PieGlyph() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none">
-      <path
-        d="M12 3a9 9 0 1 1-9 9h9V3z"
+      <circle
+        cx="12"
+        cy="12"
+        r="8.1"
         stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
+        strokeWidth="1.85"
       />
       <path
-        d="M13.2 3.15A9 9 0 0 1 20.85 10.8H13.2V3.15z"
+        d="M12 3.9V12l6.2 3.55"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="1.85"
+        strokeLinecap="round"
         strokeLinejoin="round"
       />
     </svg>
@@ -60,29 +85,55 @@ function LineGlyph() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none">
       <path
-        d="M4 19V5"
+        d="M4.5 18.5V5.5"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="1.85"
         strokeLinecap="round"
       />
       <path
-        d="M4 19h16"
+        d="M4.5 18.5h15"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="1.85"
         strokeLinecap="round"
       />
       <path
-        d="M7 15l3.2-3.6 2.6 2.2L17 8"
+        d="M7.2 14.2l3.4-3.8 2.8 2.1 4.6-5.5"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="1.85"
         strokeLinecap="round"
         strokeLinejoin="round"
+      />
+      <circle cx="17.9" cy="7.1" r="1.15" fill="currentColor" />
+    </svg>
+  );
+}
+
+function ReceiptGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none">
+      <path
+        d="M7 3.75h10a1.25 1.25 0 0 1 1.25 1.25v14.2l-1.45-.9-1.45.9-1.45-.9-1.45.9-1.45-.9-1.45.9-1.45-.9-1.45.9V5A1.25 1.25 0 0 1 7 3.75z"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9.2 8.2h5.6M9.2 11.2h5.6M9.2 14.2h3.4"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
       />
     </svg>
   );
 }
 
-export default function PortfolioHistoryChart({ studentId, refreshKey, portfolio, onRefresh }) {
+export default function PortfolioHistoryChart({
+  studentId,
+  refreshKey,
+  portfolio,
+  onRefresh,
+  onOpenPurchases,
+}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -191,6 +242,18 @@ export default function PortfolioHistoryChart({ studentId, refreshKey, portfolio
           >
             {mode === "pie" ? <LineGlyph /> : <PieGlyph />}
           </button>
+          {typeof onOpenPurchases === "function" && (
+            <button
+              type="button"
+              className="icon-btn stripe-icon-btn"
+              data-click="select"
+              onClick={onOpenPurchases}
+              aria-label="Open purchase history"
+              title="Purchase history"
+            >
+              <ReceiptGlyph />
+            </button>
+          )}
         </div>
       </div>
 

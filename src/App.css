@@ -8063,6 +8063,232 @@ button.job-crew-slot:disabled,
   }
 }
 
+/* —— World country lending map (from Bonds) —— */
+.world-lending {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.world-lending-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  max-width: 42rem;
+}
+
+.world-lending-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(16rem, 0.9fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.world-lending-stage {
+  min-height: 14rem;
+  border-radius: 1.35rem;
+  overflow: hidden;
+  background: linear-gradient(160deg, #e8f4f8 0%, #d5e8ef 100%);
+  box-shadow: inset 0 0 0 1px rgba(47, 107, 79, 0.08);
+}
+
+.world-lending-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 1;
+}
+
+.world-lending-land {
+  opacity: 0.96;
+}
+
+.world-lending-ocean-label {
+  fill: rgba(35, 78, 96, 0.45);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.world-lending-marker {
+  cursor: pointer;
+  outline: none;
+}
+
+.world-lending-halo {
+  fill: rgba(47, 107, 79, 0.16);
+  transition: r 0.15s ease, fill 0.15s ease;
+}
+
+.world-lending-dot {
+  fill: #2f6b4f;
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.world-lending-marker-label {
+  fill: #1f3d30;
+  font-size: 11px;
+  font-weight: 800;
+  pointer-events: none;
+  paint-order: stroke fill;
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 3px;
+}
+
+.world-lending-marker.active .world-lending-halo {
+  fill: rgba(47, 107, 79, 0.32);
+}
+
+.world-lending-marker:focus-visible .world-lending-halo {
+  fill: rgba(47, 107, 79, 0.4);
+}
+
+.world-lending-panel {
+  border-radius: 1.25rem;
+  padding: 1.15rem 1.2rem 1.25rem;
+  background:
+    linear-gradient(165deg, rgba(255, 255, 255, 0.95), rgba(241, 247, 236, 0.92));
+  border: 1px solid rgba(47, 107, 79, 0.12);
+  box-shadow: 0 12px 28px rgba(31, 61, 48, 0.06);
+  display: grid;
+  gap: 0.85rem;
+  align-content: start;
+}
+
+.world-lending-kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.world-lending-hero h3 {
+  margin: 0.15rem 0 0;
+  font-size: 1.45rem;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.world-lending-rate {
+  margin: 0.45rem 0 0;
+  font-size: 2rem;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: var(--accent-deep);
+}
+
+.world-lending-tenor {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.world-lending-blurb {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.world-lending-stats {
+  margin: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.world-lending-stats div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid rgba(47, 107, 79, 0.1);
+}
+
+.world-lending-stats dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.world-lending-stats dd {
+  margin: 0;
+  font-weight: 800;
+  color: var(--ink);
+  font-size: 0.92rem;
+}
+
+.world-lending-lend-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.world-lending-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.world-lending-empty {
+  padding: 0.5rem 0.15rem;
+}
+
+.world-lending-empty strong {
+  display: block;
+  font-size: 1.05rem;
+  color: var(--ink);
+}
+
+.world-lending-empty p {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.world-lending-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 0.85rem;
+  padding: 0.85rem 1rem;
+  border-radius: 1rem;
+  background: linear-gradient(135deg, rgba(47, 107, 79, 0.08), rgba(197, 217, 168, 0.35));
+  border: 1px solid rgba(47, 107, 79, 0.12);
+}
+
+.world-lending-entry p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.4;
+  max-width: 28rem;
+}
+
+.world-lending-entry strong {
+  display: block;
+  margin-bottom: 0.15rem;
+  font-size: 0.98rem;
+}
+
+@media (max-width: 860px) {
+  .world-lending-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .world-lending-stage {
+    min-height: 11rem;
+  }
+}
+
 .commodity-meta {
   color: #9a6b3a !important;
 }
@@ -8328,6 +8554,94 @@ button.job-crew-slot:disabled,
 .popular-ticker.is-crypto button.popular-ticker-card:hover {
   border-color: color-mix(in srgb, #b45309 40%, var(--line-soft));
   background: #fff6ed;
+}
+
+.popular-ticker.is-movers {
+  border-color: color-mix(in srgb, #5b6b7c 20%, var(--line-soft));
+  background: linear-gradient(180deg, #f5f7f9 0%, #fff 72%);
+}
+
+.popular-ticker.is-movers.is-up {
+  border-color: color-mix(in srgb, var(--plus, #2f6b4f) 22%, var(--line-soft));
+  background: linear-gradient(180deg, #f3faf5 0%, #fff 72%);
+}
+
+.popular-ticker.is-movers.is-down {
+  border-color: color-mix(in srgb, var(--minus, #c45c4a) 22%, var(--line-soft));
+  background: linear-gradient(180deg, #fdf5f3 0%, #fff 72%);
+}
+
+.popular-ticker.is-movers .popular-ticker-label {
+  color: #3d4a57;
+}
+
+.popular-ticker.is-movers.is-up .popular-ticker-label {
+  color: #1f5a3d;
+}
+
+.popular-ticker.is-movers.is-down .popular-ticker-label {
+  color: #8a3a2c;
+}
+
+.popular-ticker.is-movers .popular-ticker-tabs button.is-active {
+  background: color-mix(in srgb, #5b6b7c 12%, #fff);
+  color: #2f3b47;
+  border-color: color-mix(in srgb, #5b6b7c 30%, var(--line-soft));
+}
+
+.popular-ticker.is-movers.is-up .popular-ticker-tabs button.is-active {
+  background: color-mix(in srgb, var(--plus, #2f6b4f) 14%, #fff);
+  color: #1f5a3d;
+  border-color: color-mix(in srgb, var(--plus, #2f6b4f) 35%, var(--line-soft));
+}
+
+.popular-ticker.is-movers.is-down .popular-ticker-tabs button.is-active {
+  background: color-mix(in srgb, var(--minus, #c45c4a) 14%, #fff);
+  color: #8a3a2c;
+  border-color: color-mix(in srgb, var(--minus, #c45c4a) 35%, var(--line-soft));
+}
+
+.popular-ticker.is-movers button.popular-ticker-card:hover {
+  border-color: color-mix(in srgb, #5b6b7c 35%, var(--line-soft));
+  background: #eef2f5;
+}
+
+.popular-ticker.is-movers.is-up button.popular-ticker-card:hover {
+  border-color: color-mix(in srgb, var(--plus, #2f6b4f) 40%, var(--line-soft));
+  background: #eef8f1;
+}
+
+.popular-ticker.is-movers.is-down button.popular-ticker-card:hover {
+  border-color: color-mix(in srgb, var(--minus, #c45c4a) 40%, var(--line-soft));
+  background: #fbf0ed;
+}
+
+.movers-sub {
+  margin: 0 0 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.movers-empty {
+  margin: 0.15rem 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.movers-pct {
+  font-size: 0.92rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.movers-pct.up {
+  color: var(--plus, #2f6b4f);
+}
+
+.movers-pct.down {
+  color: var(--minus, #c45c4a);
 }
 
 .popular-ticker.is-congress {
@@ -9600,6 +9914,146 @@ button.student-stock-search-hit.is-available:hover {
   color: var(--accent-deep);
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.purchase-history {
+  margin: 0 0 1.25rem;
+}
+
+.purchase-history-lead {
+  margin: 0 0 0.85rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+.purchase-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0 0 1rem;
+}
+
+.purchase-summary > div {
+  padding: 0.7rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid var(--line-soft);
+  background: #fff;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.purchase-summary span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.purchase-summary strong {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: block;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.purchase-row {
+  padding: 0.85rem 0.95rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  display: grid;
+  gap: 0.35rem;
+  border-left: 3px solid transparent;
+}
+
+.purchase-row + .purchase-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.purchase-row.buy {
+  border-left-color: var(--plus, #2f6b4f);
+}
+
+.purchase-row.sell {
+  border-left-color: var(--minus, #c45c4a);
+}
+
+.purchase-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.65rem;
+}
+
+.purchase-side {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.18rem 0.45rem;
+  border-radius: 999px;
+}
+
+.purchase-side.buy {
+  color: #1f5a3d;
+  background: rgba(47, 107, 79, 0.12);
+}
+
+.purchase-side.sell {
+  color: #8a3a2c;
+  background: rgba(196, 92, 74, 0.12);
+}
+
+.purchase-ticker {
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.purchase-kind {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.purchase-row-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-notional {
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.purchase-when {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .purchase-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .allocation-wrap {

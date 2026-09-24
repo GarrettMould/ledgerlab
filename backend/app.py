@@ -873,6 +873,30 @@ MARKET_CATALOG = {
                 "summary": "Sony makes PlayStation consoles, entertainment content, cameras, and electronics used for games, music, and movies.",
             },
         },
+        {
+            "ticker": "MGM",
+            "name": "MGM Resorts",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "MGM Resorts runs casino resorts and hotels, including well-known properties on the Las Vegas Strip, plus sports betting and entertainment venues.",
+            },
+        },
+        {
+            "ticker": "LVS",
+            "name": "Las Vegas Sands",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Las Vegas Sands operates large casino resorts and convention destinations, including properties in Las Vegas, Macao, and Singapore.",
+            },
+        },
+        {
+            "ticker": "WYNN",
+            "name": "Wynn Resorts",
+            "industry": "Entertainment",
+            "info": {
+                "summary": "Wynn Resorts owns and operates luxury casino resorts known for high-end hotels, gaming floors, dining, and entertainment.",
+            },
+        },
         # Autos
         {
             "ticker": "TSLA",
@@ -4856,6 +4880,26 @@ def remove_market_extra(ticker: str):
     if not removed:
         return jsonify({"error": "Ticker not found on this class market"}), 404
     return jsonify({"ok": True, "ticker": ticker.strip().upper()})
+
+
+@app.get("/api/students/<student_id>/trades")
+def student_trades(student_id: str):
+    """Buy/sell receipt log for the student dashboard purchase history page."""
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    limit_raw = request.args.get("limit")
+    try:
+        limit = int(limit_raw) if limit_raw is not None else 100
+    except (TypeError, ValueError):
+        limit = 100
+    if using_firestore():
+        student = fs_ledger.get_student(class_id, student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+        trades = fs_ledger.list_trades(class_id, student_id, limit=limit)
+        return jsonify({"trades": trades, "count": len(trades)})
+    return jsonify({"trades": [], "count": 0})
 
 
 @app.get("/api/students/<student_id>/history")

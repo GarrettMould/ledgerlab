@@ -171,6 +171,13 @@ export function getPortfolioHistory(studentId, classId) {
   return request(`/students/${studentId}/history`, { classId });
 }
 
+export function getStudentTrades(studentId, classId, { limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  if (limit) params.set("limit", String(limit));
+  const q = params.toString() ? `?${params}` : "";
+  return request(`/students/${studentId}/trades${q}`, { classId, timeoutMs: 15000 });
+}
+
 export function buyShares(id, ticker, shares, classId) {
   return request(`/students/${id}/buy`, {
     method: "POST",

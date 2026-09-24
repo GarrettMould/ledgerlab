@@ -75,6 +75,9 @@ export const TICKER_CATEGORY = {
   LYV: "stocks",
   ROKU: "stocks",
   SONY: "stocks",
+  MGM: "stocks",
+  LVS: "stocks",
+  WYNN: "stocks",
   // Autos
   TSLA: "stocks",
   F: "stocks",
