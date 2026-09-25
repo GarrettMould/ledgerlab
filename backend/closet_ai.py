@@ -2209,13 +2209,17 @@ MAX_CREW_JOINS_PER_STUDENT = 2
 
 
 def _count_student_crew_joins(class_id: str, student_id: str) -> int:
-    """How many active crew roles this student is on (not counting their own projects)."""
+    """How many still-hiring crews this student is on (not counting their own projects).
+
+    Filled / approved / closed jobs are finished work and don't use up a slot —
+    otherwise two completed jobs lock a student out of the board forever.
+    """
     if not student_id:
         return 0
     count = 0
     for snap in _crew_jobs_col(class_id).stream():
         data = snap.to_dict() or {}
-        if str(data.get("status") or "") in ("rejected", "closed"):
+        if str(data.get("status") or "open") != "open":
             continue
         if data.get("creatorId") == student_id:
             continue
