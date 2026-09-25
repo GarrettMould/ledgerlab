@@ -35,6 +35,11 @@ _DATA_DIR = (
     Path("/tmp/ledgerlab") if os.environ.get("VERCEL") else Path(__file__).resolve().parent
 )
 _CACHE_PATH = _DATA_DIR / "housing_zhvi_cache.json"
+# Snapshot committed with the code. On Vercel every new instance starts with an
+# empty /tmp, so without this it would price homes at the hardcoded catalog
+# value until it managed to download Zillow — and different instances would
+# disagree, making home values (and student totals) jump between requests.
+_BUNDLED_PATH = Path(__file__).resolve().parent / "housing_zhvi_cache.json"
 
 _memory: dict[str, Any] | None = None
 _memory_loaded_at: float = 0.0
@@ -44,16 +49,49 @@ def _utc_now_ts() -> float:
     return datetime.now(timezone.utc).timestamp()
 
 
-def _load_disk() -> dict[str, Any] | None:
+def _read_cache_file(path: Path) -> dict[str, Any] | None:
     try:
-        if not _CACHE_PATH.is_file():
+        if not path.is_file():
             return None
-        data = json.loads(_CACHE_PATH.read_text())
+        data = json.loads(path.read_text())
         if not isinstance(data, dict) or "cities" not in data:
             return None
         return data
     except Exception:
         return None
+
+
+def _fetched_ts(data: dict[str, Any] | None) -> float:
+    try:
+        fetched = datetime.fromisoformat(str((data or {}).get("fetched_at")))
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=timezone.utc)
+        return fetched.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _load_disk() -> dict[str, Any] | None:
+    """Freshest of the runtime cache and the committed snapshot."""
+    candidates = [_read_cache_file(_CACHE_PATH)]
+    if _BUNDLED_PATH != _CACHE_PATH:
+        candidates.append(_read_cache_file(_BUNDLED_PATH))
+    candidates = [c for c in candidates if c]
+    if not candidates:
+        return None
+    return max(candidates, key=_fetched_ts)
+
+
+def load_cached_bundle() -> dict[str, Any] | None:
+    """Memory or on-disk ZHVI data only — never hits the network."""
+    global _memory, _memory_loaded_at
+    if _memory:
+        return _memory
+    disk = _load_disk()
+    if disk:
+        _memory = disk
+        _memory_loaded_at = _fetched_ts(disk) or _utc_now_ts()
+    return disk
 
 
 def _save_disk(payload: dict[str, Any]) -> None:
@@ -135,6 +173,10 @@ def _fetch_remote() -> dict[str, Any] | None:
 
 def get_zhvi_bundle(*, force_refresh: bool = False) -> dict[str, Any] | None:
     global _memory, _memory_loaded_at
+    # Serverless instances must all agree on home prices, so production uses the
+    # committed snapshot only (local dev refreshes it; push to update prices).
+    if os.environ.get("VERCEL") and not force_refresh:
+        return load_cached_bundle()
     now = _utc_now_ts()
     if (
         not force_refresh
@@ -183,12 +225,15 @@ def price_for_ticker(ticker: str, bundle: dict[str, Any] | None = None) -> dict[
     return (data.get("cities") or {}).get(f"{city}|{state}")
 
 
-def refresh_realestate_catalog_prices(catalog_rows: list[dict]) -> dict[str, Any]:
+def refresh_realestate_catalog_prices(
+    catalog_rows: list[dict], bundle: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """
     Mutate catalog home dicts in place with latest ZHVI where available.
     Returns {updated: int, source: str|None, as_of: str|None}.
     """
-    bundle = get_zhvi_bundle()
+    if bundle is None:
+        bundle = get_zhvi_bundle()
     updated = 0
     as_of = None
     source = None

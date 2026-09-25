@@ -1700,6 +1700,11 @@ BOND_BY_TICKER = {b["ticker"]: b for b in MARKET_CATALOG["bonds"]}
 CURRENCY_BY_TICKER = {c["ticker"]: c for c in MARKET_CATALOG["currencies"]}
 COMMODITY_BY_TICKER = {c["ticker"]: c for c in MARKET_CATALOG["commodities"]}
 REALESTATE_BY_TICKER = {h["ticker"]: h for h in MARKET_CATALOG["realestate"]}
+# Apply cached Zillow prices at startup so no request ever sees the placeholder
+# catalog price (quotes read REALESTATE_BY_TICKER directly without syncing).
+_startup_zhvi = housing_index.load_cached_bundle()
+if _startup_zhvi:
+    housing_index.refresh_realestate_catalog_prices(MARKET_CATALOG["realestate"], _startup_zhvi)
 # Equities with a fixed classroom price (e.g. private companies like SpaceX).
 CATALOG_EQUITY_BY_TICKER = {
     item["ticker"]: item
