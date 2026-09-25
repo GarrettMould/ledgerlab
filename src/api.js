@@ -171,6 +171,35 @@ export function getPortfolioHistory(studentId, classId) {
   return request(`/students/${studentId}/history`, { classId });
 }
 
+/** Loans + any newly-due monthly payments (server decides paid vs default). */
+export function getLoans(studentId, classId) {
+  return request(`/students/${studentId}/loans`, { classId, timeoutMs: 15000 });
+}
+
+export function createLoan(studentId, countryId, amount, classId) {
+  return request(`/students/${studentId}/loans`, {
+    method: "POST",
+    classId,
+    body: JSON.stringify({ countryId, amount }),
+  });
+}
+
+export function collectLoanPayment(studentId, loanId, paymentNumber, classId) {
+  return request(`/students/${studentId}/loans/${encodeURIComponent(loanId)}/collect`, {
+    method: "POST",
+    classId,
+    body: JSON.stringify({ paymentNumber }),
+  });
+}
+
+export function sellLoan(studentId, loanId, expectedPrice, classId) {
+  return request(`/students/${studentId}/loans/${encodeURIComponent(loanId)}/sell`, {
+    method: "POST",
+    classId,
+    body: JSON.stringify({ expectedPrice }),
+  });
+}
+
 export function getStudentTrades(studentId, classId, { limit = 100 } = {}) {
   const params = new URLSearchParams();
   if (limit) params.set("limit", String(limit));

@@ -4442,6 +4442,7 @@ function ClosetModal({
   classClosetItems = [],
   canCreateAi = false,
   creatorStudentId = "",
+  startInCreate = false,
 }) {
   const [sectionId, setSectionId] = useState("base");
   const [categoryId, setCategoryId] = useState("skin");
@@ -4485,7 +4486,7 @@ function ClosetModal({
     setDraft(cleaned);
     setShopNote("");
     setShopError("");
-    setShowAi(false);
+    setShowAi(Boolean(startInCreate && canCreateAi));
     setAiGateStep(null);
     setAiPreviewAccessory(null);
     const onKey = (e) => {
@@ -4825,8 +4826,16 @@ export default function StudentCharacter({
   onCashChange,
   classId = "",
   firestoreStudentId = "",
+  openCreateRequest = 0,
 }) {
   const [open, setOpen] = useState(false);
+  const [startInCreate, setStartInCreate] = useState(false);
+
+  useEffect(() => {
+    if (!openCreateRequest) return;
+    setStartInCreate(true);
+    setOpen(true);
+  }, [openCreateRequest]);
   const [outfit, setOutfit] = useState(() => loadSavedOutfit(studentId, name));
   const [classClosetItems, setClassClosetItems] = useState([]);
   const [studentEmail, setStudentEmail] = useState("");
@@ -4902,7 +4911,10 @@ export default function StudentCharacter({
         className="student-character"
         data-click="select"
         aria-label={`Open closet for ${name || "student"}`}
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          setStartInCreate(false);
+          setOpen(true);
+        }}
       >
         <AvatarCanvas outfit={displayOutfit} mode="dash" className="character-stage" />
         <span className="character-hint">Tap to dress</span>
@@ -4921,6 +4933,7 @@ export default function StudentCharacter({
         classClosetItems={classClosetItems}
         canCreateAi={canCreateAi}
         creatorStudentId={creatorStudentId}
+        startInCreate={startInCreate}
       />
     </>
   );

@@ -226,6 +226,7 @@ def get_student(class_id: str, student_id: str) -> dict | None:
             if data.get("lastPortfolioValue") is not None
             else None
         ),
+        "loans_outstanding": float(data.get("loansOutstanding") or 0),
     }
 
 
@@ -348,6 +349,45 @@ def set_last_totals(
     if holdings_count is not None:
         patch["holdingsCount"] = int(holdings_count)
     student_ref(class_id, student_id).update(patch)
+
+
+def loans_col(class_id: str, student_id: str):
+    return student_ref(class_id, student_id).collection("loans")
+
+
+def list_loans(class_id: str, student_id: str) -> list[dict]:
+    rows = []
+    for snap in loans_col(class_id, student_id).stream():
+        data = snap.to_dict() or {}
+        data["id"] = snap.id
+        rows.append(data)
+    rows.sort(key=lambda r: str(r.get("lentAt") or ""), reverse=True)
+    return rows
+
+
+def get_loan(class_id: str, student_id: str, loan_id: str) -> dict | None:
+    snap = loans_col(class_id, student_id).document(loan_id).get()
+    if not snap.exists:
+        return None
+    data = snap.to_dict() or {}
+    data["id"] = snap.id
+    return data
+
+
+def create_loan(class_id: str, student_id: str, loan: dict) -> str:
+    ref = loans_col(class_id, student_id).document()
+    ref.set(loan)
+    return ref.id
+
+
+def update_loan(class_id: str, student_id: str, loan_id: str, patch: dict) -> None:
+    loans_col(class_id, student_id).document(loan_id).update(patch)
+
+
+def set_loans_outstanding(class_id: str, student_id: str, amount: float) -> None:
+    student_ref(class_id, student_id).update(
+        {"loansOutstanding": round(max(0.0, float(amount)), 2)}
+    )
 
 
 def list_holdings(class_id: str, student_id: str) -> list[dict]:
@@ -506,6 +546,8 @@ def _normalize_trade_row(data: dict, doc_id: str | None = None) -> dict:
         "kind": kind,
         "createdAt": created_at,
         "createdAtMs": created_at_ms,
+        "countryName": data.get("countryName"),
+        "paymentNumber": data.get("paymentNumber"),
         "loanAmount": data.get("loanAmount"),
         "downPayment": data.get("downPayment"),
         "closingCosts": data.get("closingCosts"),

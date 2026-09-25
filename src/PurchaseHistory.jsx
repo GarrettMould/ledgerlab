@@ -29,7 +29,25 @@ function kindLabel(kind) {
   const k = String(kind || "market").toLowerCase();
   if (k === "home") return "Home";
   if (k === "bond") return "Bond";
+  if (k.startsWith("loan")) return "Country loan";
   return "Market";
+}
+
+/** Loan rows get their own wording instead of Bought/Sold + shares. */
+function loanRow(t) {
+  const k = String(t.kind || "").toLowerCase();
+  const country = t.countryName || t.ticker;
+  const n = t.paymentNumber ? `payment ${t.paymentNumber}` : "payment";
+  if (k === "loan") return { tag: "Lent", tone: "buy", title: country, meta: "Loan made" };
+  if (k === "loan_interest")
+    return { tag: "Interest", tone: "sell", title: country, meta: `Interest ${n} paid` };
+  if (k === "loan_default")
+    return { tag: "Missed", tone: "missed", title: country, meta: `Defaulted on ${n}` };
+  if (k === "loan_repaid")
+    return { tag: "Repaid", tone: "sell", title: country, meta: "Loan paid back" };
+  if (k === "loan_sold")
+    return { tag: "Sold", tone: "sell", title: country, meta: "Loan sold early" };
+  return null;
 }
 
 export default function PurchaseHistory({ studentId, classId, onBack }) {
@@ -71,6 +89,7 @@ export default function PurchaseHistory({ studentId, classId, onBack }) {
     let spent = 0;
     let received = 0;
     for (const t of trades) {
+      if (t.kind === "loan_default") continue;
       const n = Number(t.notional) || 0;
       if (t.side === "sell") {
         sells += 1;
@@ -130,6 +149,25 @@ export default function PurchaseHistory({ studentId, classId, onBack }) {
           {trades.map((t, i) => {
             const isSell = t.side === "sell";
             const key = t.id || `${t.ticker}-${t.createdAtMs || i}`;
+            const loan = loanRow(t);
+            if (loan) {
+              return (
+                <li key={key} className={`purchase-row ${loan.tone}`}>
+                  <div className="purchase-row-main">
+                    <span className={`purchase-side ${loan.tone}`}>{loan.tag}</span>
+                    <strong className="purchase-ticker">{loan.title}</strong>
+                    <span className="purchase-kind">{kindLabel(t.kind)}</span>
+                  </div>
+                  <div className="purchase-row-meta">
+                    <span>{loan.meta}</span>
+                    <strong className="purchase-notional">{money(t.notional)}</strong>
+                  </div>
+                  <time className="purchase-when" dateTime={t.createdAt || undefined}>
+                    {formatWhen(t.createdAt, t.createdAtMs)}
+                  </time>
+                </li>
+              );
+            }
             return (
               <li key={key} className={isSell ? "purchase-row sell" : "purchase-row buy"}>
                 <div className="purchase-row-main">

@@ -164,6 +164,7 @@ export const PIE_COLORS = {
   commodities: "#1e88e5", // blue
   currencies: "#3949ab", // indigo
   realestate: "#8e24aa", // violet
+  loans: "#00897b", // teal
 };
 
 function holdingValue(h) {
@@ -221,11 +222,13 @@ export function buildAllocation(portfolios) {
     commodities: 0,
     currencies: 0,
     realestate: 0,
+    loans: 0,
   };
 
   for (const portfolio of list) {
     if (!portfolio) continue;
     buckets.cash += Number(portfolio.cash) || 0;
+    buckets.loans += Number(portfolio.loans_outstanding) || 0;
     for (const h of portfolio.holdings || []) {
       const cat = categoryForTicker(h.ticker);
       buckets[cat] = (buckets[cat] || 0) + holdingValue(h);
@@ -255,6 +258,12 @@ export function buildAllocation(portfolios) {
       name: "Real estate",
       value: buckets.realestate,
       pct: (buckets.realestate / total) * 100,
+    },
+    {
+      key: "loans",
+      name: "Country loans",
+      value: buckets.loans,
+      pct: (buckets.loans / total) * 100,
     },
   ].filter((row) => row.value > 0.005);
 }

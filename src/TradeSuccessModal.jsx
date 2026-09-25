@@ -15,6 +15,9 @@ function describeTrade(trade) {
   const qty = Number(trade.qty);
   const isBuy = trade.action !== "sell";
 
+  if (trade.assetType === "loan") {
+    return trade.action === "sell" ? `Sold your ${name} loan` : `Lent to ${name}`;
+  }
   if (trade.assetType === "realestate" || String(trade.ticker || "").startsWith("FL-")) {
     return isBuy ? `Home purchased in ${name}` : `Home sold in ${name}`;
   }
@@ -44,7 +47,7 @@ function describeTrade(trade) {
 
 /**
  * PayPal-style success confirmation after a completed trade.
- * trade: { action, ticker, name?, qty?, assetType?, faceUsd?, total?, fillPrice?, approximateFill?, fillLocked? }
+ * trade: { action, ticker, name?, qty?, assetType?, faceUsd?, total?, fillPrice?, approximateFill?, fillLocked?, note? }
  */
 export default function TradeSuccessModal({ trade, onClose }) {
   const close = useCallback(() => onClose?.(), [onClose]);
@@ -55,7 +58,11 @@ export default function TradeSuccessModal({ trade, onClose }) {
       if (e.key === "Escape" || e.key === "Enter") close();
     };
     document.addEventListener("keydown", onKey);
-    const linger = trade.fillLocked || trade.approximateFill ? 4800 : 3200;
+    const linger = trade.note
+      ? 7000
+      : trade.fillLocked || trade.approximateFill
+        ? 4800
+        : 3200;
     const timer = window.setTimeout(close, linger);
     return () => {
       document.removeEventListener("keydown", onKey);
@@ -103,6 +110,7 @@ export default function TradeSuccessModal({ trade, onClose }) {
         <h3 id="trade-success-title">{isBuy ? "Success!" : "Sold!"}</h3>
         <p className="trade-success-detail">{detail}</p>
         {total && <p className="trade-success-amount">{total}</p>}
+        {trade.note && <p className="trade-success-fill-note">{trade.note}</p>}
         {isBuy && trade.fillLocked && (
           <p className="trade-success-fill-note">
             {trade.approximateFill

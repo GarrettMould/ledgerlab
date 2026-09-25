@@ -20,6 +20,7 @@ from flask_cors import CORS
 import firestore_ledger as fs_ledger
 import housing_index
 import housing_settlement
+import lending
 from portfolio_service import (
     build_history_payload,
     compute_totals as portfolio_compute_totals,
@@ -548,6 +549,14 @@ MARKET_CATALOG = {
             "industry": "Finance",
             "info": {
                 "summary": "Mastercard operates a worldwide card payments network. Like Visa, it earns fees when people use Mastercard to pay.",
+            },
+        },
+        {
+            "ticker": "FIS",
+            "name": "Fidelity National Information Services",
+            "industry": "Finance",
+            "info": {
+                "summary": "FIS builds the behind-the-scenes software banks use to run accounts, move money, and process card payments. It earns fees from thousands of banks and businesses that rely on its technology.",
             },
         },
         {
@@ -4880,6 +4889,292 @@ def remove_market_extra(ticker: str):
     if not removed:
         return jsonify({"error": "Ticker not found on this class market"}), 404
     return jsonify({"ok": True, "ticker": ticker.strip().upper()})
+
+
+def _fs_portfolio_payload(class_id: str, student_id: str) -> dict | None:
+    student = fs_ledger.get_student(class_id, student_id)
+    if not student:
+        return None
+    holdings = fs_ledger.list_holdings(class_id, student_id)
+    payload = serialize_portfolio(
+        student,
+        holdings,
+        with_portfolio=True,
+        realestate_by_ticker=REALESTATE_BY_TICKER,
+        fetch_quotes_batch=fetch_quotes_batch,
+    )
+    record_fs_snapshot(
+        class_id,
+        student_id,
+        student,
+        holdings,
+        fetch_quotes_batch,
+        cash=payload["cash"],
+        portfolio_value=payload["portfolio_value"] or 0,
+        total_value=payload["total_value"],
+    )
+    return payload
+
+
+def _advance_loans(class_id: str, student_id: str) -> list[dict]:
+    """Decide any newly-due monthly payments and return serialized loans."""
+    now = datetime.now(timezone.utc)
+    out = []
+    for loan in fs_ledger.list_loans(class_id, student_id):
+        pending = lending.next_pending(loan, now)
+        if pending:
+            fs_ledger.update_loan(class_id, student_id, loan["id"], {"pending": pending})
+            loan["pending"] = pending
+        out.append(lending.serialize_loan(loan))
+    return out
+
+
+def _loans_response(loans: list[dict], portfolio: dict | None = None) -> dict:
+    pending = [
+        {**loan["pending"], "loan": {k: v for k, v in loan.items() if k != "payments"}}
+        for loan in loans
+        if loan.get("pending")
+    ]
+    pending.sort(key=lambda p: p.get("dueAt") or "")
+    body = {"loans": loans, "pending": pending}
+    if portfolio is not None:
+        body["portfolio"] = portfolio
+    return body
+
+
+@app.get("/api/students/<student_id>/loans")
+def student_loans(student_id: str):
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if not using_firestore():
+        return jsonify(_loans_response([]))
+    if not fs_ledger.get_student(class_id, student_id):
+        return jsonify({"error": "Student not found"}), 404
+    return jsonify(_loans_response(_advance_loans(class_id, student_id)))
+
+
+@app.post("/api/students/<student_id>/loans")
+def create_student_loan(student_id: str):
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if not using_firestore():
+        return jsonify({"error": "Lending needs the classroom Firestore ledger."}), 400
+    data = request.get_json(silent=True) or {}
+    country_id = str(data.get("countryId") or "").strip().upper()
+    country = lending.COUNTRIES.get(country_id)
+    if not country:
+        return jsonify({"error": "Pick a country from the lending map."}), 400
+    try:
+        amount = round(float(data.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Enter a valid amount."}), 400
+    if amount < lending.MIN_LOAN:
+        return jsonify({"error": f"The smallest loan is ${lending.MIN_LOAN:,.0f}."}), 400
+
+    student = fs_ledger.get_student(class_id, student_id)
+    if not student:
+        return jsonify({"error": "Student not found"}), 404
+    cash = float(student["cash"])
+    if amount > cash + 1e-9:
+        return jsonify({"error": f"Not enough cash. Need ${amount:,.2f}, have ${cash:,.2f}."}), 400
+
+    now = datetime.now(timezone.utc)
+    total = lending.total_payments(now)
+    if total < 1:
+        return jsonify({"error": "Too close to May 15 — no interest payments are left."}), 400
+
+    loan = {
+        "countryId": country_id,
+        "countryName": country["name"],
+        "principal": amount,
+        "ratePct": country["rate_pct"],
+        "defaultPct": country["default_pct"],
+        "lentAt": now.isoformat(),
+        "status": "active",
+        "totalPayments": total,
+        "paymentsHandled": 0,
+        "payments": [],
+        "pending": None,
+    }
+    loan_id = fs_ledger.create_loan(class_id, student_id, loan)
+    holdings = fs_ledger.list_holdings(class_id, student_id)
+    fs_ledger.set_cash(class_id, student_id, cash - amount, holdings_count=len(holdings))
+    fs_ledger.set_loans_outstanding(
+        class_id, student_id, float(student.get("loans_outstanding") or 0) + amount
+    )
+    try:
+        fs_ledger.record_trade(
+            class_id,
+            student_id,
+            side="buy",
+            ticker=country_id,
+            shares=1,
+            price=amount,
+            notional=amount,
+            kind="loan",
+            student_name=student.get("name"),
+            extra={"countryName": country["name"], "loanId": loan_id},
+        )
+    except Exception:
+        pass
+    portfolio = _fs_portfolio_payload(class_id, student_id)
+    loans = _advance_loans(class_id, student_id)
+    return jsonify(_loans_response(loans, portfolio))
+
+
+@app.post("/api/students/<student_id>/loans/<loan_id>/collect")
+def collect_loan_payment(student_id: str, loan_id: str):
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if not using_firestore():
+        return jsonify({"error": "Lending needs the classroom Firestore ledger."}), 400
+    data = request.get_json(silent=True) or {}
+    loan = fs_ledger.get_loan(class_id, student_id, loan_id)
+    if not loan:
+        return jsonify({"error": "Loan not found"}), 404
+    pending = loan.get("pending")
+    if not pending:
+        return jsonify({"error": "No payment is waiting on this loan."}), 409
+    if data.get("paymentNumber") is not None and int(data["paymentNumber"]) != int(pending["n"]):
+        return jsonify({"error": "That payment was already handled."}), 409
+
+    student = fs_ledger.get_student(class_id, student_id)
+    if not student:
+        return jsonify({"error": "Student not found"}), 404
+
+    interest = float(pending.get("interest") or 0)
+    principal_back = float(pending.get("principalReturned") or 0)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payments = list(loan.get("payments") or [])
+    payments.append(
+        {
+            "n": int(pending["n"]),
+            "outcome": pending["outcome"],
+            "interest": interest,
+            "dueAt": pending.get("dueAt"),
+            "resolvedAt": now_iso,
+        }
+    )
+    patch = {
+        "payments": payments,
+        "paymentsHandled": int(pending["n"]),
+        "pending": None,
+    }
+    principal_lost = float(pending.get("principalLost") or 0)
+    if pending.get("final"):
+        patch["status"] = "repaid"
+        patch["repaidAt"] = now_iso
+        patch["principalReturned"] = principal_back
+        patch["principalLost"] = principal_lost
+    fs_ledger.update_loan(class_id, student_id, loan_id, patch)
+
+    credit = interest + principal_back
+    if credit > 0:
+        fs_ledger.credit_student_cash(class_id, student_id, credit)
+    if pending.get("final"):
+        # The whole principal leaves "loans outstanding", even the part lost to default.
+        fs_ledger.set_loans_outstanding(
+            class_id,
+            student_id,
+            float(student.get("loans_outstanding") or 0) - float(loan["principal"]),
+        )
+
+    trade_rows = []
+    if interest > 0:
+        trade_rows.append(("loan_interest", interest))
+    elif pending["outcome"] == "default":
+        trade_rows.append(("loan_default", 0.0))
+    if principal_back > 0:
+        trade_rows.append(("loan_repaid", principal_back))
+    for kind, amount in trade_rows:
+        try:
+            fs_ledger.record_trade(
+                class_id,
+                student_id,
+                side="sell",
+                ticker=loan["countryId"],
+                shares=1,
+                price=amount,
+                notional=amount,
+                kind=kind,
+                student_name=student.get("name"),
+                extra={
+                    "countryName": loan.get("countryName"),
+                    "loanId": loan_id,
+                    "paymentNumber": int(pending["n"]),
+                },
+            )
+        except Exception:
+            pass
+
+    portfolio = _fs_portfolio_payload(class_id, student_id)
+    loans = _advance_loans(class_id, student_id)
+    return jsonify(_loans_response(loans, portfolio))
+
+
+@app.post("/api/students/<student_id>/loans/<loan_id>/sell")
+def sell_loan(student_id: str, loan_id: str):
+    """Sell a loan early at its market price (drops with risk + missed payments)."""
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if not using_firestore():
+        return jsonify({"error": "Lending needs the classroom Firestore ledger."}), 400
+    data = request.get_json(silent=True) or {}
+    _advance_loans(class_id, student_id)
+    loan = fs_ledger.get_loan(class_id, student_id, loan_id)
+    if not loan:
+        return jsonify({"error": "Loan not found"}), 404
+    if loan.get("status") != "active":
+        return jsonify({"error": "This loan is already closed."}), 409
+    if loan.get("pending"):
+        return jsonify({"error": "Spin for your waiting payment before selling."}), 409
+
+    student = fs_ledger.get_student(class_id, student_id)
+    if not student:
+        return jsonify({"error": "Student not found"}), 404
+
+    price = lending.sale_price(loan)
+    quoted = data.get("expectedPrice")
+    if quoted is not None and abs(float(quoted) - price) > 0.009:
+        return jsonify({"error": "The price changed — check the new price and try again."}), 409
+
+    principal = float(loan["principal"])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    fs_ledger.update_loan(
+        class_id,
+        student_id,
+        loan_id,
+        {"status": "sold", "soldAt": now_iso, "soldFor": price},
+    )
+    fs_ledger.credit_student_cash(class_id, student_id, price)
+    fs_ledger.set_loans_outstanding(
+        class_id,
+        student_id,
+        float(student.get("loans_outstanding") or 0) - principal,
+    )
+    try:
+        fs_ledger.record_trade(
+            class_id,
+            student_id,
+            side="sell",
+            ticker=loan["countryId"],
+            shares=1,
+            price=price,
+            notional=price,
+            kind="loan_sold",
+            student_name=student.get("name"),
+            extra={"countryName": loan.get("countryName"), "loanId": loan_id},
+        )
+    except Exception:
+        pass
+
+    portfolio = _fs_portfolio_payload(class_id, student_id)
+    loans = _advance_loans(class_id, student_id)
+    return jsonify(_loans_response(loans, portfolio))
 
 
 @app.get("/api/students/<student_id>/trades")

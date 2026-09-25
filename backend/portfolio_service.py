@@ -108,11 +108,14 @@ def serialize_portfolio(
         holding_payload.append(payload)
 
     cash = float(student["cash"])
+    loans_outstanding = float(student.get("loans_outstanding") or 0)
+    portfolio_value += loans_outstanding
     total = cash + portfolio_value - mortgage_debt if with_portfolio else cash
     return {
         "id": student["id"],
         "name": student["name"],
         "cash": round(cash, 2),
+        "loans_outstanding": round(loans_outstanding, 2),
         "portfolio_value": round(portfolio_value, 2) if with_portfolio else None,
         "mortgage_debt": round(mortgage_debt, 2) if with_portfolio else None,
         "total_value": round(total, 2) if with_portfolio else round(cash, 2),
@@ -130,7 +133,7 @@ def compute_totals(
     fetch_quotes_batch: QuoteBatch,
 ) -> tuple[float, float, float]:
     cash = float(student["cash"])
-    portfolio_value = 0.0
+    portfolio_value = float(student.get("loans_outstanding") or 0)
     mortgage_debt = 0.0
     if holdings:
         quotes = fetch_quotes_batch([h["ticker"] for h in holdings])

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { buyHome, buyShares, createStudent, getMarket, getQuote, getQuotes, getStudent, listStudents, sellShares } from "./api";
+import { buyHome, buyShares, createStudent, getLoans, getMarket, getQuote, getQuotes, getStudent, listStudents, sellShares } from "./api";
 import PriceChart from "./PriceChart";
 import PortfolioHistoryChart from "./PortfolioHistoryChart";
 import CommodityInfoTip from "./CommodityInfoTip";
@@ -13,7 +13,10 @@ import HomeJobsPanel from "./HomeJobsPanel";
 import TeacherDashboard from "./TeacherDashboard";
 import TeacherGate from "./TeacherGate";
 import CashTransferAlert from "./CashTransferAlert";
+import LendingInterestAlert from "./LendingInterestAlert";
 import PartnershipInviteAlert from "./PartnershipInviteAlert";
+import WhatsNewAlert from "./WhatsNewAlert";
+import LoanSellModal from "./LoanSellModal";
 import HeadToHeadModal, {
   HeadToHeadBattleModal,
   HeadToHeadLiveMatchups,
@@ -39,6 +42,7 @@ import { signOutTeacherAuth, watchAccountAuth } from "./teacherAuth";
 import { setClickMuted } from "./clickSounds";
 import FloridaRealEstateMap from "./FloridaRealEstateMap";
 import WorldLendingMap from "./WorldLendingMap";
+import GlobeCharacter from "./GlobeCharacter";
 import MarketGlyph from "./MarketGlyph";
 import PopularStocksTicker from "./PopularStocksTicker";
 import BiggestMoversTicker from "./BiggestMoversTicker";
@@ -58,8 +62,14 @@ const SHOW_CLASS_CHAT = false;
 const SHOW_CONGRESS_TRADES = false;
 /** “Most popular / New stocks” highlight strip on Stocks — hide until ready. */
 const SHOW_POPULAR_STOCKS = false;
-/** World lending map on Bonds — hide until ready for class. */
-const SHOW_WORLD_LENDING = false;
+/** World lending map on Bonds — classroom country rates. */
+const SHOW_WORLD_LENDING = true;
+/** Test: show a sample Nigeria interest-payment spin on every page load. */
+const SHOW_LENDING_INTEREST_DEMO = false;
+/** One-time "what's new" cards for each student (add ?whatsnew to the URL to preview). */
+const SHOW_WHATS_NEW = true;
+/** Testing: show the "what's new" cards on every reload (nothing is marked seen). */
+const WHATS_NEW_ALWAYS_SHOW = true;
 const STRATEGY_BIO_MAX = 280;
 const StudentJoin = lazy(() => import("./StudentJoin"));
 
@@ -416,6 +426,7 @@ function StudentPortfolio({
   const [showJobs, setShowJobs] = useState(false);
   const [showPurchases, setShowPurchases] = useState(false);
   const [showBoard, setShowBoard] = useState(false);
+  const [openCreateRequest, setOpenCreateRequest] = useState(0);
   const [showH2HBattle, setShowH2HBattle] = useState(false);
   const [h2hFocusMatchId, setH2hFocusMatchId] = useState("");
   const [h2hResumeToken, setH2hResumeToken] = useState(0);
@@ -439,10 +450,37 @@ function StudentPortfolio({
     () => groupHoldingsByCategory(portfolio?.holdings),
     [portfolio?.holdings]
   );
+  const [studentLoans, setStudentLoans] = useState([]);
+  useEffect(() => {
+    if (!classId || !portfolio?.id) {
+      setStudentLoans([]);
+      return undefined;
+    }
+    let cancelled = false;
+    getLoans(portfolio.id, classId)
+      .then((data) => {
+        if (!cancelled) setStudentLoans(Array.isArray(data?.loans) ? data.loans : []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [classId, portfolio?.id, portfolio?.cash, portfolio?.loans_outstanding]);
+  const activeLoans = useMemo(
+    () => studentLoans.filter((l) => l.status === "active"),
+    [studentLoans]
+  );
+  const [loanToSell, setLoanToSell] = useState(null);
+
   const holdingsTotals = useMemo(() => {
     const rows = portfolio?.holdings || [];
     let invested = 0;
     let value = 0;
+    for (const loan of activeLoans) {
+      const principal = Number(loan.principal) || 0;
+      invested += principal;
+      value += principal;
+    }
     for (const h of rows) {
       const cost =
         h.cost_basis != null
@@ -460,7 +498,7 @@ function StudentPortfolio({
     const gain = value - invested;
     const gainPct = invested > 0 ? (gain / invested) * 100 : null;
     return { invested, value, gain, gainPct };
-  }, [portfolio?.holdings]);
+  }, [portfolio?.holdings, activeLoans]);
 
   const holdingsAvatarOutfit = useMemo(
     () =>
@@ -1137,6 +1175,7 @@ function StudentPortfolio({
                 cash={portfolio?.cash ?? 0}
                 classId={classId}
                 firestoreStudentId={firestoreStudentId}
+                openCreateRequest={openCreateRequest}
                 onCashChange={() => {
                   if (selectedId) loadPortfolio(selectedId).catch(() => {});
                 }}
@@ -1723,29 +1762,48 @@ function StudentPortfolio({
               )}
 
               {SHOW_WORLD_LENDING && category === "bonds" && !showWorldLending && (
-                <div className="world-lending-entry">
-                  <p>
+                <button
+                  type="button"
+                  className="world-lending-entry"
+                  data-click="select"
+                  onClick={() => {
+                    setShowWorldLending(true);
+                    setSelectedAsset(null);
+                    setTradeDraft(null);
+                    setChartTicker(null);
+                  }}
+                >
+                  <span className="world-lending-entry-globe" aria-hidden="true">
+                    <Suspense
+                      fallback={
+                        <div className="globe-character-stage globe-character-fallback" />
+                      }
+                    >
+                      <GlobeCharacter />
+                    </Suspense>
+                  </span>
+                  <span className="world-lending-entry-copy">
                     <strong>Lend around the world</strong>
-                    Compare classroom interest rates by country on an interactive map.
-                  </p>
-                  <button
-                    type="button"
-                    className="primary-btn"
-                    data-click="confirm"
-                    onClick={() => {
-                      setShowWorldLending(true);
-                      setSelectedAsset(null);
-                      setTradeDraft(null);
-                      setChartTicker(null);
-                    }}
-                  >
-                    Open world map
-                  </button>
-                </div>
+                    <span>
+                      Lend money to governments around the world and earn interest.
+                      Careful though, higher rates come with higher risk!
+                    </span>
+                  </span>
+                  <span className="world-lending-entry-go" aria-hidden="true">
+                    Open
+                  </span>
+                </button>
               )}
 
               {SHOW_WORLD_LENDING && showWorldLending && category === "bonds" ? (
-                <WorldLendingMap />
+                <WorldLendingMap
+                  studentId={selectedId}
+                  classId={classId}
+                  cash={portfolio?.cash}
+                  onPortfolio={(next) => {
+                    if (next) setPortfolio(next);
+                  }}
+                />
               ) : (
                 <>
               {(marketPricesPending || (marketLoading && marketItems.length === 0)) && (
@@ -2776,10 +2834,10 @@ function StudentPortfolio({
               <h3>Your holdings</h3>
               <p>Tap a holding, then Sell or Sell all</p>
             </div>
-            {(!portfolio.holdings || portfolio.holdings.length === 0) && (
+            {!portfolio.holdings?.length && !activeLoans.length && (
               <p className="empty">No shares yet. Pick a market above to start.</p>
             )}
-            {portfolio.holdings?.length > 0 && (
+            {(portfolio.holdings?.length > 0 || activeLoans.length > 0) && (
               <>
                 <div
                   className="holdings-summary-row"
@@ -2872,7 +2930,7 @@ function StudentPortfolio({
                 </div>
               </div>
             </div>
-            {portfolio.holdings?.length > 0 && (
+            {(portfolio.holdings?.length > 0 || activeLoans.length > 0) && (
               <div className="holdings-cols" aria-hidden="true">
                 <span>Holding</span>
                 <span className="holding-col-tip">
@@ -3377,12 +3435,142 @@ function StudentPortfolio({
             })}
               </div>
             ))}
+            {activeLoans.length > 0 && (
+              <div className="holdings-group holdings-group-loans">
+                <div className="holdings-category">
+                  <h4>Country loans</h4>
+                  <span>
+                    {activeLoans.length}{" "}
+                    {activeLoans.length === 1 ? "position" : "positions"}
+                  </span>
+                </div>
+                {activeLoans.map((loan) => {
+                  const principal = Number(loan.principal) || 0;
+                  const earned = Number(loan.interestEarned) || 0;
+                  const nextLabel = loan.pending
+                    ? "payment waiting now"
+                    : loan.nextDueAt
+                      ? `next ${new Date(loan.nextDueAt).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                        })}`
+                      : "";
+                  const rowKey = `loan:${loan.id}`;
+                  const loanSelected = selectedHolding === rowKey;
+                  const toggleLoan = () => {
+                    if (tradeDraft?.source === "holding") setTradeDraft(null);
+                    setSelectedHolding(loanSelected ? null : rowKey);
+                  };
+                  return (
+                    <div
+                      key={loan.id}
+                      className={`holding-row holding-row-loan${loanSelected ? " selected" : ""}`}
+                      role="button"
+                      tabIndex={0}
+                      data-click="select"
+                      onClick={toggleLoan}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          toggleLoan();
+                        }
+                      }}
+                    >
+                      <div className="holding-identity">
+                        <strong>{loan.countryName}</strong>
+                        <span>
+                          {Number(loan.ratePct).toFixed(1)}% · payment{" "}
+                          {loan.paymentsHandled}/{loan.totalPayments}
+                          {nextLabel ? ` · ${nextLabel}` : ""}
+                        </span>
+                      </div>
+
+                      <div className="holding-stat">
+                        <span className="holding-stat-label">Cost basis</span>
+                        <strong>{money(principal)}</strong>
+                      </div>
+
+                      <div className="holding-stat">
+                        <span className="holding-stat-label holding-col-tip">
+                          Value
+                          <span className="holding-col-tip-bubble">
+                            What you lent — it comes back with the final payment.
+                          </span>
+                        </span>
+                        <strong>{money(principal)}</strong>
+                        {loan.salePrice != null && (
+                          <span className="holding-stat-sub">
+                            Sell now: {money(loan.salePrice)}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="holding-stat holding-gain">
+                        <span className="holding-stat-label">Interest earned</span>
+                        <strong className={earned > 0 ? "up" : ""}>
+                          {earned > 0 ? "+" : ""}
+                          {money(earned)}
+                        </strong>
+                        <span className={loan.missedCount > 0 ? "down" : ""}>
+                          {loan.paidCount} paid · {loan.missedCount} missed
+                        </span>
+                      </div>
+
+                      <div className="holding-row-actions">
+                        {loanSelected && (
+                          <div className="row-trade-btns">
+                            <button
+                              type="button"
+                              className="row-sell"
+                              data-click="select"
+                              aria-label={`Sell your ${loan.countryName} loan`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setLoanToSell(loan);
+                              }}
+                            >
+                              Sell
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             </div>
           </section>
           )}
         </>
       )}
       <TradeSuccessModal trade={tradeSuccess} onClose={closeTradeSuccess} />
+      <LoanSellModal
+        loan={loanToSell}
+        studentId={portfolio?.id}
+        classId={classId}
+        onClose={() => setLoanToSell(null)}
+        onSold={(data, sold) => {
+          setLoanToSell(null);
+          setSelectedHolding(null);
+          if (Array.isArray(data?.loans)) setStudentLoans(data.loans);
+          if (selectedId) loadPortfolio(selectedId).catch(() => {});
+          const loss = Math.max(0, Number(sold.principal) - Number(sold.salePrice));
+          setTradeSuccess({
+            action: "sell",
+            assetType: "loan",
+            ticker: sold.countryId,
+            name: sold.countryName,
+            total: sold.salePrice,
+            note:
+              loss > 0
+                ? `You took a ${money(loss)} loss on the loan. The ${money(
+                    sold.interestEarned
+                  )} interest you collected is still yours.`
+                : `You got your full ${money(sold.principal)} back.`,
+          });
+        }}
+      />
       {classId && firestoreStudentId && (
         <>
           <HeadToHeadModal
@@ -3414,6 +3602,42 @@ function StudentPortfolio({
           />
         </>
       )}
+      {SHOW_WHATS_NEW && lockedStudentId && portfolio ? (
+        <WhatsNewAlert
+          classId={firestoreStudentId ? classId : ""}
+          studentId={firestoreStudentId || String(lockedStudentId)}
+          alwaysShow={WHATS_NEW_ALWAYS_SHOW}
+          hideFeatures={[
+            ...(SHOW_WORLD_LENDING &&
+            (enabledMarkets || DEFAULT_MARKETS).bonds !== false
+              ? []
+              : ["lend"]),
+            ...(classId ? [] : ["jobs"]),
+          ]}
+          onOpenFeature={(feature) => {
+            setShowClass(false);
+            setShowNews(false);
+            setShowPurchases(false);
+            setShowBoard(false);
+            setSelectedAsset(null);
+            setTradeDraft(null);
+            setChartTicker(null);
+            if (feature === "lend") {
+              setShowJobs(false);
+              setCategory("bonds");
+              setShowWorldLending(true);
+            } else if (feature === "jobs") {
+              setCategory(null);
+              setShowWorldLending(false);
+              setShowJobs(true);
+            } else if (feature === "create") {
+              setShowJobs(false);
+              setOpenCreateRequest((n) => n + 1);
+            }
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        />
+      ) : null}
     </section>
   );
 }
@@ -3844,8 +4068,19 @@ export default function App() {
                 ""
               }
             />
+            <LendingInterestAlert
+              classId={studentSession.classId}
+              studentId={studentSession.apiStudentId}
+              refreshKey={portfolioRefreshToken}
+              onCollected={() => {
+                refreshApiStudents();
+                setPortfolioRefreshToken((n) => n + 1);
+              }}
+            />
           </>
         )}
+
+      {SHOW_LENDING_INTEREST_DEMO && !joinCode && <LendingInterestAlert demo />}
 
       <main>{mainContent}</main>
     </div>

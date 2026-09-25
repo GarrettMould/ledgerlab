@@ -986,6 +986,16 @@ export async function updateClassStudent(classId, studentId, patch) {
   });
 }
 
+/** Record that the student dismissed a one-time "what's new" announcement. */
+export async function markAnnouncementSeen(classId, studentId, announcementId) {
+  const id = String(announcementId || "").trim();
+  if (!classId || !studentId || !id) return;
+  await updateDoc(doc(db, "classes", classId, "students", studentId), {
+    seenAnnouncements: arrayUnion(id),
+    updatedAt: serverTimestamp(),
+  });
+}
+
 /** Record a strategy scenario the student has already answered (Create Item). */
 export async function markClosetAiScenarioAnswered(classId, studentId, scenarioId) {
   const id = String(scenarioId || "").trim();
