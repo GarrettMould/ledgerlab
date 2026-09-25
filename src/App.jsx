@@ -69,7 +69,7 @@ const SHOW_LENDING_INTEREST_DEMO = false;
 /** One-time "what's new" cards for each student (add ?whatsnew to the URL to preview). */
 const SHOW_WHATS_NEW = true;
 /** Testing: show the "what's new" cards on every reload (nothing is marked seen). */
-const WHATS_NEW_ALWAYS_SHOW = true;
+const WHATS_NEW_ALWAYS_SHOW = false;
 const STRATEGY_BIO_MAX = 280;
 const StudentJoin = lazy(() => import("./StudentJoin"));
 

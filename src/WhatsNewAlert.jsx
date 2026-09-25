@@ -181,8 +181,7 @@ export default function WhatsNewAlert({
   }
 
   function handleTry() {
-    // Cards after this one stay unseen so they show on the next visit.
-    markSeen(queue.slice(0, index + 1));
+    setSeen(markSeen(queue));
     setHidden(true);
     onOpenFeature?.(current.tone);
   }

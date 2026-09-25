@@ -41,11 +41,11 @@ service cloud.firestore {
 
       match /students/{studentId} {
         allow read: if signedIn();
-        // Cash + holdingsCount are written by the Admin SDK (Flask ledger) only.
+        // Cash, holdingsCount, loansOutstanding are written by the Admin SDK (Flask ledger) only.
         allow create: if signedIn();
         allow update: if signedIn()
           && !request.resource.data.diff(resource.data).affectedKeys()
-            .hasAny(['cash', 'holdingsCount']);
+            .hasAny(['cash', 'holdingsCount', 'loansOutstanding']);
         allow delete: if signedIn();
 
         match /holdings/{ticker} {
