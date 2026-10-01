@@ -48,6 +48,7 @@ const MARKET_OPTIONS = [
   { id: "commodities", label: "Commodities" },
   { id: "currencies", label: "Currencies" },
   { id: "realestate", label: "Real estate" },
+  { id: "lending", label: "Lending" },
 ];
 
 function money(n) {

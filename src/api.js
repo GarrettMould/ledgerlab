@@ -176,6 +176,83 @@ export function getLoans(studentId, classId) {
   return request(`/students/${studentId}/loans`, { classId, timeoutMs: 15000 });
 }
 
+/** Open classmate lending offers for a class. */
+export function listPeerLendOffers(classId) {
+  return request(`/classes/${classId}/peer-lend/offers`, {
+    classId,
+    timeoutMs: 15000,
+  });
+}
+
+export function createPeerLendOffer(classId, studentId, amount, ratePct) {
+  return request(`/classes/${classId}/peer-lend/offers`, {
+    method: "POST",
+    classId,
+    body: JSON.stringify({ studentId, amount, ratePct }),
+  });
+}
+
+export function cancelPeerLendOffer(classId, offerId, studentId) {
+  const q = new URLSearchParams({ studentId: String(studentId || "") });
+  return request(
+    `/classes/${classId}/peer-lend/offers/${encodeURIComponent(offerId)}?${q}`,
+    {
+      method: "DELETE",
+      classId,
+    }
+  );
+}
+
+export function borrowPeerLoan(classId, studentId, offerId, amount) {
+  return request(`/classes/${classId}/peer-lend/borrow`, {
+    method: "POST",
+    classId,
+    timeoutMs: 20000,
+    body: JSON.stringify({ studentId, offerId, amount }),
+  });
+}
+
+export function getPeerLoans(studentId, classId) {
+  return request(`/students/${studentId}/peer-loans`, {
+    classId,
+    timeoutMs: 15000,
+  });
+}
+
+export function settlePeerLoans(studentId, classId) {
+  return request(`/students/${studentId}/peer-loans/settle`, {
+    method: "POST",
+    classId,
+    timeoutMs: 20000,
+    body: JSON.stringify({}),
+  });
+}
+
+/** Local walkthrough helpers — require PEER_LEND_TEST=1 on the API. */
+export function peerLendTestSeedOffer(classId, { amount = 1000, ratePct = 7 } = {}) {
+  return request(`/classes/${classId}/peer-lend/test/seed-offer`, {
+    method: "POST",
+    classId,
+    body: JSON.stringify({ amount, ratePct }),
+  });
+}
+
+export function peerLendTestForceDue(studentId, classId) {
+  return request(`/students/${studentId}/peer-loans/test/force-due`, {
+    method: "POST",
+    classId,
+    body: JSON.stringify({}),
+  });
+}
+
+export function peerLendTestDrainCash(studentId, classId, cash = 25) {
+  return request(`/students/${studentId}/peer-loans/test/drain-cash`, {
+    method: "POST",
+    classId,
+    body: JSON.stringify({ cash }),
+  });
+}
+
 export function createLoan(studentId, countryId, amount, classId) {
   return request(`/students/${studentId}/loans`, {
     method: "POST",

@@ -103,6 +103,19 @@ export default function MarketGlyph({ id }) {
           />
         </svg>
       );
+    case "lending":
+      return (
+        <svg {...common}>
+          <circle cx="18" cy="22" r="8" stroke="currentColor" strokeWidth="3" />
+          <circle cx="30" cy="26" r="8" stroke="currentColor" strokeWidth="3" />
+          <path
+            d="M14 22 H22 M18 18 V26 M26 26 H34 M30 22 V30"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     default:
       return null;
   }

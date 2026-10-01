@@ -13,6 +13,7 @@ import {
   stripPlayerFishForm,
 } from "./StudentCharacter";
 import { listClassStudents } from "./classStore";
+import { POLL, pollWhileVisible } from "./pollWhileVisible";
 
 function money(n) {
   return Number(n || 0).toLocaleString("en-US", {
@@ -198,10 +199,15 @@ function CrewSlotRow({
 /**
  * Class job board: open crew slots (+ to join) + who already signed up.
  */
+/** Below this cash balance → borrow pitch; at/above → lend pitch. */
+const CASH_LEND_THRESHOLD = 25000;
+
 export default function JobBoard({
   classId,
   studentId = "",
+  cash = 0,
   onBack,
+  onOpenLending,
   readOnly = false,
 }) {
   const [jobs, setJobs] = useState([]);
@@ -249,8 +255,7 @@ export default function JobBoard({
 
   useEffect(() => {
     refresh();
-    const t = window.setInterval(refresh, 8000);
-    return () => window.clearInterval(t);
+    return pollWhileVisible(refresh, POLL.jobBoard);
   }, [refresh]);
 
   useEffect(() => {
@@ -358,6 +363,9 @@ export default function JobBoard({
     return `${wage} · sells for ${money(job.sellPrice)}`;
   }
 
+  const flushCash = Number(cash) >= CASH_LEND_THRESHOLD;
+  const emptyJobsIntent = flushCash ? "lend" : "borrow";
+
   return (
     <div className="job-board">
       <div className="market-toolbar">
@@ -445,12 +453,47 @@ export default function JobBoard({
       ) : null}
 
       <section className="job-board-section">
-        <h4>Hiring now</h4>
         {loading && jobs.length === 0 && invites.length === 0 && displayOpenJobs.length === 0 ? (
-          <p className="empty">Loading…</p>
+          <>
+            <h4>Hiring now</h4>
+            <p className="empty">Loading…</p>
+          </>
         ) : displayOpenJobs.length === 0 ? (
-          <p className="empty">No open Team of 3 / Crew of 3+ roles right now.</p>
+          !readOnly && onOpenLending ? (
+            <button
+              type="button"
+              className={`home-borrow-sign job-board-borrow-sign is-${emptyJobsIntent}`}
+              data-click="select"
+              onClick={() => onOpenLending(emptyJobsIntent)}
+            >
+              <span className="home-borrow-sign-kicker">
+                {flushCash
+                  ? "No jobs hiring · Put cash to work"
+                  : "No jobs hiring · Need cash?"}
+              </span>
+              <strong className="home-borrow-sign-title">
+                {flushCash
+                  ? "Have extra cash? Put it to work & earn!"
+                  : "Low on cash? Borrow money!"}
+              </strong>
+              <span className="home-borrow-sign-blurb">
+                {flushCash
+                  ? "List cash you’re willing to lend and set your interest rate — classmates can borrow from you."
+                  : "Classmates with extra cash are ready to lend — pick a rate and get funded."}
+              </span>
+              <span className="home-borrow-sign-go">
+                {flushCash ? "I want to lend →" : "See lenders →"}
+              </span>
+            </button>
+          ) : (
+            <>
+              <h4>Hiring now</h4>
+              <p className="empty">No open Team of 3 / Crew of 3+ roles right now.</p>
+            </>
+          )
         ) : (
+          <>
+            <h4>Hiring now</h4>
           <div className="job-board-list">
             {displayOpenJobs.map((job) => {
               const isOwner = job.creatorId === studentId;
@@ -497,6 +540,7 @@ export default function JobBoard({
               );
             })}
           </div>
+          </>
         )}
       </section>
 

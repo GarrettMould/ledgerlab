@@ -18,6 +18,10 @@ function describeTrade(trade) {
   if (trade.assetType === "loan") {
     return trade.action === "sell" ? `Sold your ${name} loan` : `Lent to ${name}`;
   }
+  if (trade.assetType === "peerLoan") {
+    if (trade.action === "lend") return `Lent to ${name}`;
+    return `Borrowed from ${name}`;
+  }
   if (trade.assetType === "realestate" || String(trade.ticker || "").startsWith("FL-")) {
     return isBuy ? `Home purchased in ${name}` : `Home sold in ${name}`;
   }
@@ -58,11 +62,12 @@ export default function TradeSuccessModal({ trade, onClose }) {
       if (e.key === "Escape" || e.key === "Enter") close();
     };
     document.addEventListener("keydown", onKey);
-    const linger = trade.note
-      ? 7000
-      : trade.fillLocked || trade.approximateFill
-        ? 4800
-        : 3200;
+    const linger =
+      trade.note || trade.oweTotal != null
+        ? 7000
+        : trade.fillLocked || trade.approximateFill
+          ? 4800
+          : 3200;
     const timer = window.setTimeout(close, linger);
     return () => {
       document.removeEventListener("keydown", onKey);
@@ -73,6 +78,14 @@ export default function TradeSuccessModal({ trade, onClose }) {
   if (!trade) return null;
 
   const isBuy = trade.action !== "sell";
+  const title =
+    trade.assetType === "peerLoan"
+      ? trade.action === "lend"
+        ? "Loan listed!"
+        : "Borrowed!"
+      : isBuy
+        ? "Success!"
+        : "Sold!";
   const detail = describeTrade(trade);
   const total =
     trade.total != null && Number.isFinite(Number(trade.total))
@@ -107,10 +120,23 @@ export default function TradeSuccessModal({ trade, onClose }) {
           </svg>
         </div>
 
-        <h3 id="trade-success-title">{isBuy ? "Success!" : "Sold!"}</h3>
+        <h3 id="trade-success-title">{title}</h3>
         <p className="trade-success-detail">{detail}</p>
         {total && <p className="trade-success-amount">{total}</p>}
-        {trade.note && <p className="trade-success-fill-note">{trade.note}</p>}
+        {trade.assetType === "peerLoan" &&
+        trade.action === "borrow" &&
+        trade.oweTotal != null &&
+        Number.isFinite(Number(trade.oweTotal)) ? (
+          <p className="trade-success-owe-note">
+            You’ll owe{" "}
+            <strong className="trade-success-owe-amount">
+              {money(trade.oweTotal)}
+            </strong>
+            {trade.dueLabel ? ` on ${trade.dueLabel}.` : "."}
+          </p>
+        ) : trade.note ? (
+          <p className="trade-success-fill-note">{trade.note}</p>
+        ) : null}
         {isBuy && trade.fillLocked && (
           <p className="trade-success-fill-note">
             {trade.approximateFill

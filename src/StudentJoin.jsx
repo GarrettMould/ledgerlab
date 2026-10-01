@@ -64,6 +64,12 @@ const MARKET_GUIDE = [
     blurb: "Florida homes + a classroom mortgage",
     tag: "Property",
   },
+  {
+    id: "lending",
+    title: "Lending",
+    blurb: "Low on cash? Borrow. Extra cash? Earn interest.",
+    tag: "Credit",
+  },
 ];
 
 function money(n) {
@@ -294,7 +300,7 @@ export default function StudentJoin({
     nextOutfit,
   }) {
     if (!classInfo) return;
-    saveOutfit(studentApiId, nextOutfit);
+    saveOutfit(studentApiId, nextOutfit, [firestoreStudentId]);
     setActiveClassId(classInfo.id);
     setStudentSession({
       classId: classInfo.id,

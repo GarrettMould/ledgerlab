@@ -4,6 +4,7 @@ import {
   joinCrewJob,
   listCrewJobs,
 } from "./api";
+import { POLL, pollWhileVisible } from "./pollWhileVisible";
 
 /**
  * PayPal-style overlay: partnership invites show when the student opens
@@ -33,8 +34,7 @@ export default function PartnershipInviteAlert({
 
   useEffect(() => {
     refresh();
-    const t = window.setInterval(refresh, 6000);
-    return () => window.clearInterval(t);
+    return pollWhileVisible(refresh, POLL.partnershipInvites);
   }, [refresh]);
 
   const current = invites[0] || null;

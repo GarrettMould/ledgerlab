@@ -5,9 +5,9 @@ import {
   LENDING_RECOVERY_PCT,
   LENDING_SALE_DISCOUNT_PER_MISS_PCT,
 } from "./data/worldLending";
+import { POLL, pollWhileVisible } from "./pollWhileVisible";
 
 const SPIN_MS = 4200;
-const POLL_MS = 60000;
 
 function money(n) {
   if (n == null || Number.isNaN(Number(n))) return "—";
@@ -105,13 +105,7 @@ export default function LendingInterestAlert({
   useEffect(() => {
     load();
     if (demo) return undefined;
-    const id = window.setInterval(load, POLL_MS);
-    const onFocus = () => load();
-    window.addEventListener("focus", onFocus);
-    return () => {
-      window.clearInterval(id);
-      window.removeEventListener("focus", onFocus);
-    };
+    return pollWhileVisible(load, POLL.lendingInterest);
   }, [load, refreshKey, demo]);
 
   useEffect(() => () => clearTimeout(timer.current), []);

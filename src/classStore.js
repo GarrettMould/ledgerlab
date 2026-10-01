@@ -31,6 +31,7 @@ export const DEFAULT_MARKETS = {
   commodities: true,
   currencies: true,
   realestate: true,
+  lending: true,
 };
 
 export function getActiveClassId() {

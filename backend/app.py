@@ -21,6 +21,7 @@ import firestore_ledger as fs_ledger
 import housing_index
 import housing_settlement
 import lending
+import peer_lending
 from portfolio_service import (
     build_history_payload,
     compute_totals as portfolio_compute_totals,
@@ -4271,6 +4272,11 @@ def get_student(student_id: str):
         student, holdings = settle_housing_for_firestore_student(
             class_id, student_id, student, holdings
         )
+        try:
+            settle_due_peer_loans(class_id, student_id)
+            student = fs_ledger.get_student(class_id, student_id) or student
+        except Exception:
+            pass
         payload = serialize_portfolio(
             student,
             holdings,
@@ -5180,6 +5186,559 @@ def sell_loan(student_id: str, loan_id: str):
     portfolio = _fs_portfolio_payload(class_id, student_id)
     loans = _advance_loans(class_id, student_id)
     return jsonify(_loans_response(loans, portfolio))
+
+
+def _peer_loan_settle_one(class_id: str, loan: dict) -> dict | None:
+    """If due and borrower has cash, repay in full. Returns settle result or None."""
+    if (loan.get("status") or "active") != "active":
+        return None
+    if not peer_lending.is_due(loan):
+        return None
+    borrower_id = str(loan.get("borrowerStudentId") or "")
+    lender_id = str(loan.get("lenderStudentId") or "")
+    loan_id = str(loan.get("id") or "")
+    if not borrower_id or not lender_id or not loan_id:
+        return None
+    total = float(loan.get("totalDue") or 0)
+    if total <= 0:
+        return None
+    borrower = fs_ledger.get_student(class_id, borrower_id)
+    if not borrower:
+        return None
+    cash = float(borrower.get("cash") or 0)
+    if cash + 1e-9 < total:
+        return {
+            "settled": False,
+            "blocked": True,
+            "loan": peer_lending.serialize_loan(loan),
+            "cash": cash,
+            "shortfall": round(total - cash, 2),
+        }
+    fs_ledger.credit_student_cash(class_id, borrower_id, -total)
+    fs_ledger.credit_student_cash(class_id, lender_id, total)
+    now = datetime.now(timezone.utc).isoformat()
+    fs_ledger.update_peer_loan_pair(
+        class_id,
+        loan_id=loan_id,
+        borrower_id=borrower_id,
+        lender_id=lender_id,
+        patch={"status": "repaid", "repaidAt": now},
+    )
+    try:
+        fs_ledger.queue_student_transfer(
+            class_id,
+            lender_id,
+            amount=total,
+            note=(
+                f"{borrower.get('name') or 'A classmate'} repaid your peer loan "
+                f"(${total:,.2f})."
+            ),
+            kind="peer_loan_repay",
+            pre_applied=True,
+            meta={"loanId": loan_id, "role": "lender"},
+        )
+    except Exception:
+        pass
+    try:
+        fs_ledger.record_trade(
+            class_id,
+            borrower_id,
+            side="sell",
+            ticker="PEER",
+            shares=1,
+            price=total,
+            notional=total,
+            kind="peer_loan_repay",
+            student_name=borrower.get("name"),
+            extra={"loanId": loan_id, "lenderId": lender_id},
+        )
+    except Exception:
+        pass
+    return {
+        "settled": True,
+        "blocked": False,
+        "loan": peer_lending.serialize_loan({**loan, "status": "repaid", "repaidAt": now}),
+        "cash": round(cash - total, 2),
+    }
+
+
+def settle_due_peer_loans(class_id: str, student_id: str) -> dict:
+    """Auto-repay due peer loans when the borrower has cash; else report blocks.
+
+    Runs for loans visible on this seat. Cash is always taken from the borrower.
+    Blocked entries are only returned when *this* student is the borrower.
+    """
+    settled = []
+    blocked = []
+    seen = set()
+    rows = fs_ledger.list_peer_loans(class_id, student_id)
+    for row in rows:
+        if (row.get("status") or "active") != "active":
+            continue
+        loan_id = str(row.get("id") or "")
+        if not loan_id or loan_id in seen:
+            continue
+        seen.add(loan_id)
+        result = _peer_loan_settle_one(class_id, row)
+        if not result:
+            continue
+        if result.get("settled"):
+            settled.append(result["loan"])
+        elif result.get("blocked") and str(row.get("borrowerStudentId")) == str(
+            student_id
+        ):
+            blocked.append(
+                {
+                    "loan": result["loan"],
+                    "cash": result["cash"],
+                    "shortfall": result["shortfall"],
+                }
+            )
+    return {"settled": settled, "blocked": blocked}
+
+
+def _peer_loans_payload(class_id: str, student_id: str) -> dict:
+    settle = settle_due_peer_loans(class_id, student_id)
+    rows = fs_ledger.list_peer_loans(class_id, student_id)
+    as_borrower = []
+    as_lender = []
+    for row in rows:
+        serialized = peer_lending.serialize_loan(row)
+        role = row.get("role") or (
+            "lender"
+            if str(row.get("lenderStudentId")) == str(student_id)
+            else "borrower"
+        )
+        serialized["role"] = role
+        serialized["isDue"] = peer_lending.is_due(row)
+        if role == "lender":
+            as_lender.append(serialized)
+        else:
+            as_borrower.append(serialized)
+    return {
+        "asBorrower": as_borrower,
+        "asLender": as_lender,
+        "dueLabel": peer_lending.due_label(),
+        "settled": settle.get("settled") or [],
+        "blocked": settle.get("blocked") or [],
+    }
+
+
+@app.get("/api/classes/<class_id>/peer-lend/offers")
+def peer_lend_offers(class_id: str):
+    err = None
+    cid, err = require_firestore_class_id()
+    if err:
+        return err
+    if cid and cid != class_id:
+        class_id = cid
+    if not using_firestore():
+        return jsonify({"offers": []})
+    offers = [
+        peer_lending.serialize_offer(o)
+        for o in fs_ledger.list_peer_offers(class_id, open_only=True)
+    ]
+    return jsonify(
+        {
+            "offers": offers,
+            "dueLabel": peer_lending.due_label(),
+            "test": peer_lending.test_status(),
+        }
+    )
+
+
+@app.post("/api/classes/<class_id>/peer-lend/offers")
+def peer_lend_create_offer(class_id: str):
+    cid, err = require_firestore_class_id()
+    if err:
+        return err
+    if cid:
+        class_id = cid
+    if not using_firestore():
+        return jsonify({"error": "Peer lending needs the classroom Firestore ledger."}), 400
+    data = request.get_json(silent=True) or {}
+    student_id = str(data.get("studentId") or "").strip()
+    if not student_id:
+        return jsonify({"error": "studentId is required"}), 400
+    try:
+        amount = round(float(data.get("amount") or 0), 2)
+        rate_pct = round(float(data.get("ratePct") or 0), 2)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Enter a valid amount and rate."}), 400
+    if amount < peer_lending.MIN_OFFER:
+        return jsonify(
+            {"error": f"List at least ${peer_lending.MIN_OFFER:,.0f}."}
+        ), 400
+    if rate_pct < 0 or rate_pct > peer_lending.MAX_RATE_PCT:
+        return jsonify(
+            {"error": f"Pick a rate between 0% and {peer_lending.MAX_RATE_PCT:.0f}%."}
+        ), 400
+    student = fs_ledger.get_student(class_id, student_id)
+    if not student:
+        return jsonify({"error": "Student not found"}), 404
+    cash = float(student.get("cash") or 0)
+    if amount > cash + 1e-9:
+        return jsonify(
+            {"error": f"Not enough cash. Need ${amount:,.2f}, have ${cash:,.2f}."}
+        ), 400
+    offer = fs_ledger.upsert_peer_offer(
+        class_id,
+        lender_student_id=student_id,
+        lender_name=student.get("name") or "Student",
+        amount=amount,
+        rate_pct=rate_pct,
+    )
+    return jsonify(
+        {"offer": peer_lending.serialize_offer(offer), "dueLabel": peer_lending.due_label()}
+    )
+
+
+@app.delete("/api/classes/<class_id>/peer-lend/offers/<offer_id>")
+def peer_lend_cancel_offer(class_id: str, offer_id: str):
+    cid, err = require_firestore_class_id()
+    if err:
+        return err
+    if cid:
+        class_id = cid
+    if not using_firestore():
+        return jsonify({"error": "Peer lending needs the classroom Firestore ledger."}), 400
+    data = request.get_json(silent=True) or {}
+    student_id = str(
+        data.get("studentId") or request.args.get("studentId") or ""
+    ).strip()
+    if not student_id:
+        return jsonify({"error": "studentId is required"}), 400
+    ok = fs_ledger.cancel_peer_offer(class_id, offer_id, student_id)
+    if not ok:
+        return jsonify({"error": "Could not remove that offer."}), 404
+    return jsonify({"ok": True})
+
+
+@app.post("/api/classes/<class_id>/peer-lend/borrow")
+def peer_lend_borrow(class_id: str):
+    cid, err = require_firestore_class_id()
+    if err:
+        return err
+    if cid:
+        class_id = cid
+    if not using_firestore():
+        return jsonify({"error": "Peer lending needs the classroom Firestore ledger."}), 400
+    data = request.get_json(silent=True) or {}
+    borrower_id = str(data.get("studentId") or "").strip()
+    offer_id = str(data.get("offerId") or "").strip()
+    try:
+        amount = round(float(data.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Enter a valid amount."}), 400
+    if not borrower_id or not offer_id:
+        return jsonify({"error": "studentId and offerId are required"}), 400
+    if amount < peer_lending.MIN_BORROW:
+        return jsonify({"error": "Borrow at least $1."}), 400
+
+    # Block new borrows while overdue peer debt is unpaid.
+    block_state = settle_due_peer_loans(class_id, borrower_id)
+    if block_state.get("blocked"):
+        return jsonify(
+            {
+                "error": "Repay your overdue classmate loan before borrowing again.",
+                "blocked": block_state["blocked"],
+            }
+        ), 400
+
+    offer = fs_ledger.get_peer_offer(class_id, offer_id)
+    if not offer or offer.get("status") != "open":
+        return jsonify({"error": "That offer is no longer available."}), 404
+    lender_id = str(offer.get("lenderStudentId") or "")
+    if not lender_id:
+        return jsonify({"error": "Invalid offer."}), 400
+    if lender_id == borrower_id:
+        return jsonify({"error": "You can’t borrow from your own offer."}), 400
+
+    borrower = fs_ledger.get_student(class_id, borrower_id)
+    lender = fs_ledger.get_student(class_id, lender_id)
+    if not borrower or not lender:
+        return jsonify({"error": "Student not found"}), 404
+    lender_cash = float(lender.get("cash") or 0)
+    if amount > lender_cash + 1e-9:
+        return jsonify(
+            {
+                "error": (
+                    f"{lender.get('name') or 'That lender'} no longer has enough cash "
+                    f"for this loan."
+                )
+            }
+        ), 400
+
+    rate_pct = float(offer.get("ratePct") or 0)
+    interest = peer_lending.interest_due(amount, rate_pct)
+    total = peer_lending.total_due(amount, rate_pct)
+    now_dt = datetime.now(timezone.utc)
+    due = peer_lending.due_at_for_new_loan(lent_at=now_dt).isoformat()
+    now = now_dt.isoformat()
+
+    try:
+        updated_offer = fs_ledger.adjust_peer_offer_remaining(class_id, offer_id, amount)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        fs_ledger.credit_student_cash(class_id, lender_id, -amount)
+        fs_ledger.credit_student_cash(class_id, borrower_id, amount)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    loan_body = {
+        "offerId": offer_id,
+        "borrowerStudentId": borrower_id,
+        "borrowerName": borrower.get("name") or "Student",
+        "lenderStudentId": lender_id,
+        "lenderName": lender.get("name") or "Student",
+        "principal": amount,
+        "ratePct": rate_pct,
+        "interestDue": interest,
+        "totalDue": total,
+        "lentAt": now,
+        "dueAt": due,
+        "status": "active",
+    }
+    loan_id = fs_ledger.create_peer_loan_pair(
+        class_id,
+        borrower_id=borrower_id,
+        lender_id=lender_id,
+        loan=loan_body,
+    )
+    loan_body["id"] = loan_id
+
+    try:
+        fs_ledger.queue_student_transfer(
+            class_id,
+            lender_id,
+            amount=-amount,
+            note=(
+                f"{borrower.get('name') or 'A classmate'} borrowed ${amount:,.2f} "
+                f"from you at {rate_pct:.1f}% (due {peer_lending.due_label()})."
+            ),
+            kind="peer_loan_lend",
+            pre_applied=True,
+            meta={"loanId": loan_id, "role": "lender"},
+        )
+        fs_ledger.queue_student_transfer(
+            class_id,
+            borrower_id,
+            amount=amount,
+            note=(
+                f"You borrowed ${amount:,.2f} from {lender.get('name') or 'a classmate'} "
+                f"at {rate_pct:.1f}%. Repay ${total:,.2f} on {peer_lending.due_label()}."
+            ),
+            kind="peer_loan_borrow",
+            pre_applied=True,
+            meta={"loanId": loan_id, "role": "borrower"},
+        )
+    except Exception:
+        pass
+
+    portfolio = _fs_portfolio_payload(class_id, borrower_id)
+    return jsonify(
+        {
+            "loan": peer_lending.serialize_loan(loan_body),
+            "offer": peer_lending.serialize_offer(updated_offer),
+            "portfolio": portfolio,
+            "dueLabel": peer_lending.due_label(),
+        }
+    )
+
+
+@app.get("/api/students/<student_id>/peer-loans")
+def student_peer_loans(student_id: str):
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if not using_firestore():
+        return jsonify(
+            {
+                "asBorrower": [],
+                "asLender": [],
+                "blocked": [],
+                "settled": [],
+                "dueLabel": peer_lending.due_label(),
+                "test": peer_lending.test_status(),
+            }
+        )
+    if not fs_ledger.get_student(class_id, student_id):
+        return jsonify({"error": "Student not found"}), 404
+    payload = _peer_loans_payload(class_id, student_id)
+    payload["portfolio"] = _fs_portfolio_payload(class_id, student_id)
+    payload["test"] = peer_lending.test_status()
+    return jsonify(payload)
+
+
+@app.post("/api/students/<student_id>/peer-loans/settle")
+def student_peer_loans_settle(student_id: str):
+    """Run auto-settle for due peer loans (call after sells raise cash)."""
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if not using_firestore():
+        return jsonify({"error": "Peer lending needs the classroom Firestore ledger."}), 400
+    if not fs_ledger.get_student(class_id, student_id):
+        return jsonify({"error": "Student not found"}), 404
+    payload = _peer_loans_payload(class_id, student_id)
+    payload["portfolio"] = _fs_portfolio_payload(class_id, student_id)
+    payload["test"] = peer_lending.test_status()
+    return jsonify(payload)
+
+
+def _require_peer_lend_test():
+    if not peer_lending.test_mode_enabled():
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "Peer lend test mode is off. Set PEER_LEND_TEST=1 in backend/.env "
+                        "and restart the API."
+                    )
+                }
+            ),
+            403,
+        )
+    return None
+
+
+@app.post("/api/classes/<class_id>/peer-lend/test/seed-offer")
+def peer_lend_test_seed_offer(class_id: str):
+    """Create/refill a Lending Lab offer so one student can borrow alone."""
+    blocked = _require_peer_lend_test()
+    if blocked:
+        return blocked
+    cid, err = require_firestore_class_id()
+    if err:
+        return err
+    if cid:
+        class_id = cid
+    if not using_firestore():
+        return jsonify({"error": "Peer lending needs the classroom Firestore ledger."}), 400
+    data = request.get_json(silent=True) or {}
+    try:
+        amount = round(float(data.get("amount") or 1000), 2)
+        rate_pct = round(float(data.get("ratePct") or 7), 2)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Enter a valid amount and rate."}), 400
+    amount = max(peer_lending.MIN_OFFER, amount)
+    rate_pct = min(peer_lending.MAX_RATE_PCT, max(0.0, rate_pct))
+
+    treasury = fs_ledger.ensure_student(
+        class_id,
+        peer_lending.TREASURY_ID,
+        name=peer_lending.TREASURY_NAME,
+        cash=max(50000.0, amount * 5),
+    )
+    # Keep treasury flush enough to fund the walkthrough.
+    if float(treasury.get("cash") or 0) < amount:
+        fs_ledger.set_cash(class_id, peer_lending.TREASURY_ID, amount * 5)
+
+    offer = fs_ledger.upsert_peer_offer(
+        class_id,
+        lender_student_id=peer_lending.TREASURY_ID,
+        lender_name=peer_lending.TREASURY_NAME,
+        amount=amount,
+        rate_pct=rate_pct,
+    )
+    fs_ledger.peer_offers_col(class_id).document(offer["id"]).update(
+        {"testOffer": True}
+    )
+    offer["testOffer"] = True
+    return jsonify(
+        {
+            "offer": peer_lending.serialize_offer(offer),
+            "test": peer_lending.test_status(),
+            "message": (
+                f"Lending Lab is offering ${amount:,.0f} at {rate_pct:.1f}%. "
+                "Borrow it, then use “Make my debt due now”."
+            ),
+        }
+    )
+
+
+@app.post("/api/students/<student_id>/peer-loans/test/force-due")
+def peer_lend_test_force_due(student_id: str):
+    """Mark this student's active borrower loans as already due."""
+    blocked = _require_peer_lend_test()
+    if blocked:
+        return blocked
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if not using_firestore():
+        return jsonify({"error": "Peer lending needs the classroom Firestore ledger."}), 400
+    if not fs_ledger.get_student(class_id, student_id):
+        return jsonify({"error": "Student not found"}), 404
+
+    past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    updated = 0
+    for row in fs_ledger.list_peer_loans(class_id, student_id):
+        if (row.get("status") or "active") != "active":
+            continue
+        if (row.get("role") or "borrower") == "lender":
+            continue
+        if str(row.get("borrowerStudentId")) != str(student_id):
+            continue
+        lender_id = str(row.get("lenderStudentId") or "")
+        loan_id = str(row.get("id") or "")
+        if not lender_id or not loan_id:
+            continue
+        fs_ledger.update_peer_loan_pair(
+            class_id,
+            loan_id=loan_id,
+            borrower_id=student_id,
+            lender_id=lender_id,
+            patch={"dueAt": past},
+        )
+        updated += 1
+
+    payload = _peer_loans_payload(class_id, student_id)
+    payload["portfolio"] = _fs_portfolio_payload(class_id, student_id)
+    payload["test"] = peer_lending.test_status()
+    payload["forcedDueCount"] = updated
+    payload["message"] = (
+        f"Marked {updated} loan(s) due. "
+        "If you have cash, they auto-repay; if not, the sell-assets gate appears."
+    )
+    return jsonify(payload)
+
+
+@app.post("/api/students/<student_id>/peer-loans/test/drain-cash")
+def peer_lend_test_drain_cash(student_id: str):
+    """Drop cash to a low amount so you can demo the forced sell modal."""
+    blocked = _require_peer_lend_test()
+    if blocked:
+        return blocked
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    if not using_firestore():
+        return jsonify({"error": "Peer lending needs the classroom Firestore ledger."}), 400
+    student = fs_ledger.get_student(class_id, student_id)
+    if not student:
+        return jsonify({"error": "Student not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        leave = round(float(data.get("cash") if data.get("cash") is not None else 25), 2)
+    except (TypeError, ValueError):
+        leave = 25.0
+    leave = max(0.0, leave)
+    holdings = fs_ledger.list_holdings(class_id, student_id)
+    fs_ledger.set_cash(class_id, student_id, leave, holdings_count=len(holdings))
+    portfolio = _fs_portfolio_payload(class_id, student_id)
+    return jsonify(
+        {
+            "portfolio": portfolio,
+            "test": peer_lending.test_status(),
+            "message": (
+                f"Cash set to ${leave:,.2f}. Force debt due next to see the sell gate "
+                "(keep some holdings so you can sell)."
+            ),
+        }
+    )
 
 
 @app.get("/api/students/<student_id>/trades")

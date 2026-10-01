@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { joinCrewJob, listCrewJobs } from "./api";
 import ClosetReviewPreview from "./ClosetReviewPreview";
+import { POLL, pollWhileVisible } from "./pollWhileVisible";
 
 function money(n) {
   return Number(n || 0).toLocaleString("en-US", {
@@ -10,14 +11,20 @@ function money(n) {
   });
 }
 
+/** Below this cash balance → borrow pitch; at/above → lend pitch. */
+const CASH_LEND_THRESHOLD = 25000;
+
 /**
  * Compact hiring strip for the student home dashboard.
  * Shows 2–3 open Job board roles with join + link to the full board.
+ * When nothing is hiring, swaps in a cash-aware peer-lending CTA.
  */
 export default function HomeJobsPanel({
   classId,
   studentId = "",
+  cash = 0,
   onOpenBoard,
+  onOpenLending,
 }) {
   const [jobs, setJobs] = useState([]);
   const [joinedCount, setJoinedCount] = useState(0);
@@ -50,8 +57,7 @@ export default function HomeJobsPanel({
 
   useEffect(() => {
     refresh();
-    const t = window.setInterval(refresh, 12000);
-    return () => window.clearInterval(t);
+    return pollWhileVisible(refresh, POLL.homeJobs);
   }, [refresh]);
 
   const openJobs = useMemo(() => {
@@ -96,6 +102,41 @@ export default function HomeJobsPanel({
 
   if (!classId) return null;
 
+  const showLendingSign = !loading && openJobs.length === 0;
+
+  if (showLendingSign) {
+    const flush = Number(cash) >= CASH_LEND_THRESHOLD;
+    const intent = flush ? "lend" : "borrow";
+    return (
+      <button
+        type="button"
+        className={`home-borrow-sign is-${intent}`}
+        data-click="select"
+        aria-label={flush ? "Put cash to work" : "Need to borrow"}
+        onClick={() => onOpenLending?.(intent)}
+      >
+        <span className="home-borrow-sign-kicker">
+          {flush
+            ? "No jobs hiring · Put cash to work"
+            : "No jobs hiring · Need cash?"}
+        </span>
+        <strong className="home-borrow-sign-title">
+          {flush
+            ? "Have extra cash? Put it to work & earn!"
+            : "Low on cash? Borrow money!"}
+        </strong>
+        <span className="home-borrow-sign-blurb">
+          {flush
+            ? "List cash you’re willing to lend and set your interest rate — classmates can borrow from you."
+            : "Classmates with extra cash are ready to lend — pick a rate and get funded."}
+        </span>
+        <span className="home-borrow-sign-go">
+          {flush ? "I want to lend →" : "See lenders →"}
+        </span>
+      </button>
+    );
+  }
+
   return (
     <section className="home-jobs-panel" aria-label="Open jobs">
       <div className="home-jobs-panel-head">
@@ -115,11 +156,6 @@ export default function HomeJobsPanel({
 
       {loading && openJobs.length === 0 ? (
         <p className="home-jobs-panel-empty">Checking the board…</p>
-      ) : openJobs.length === 0 ? (
-        <p className="home-jobs-panel-empty">
-          No open Team / Crew roles right now. Check the full board for
-          partnerships and filled crews.
-        </p>
       ) : (
         <ul className="home-jobs-list">
           {openJobs.map((job) => {

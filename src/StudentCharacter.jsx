@@ -74,6 +74,8 @@ const DEFAULT_OUTFIT = {
   backpack: null,
   bag: null,
   prop: null,
+  /** Second handheld slot (left hand). Right hand uses `prop`. */
+  propL: null,
 };
 
 // Roblox-style figure is ~4.5 units tall; scale to fit existing camera/shadows.
@@ -93,14 +95,18 @@ const ATTACH = {
   shoulderL: [-0.95, 3.15, 0.05],
   // Palm of right hand — AI props still need an outward offset (see below).
   handR: [1.35, 1.85, 0.2],
+  // Palm of left hand (mirror of handR).
+  handL: [-1.35, 1.85, 0.2],
 };
 
 /**
  * Extra weld offsets so AI / catalog-like props aren’t buried in the limb.
- * handR: push out of the arm (+X) and slightly forward (+Z).
+ * Hand props sit close in the palm (tuned to the Skull). Future AI props use
+ * the same defaults from backend/closet_ai.py ATTACH_DEFAULT_OFFSETS.
  */
 const ATTACH_AI_OFFSET = {
-  handR: [0.62, 0.12, 0.42],
+  handR: [0.18, 0.1, 0.22],
+  handL: [-0.18, 0.1, 0.22],
   torsoBack: [0, 0.05, -0.2],
   shoulderL: [-0.2, -0.15, 0.25],
   neck: [0, -0.06, 0.1],
@@ -532,6 +538,60 @@ function outfitStorageKey(studentId) {
   return `ledger-lab-outfit-${studentId ?? "guest"}`;
 }
 
+/** Stable unique list of owned closet item ids. */
+export function unionOwnedLuxuries(...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const id of list) {
+      const key = String(id || "").trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+    }
+  }
+  return out;
+}
+
+/**
+ * Merge two outfits for durable ownership: ownedLuxuries is always a union.
+ * Look/slots prefer `preferred`, then fill missing owned accessories from `other`.
+ */
+export function mergeOutfitOwnership(preferred, other) {
+  if (!preferred) return other || { ...DEFAULT_OUTFIT };
+  if (!other) return preferred;
+  const owned = unionOwnedLuxuries(preferred.ownedLuxuries, other.ownedLuxuries);
+  const next = {
+    ...other,
+    ...preferred,
+    ownedLuxuries: owned,
+  };
+  const slots = [
+    "hat",
+    "glasses",
+    "neck",
+    "jersey",
+    "backpack",
+    "bag",
+    "prop",
+    "propL",
+  ];
+  for (const slot of slots) {
+    if (!next[slot] && other[slot] && owned.includes(other[slot])) {
+      next[slot] = other[slot];
+    }
+  }
+  if (
+    !next.hairStyleId &&
+    other.hairStyleId &&
+    owned.includes(other.hairStyleId)
+  ) {
+    next.hairStyleId = other.hairStyleId;
+  }
+  return next;
+}
+
 export function outfitForStudent(studentId, name) {
   const seed = String(studentId ?? name ?? "guest")
     .split("")
@@ -562,39 +622,79 @@ export function outfitForStudent(studentId, name) {
     backpack: null,
     bag: null,
     prop: null,
+    propL: null,
   };
 }
 
-export function loadSavedOutfit(studentId, name) {
-  const base = outfitForStudent(studentId, name);
+function readRawOutfit(studentId) {
   try {
     const raw = localStorage.getItem(outfitStorageKey(studentId));
-    if (!raw) return base;
+    if (!raw) return null;
     const saved = JSON.parse(raw);
-    return stripPlayerFishForm(
-      stripUnownedBuyables(
-        {
-          ...base,
-          ...saved,
-          ownedLuxuries: Array.isArray(saved.ownedLuxuries) ? saved.ownedLuxuries : [],
-        },
-        base
-      ),
-      base
-    );
+    return saved && typeof saved === "object" ? saved : null;
   } catch {
-    return base;
+    return null;
   }
 }
 
-export function saveOutfit(studentId, outfit) {
+export function loadSavedOutfit(studentId, name, altIds = []) {
+  const base = outfitForStudent(studentId, name);
+  const ids = [studentId, ...altIds]
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  const unique = [...new Set(ids)];
+  let merged = null;
+  for (const id of unique) {
+    const saved = readRawOutfit(id);
+    if (!saved) continue;
+    merged = merged ? mergeOutfitOwnership(merged, saved) : saved;
+  }
+  if (!merged) return base;
+  return stripPlayerFishForm(
+    stripUnownedBuyables(
+      {
+        ...base,
+        ...merged,
+        ownedLuxuries: unionOwnedLuxuries(merged.ownedLuxuries),
+      },
+      base
+    ),
+    base
+  );
+}
+
+export function saveOutfit(studentId, outfit, altIds = []) {
+  const payload = JSON.stringify(stripPlayerFishForm(outfit));
+  const ids = [studentId, ...altIds]
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  const unique = [...new Set(ids)];
   try {
-    localStorage.setItem(
-      outfitStorageKey(studentId),
-      JSON.stringify(stripPlayerFishForm(outfit))
-    );
+    for (const id of unique) {
+      localStorage.setItem(outfitStorageKey(id), payload);
+    }
   } catch {
     /* ignore quota */
+  }
+}
+
+/** Copy/merge outfit when a student id heals (e.g. numeric SQLite → Firestore). */
+export function migrateOutfitStorageKey(fromId, toId) {
+  const from = String(fromId || "").trim();
+  const to = String(toId || "").trim();
+  if (!from || !to || from === to) return;
+  try {
+    const fromSaved = readRawOutfit(from);
+    if (!fromSaved) return;
+    const toSaved = readRawOutfit(to);
+    const merged = toSaved
+      ? mergeOutfitOwnership(toSaved, fromSaved)
+      : fromSaved;
+    const payload = JSON.stringify(stripPlayerFishForm(merged));
+    localStorage.setItem(outfitStorageKey(to), payload);
+    localStorage.setItem(outfitStorageKey(from), payload);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -754,10 +854,14 @@ function accessoryPose(item) {
     item.aiCreated && !item.aiSprite
       ? Math.max(Number(item.scale) || 1, 1)
       : item.scale ?? 1;
-  // Handheld props: slight tip outward like the catalog baseball bat.
+  // Handheld props: slight tip outward (matches Skull / ATTACH_DEFAULT_ROTATION).
   const rotation =
     item.rotation ||
-    (item.aiCreated && attach === "handR" ? [0, 0, -0.45] : [0, 0, 0]);
+    (item.aiCreated && attach === "handR"
+      ? [0, 0, -0.28]
+      : item.aiCreated && attach === "handL"
+        ? [0, 0, 0.28]
+        : [0, 0, 0]);
   return {
     position: [base[0] + offset[0], base[1] + offset[1], base[2] + offset[2]],
     rotation,
@@ -1069,7 +1173,7 @@ function AccessoryProps({ outfit }) {
   const equipped = useMemo(() => {
     const catalog = [...ACCESSORY_ITEMS, ...classItems];
     const byId = new Map(catalog.map((item) => [item.id, item]));
-    const kinds = ["hat", "glasses", "neck", "jersey", "backpack", "bag", "prop"];
+    const kinds = ["hat", "glasses", "neck", "jersey", "backpack", "bag", "prop", "propL"];
     const preview = outfit?.aiPreviewAccessory;
     const out = [];
     const hideDefaultHair = hatHidesHair(outfit);
@@ -1105,9 +1209,35 @@ function AccessoryProps({ outfit }) {
     }
 
     for (const kind of kinds) {
+      // Preview only fills the right-hand prop slot; left hand stays free.
+      if (
+        preview &&
+        kind === "prop" &&
+        preview.kind === "prop" &&
+        ((Array.isArray(preview.parts) && preview.parts.length > 0) ||
+          preview.url ||
+          preview.glbUrl)
+      ) {
+        out.push({
+          id: preview.id || `ai-preview-${kind}`,
+          kind,
+          label: preview.label || "Preview",
+          attach: preview.attach || "handR",
+          color: preview.color || "#888888",
+          parts: preview.parts || null,
+          url: preview.glbUrl || preview.url || null,
+          aiCreated: true,
+          scale: preview.scale,
+          offset: preview.offset,
+          rotation: preview.rotation,
+        });
+        continue;
+      }
       if (
         preview &&
         preview.kind === kind &&
+        kind !== "prop" &&
+        kind !== "propL" &&
         ((Array.isArray(preview.parts) && preview.parts.length > 0) ||
           preview.url ||
           preview.glbUrl)
@@ -1130,7 +1260,25 @@ function AccessoryProps({ outfit }) {
       const id = outfit?.[kind];
       if (!id) continue;
       const item = byId.get(id);
-      if (item && !isCustomHairItem(item)) out.push(item);
+      if (!item || isCustomHairItem(item)) continue;
+      // Left-hand slot: same catalog item, forced onto handL (items are authored for handR).
+      if (kind === "propL") {
+        const leftOffset = Array.isArray(item.offset)
+          ? [-Math.abs(Number(item.offset[0]) || 0), Number(item.offset[1]) || 0, Number(item.offset[2]) || 0]
+          : undefined;
+        const leftRot = Array.isArray(item.rotation)
+          ? [Number(item.rotation[0]) || 0, Number(item.rotation[1]) || 0, -Number(item.rotation[2]) || 0]
+          : undefined;
+        out.push({
+          ...item,
+          id: `${item.id}__L`,
+          attach: "handL",
+          offset: leftOffset,
+          rotation: leftRot,
+        });
+      } else {
+        out.push(item);
+      }
     }
     return out;
   }, [outfit, classItems]);
@@ -2157,7 +2305,7 @@ export function AvatarCanvas({ outfit, mode, className }) {
         camera={{
           position:
             mode === "closet"
-              ? [0, 0.18, 3.5]
+              ? [0, 0.18, 3.85]
               : mode === "dash"
                 ? [0, 0.55, 5.2]
                 : isBust
@@ -2165,7 +2313,7 @@ export function AvatarCanvas({ outfit, mode, className }) {
                   : isHeadshot
                     ? [0, 0.82, 1.55]
                     : [0, 0.1, 3.85],
-          fov: mode === "closet" ? 34 : mode === "dash" ? 38 : isBust ? 30 : isHeadshot ? 28 : 32,
+          fov: mode === "closet" ? 40 : mode === "dash" ? 38 : isBust ? 30 : isHeadshot ? 28 : 32,
           near: 0.1,
           far: 50,
         }}
@@ -2180,7 +2328,16 @@ export function AvatarCanvas({ outfit, mode, className }) {
   );
 }
 
-const ACCESSORY_SLOTS = ["hat", "glasses", "neck", "jersey", "backpack", "bag", "prop"];
+const ACCESSORY_SLOTS = [
+  "hat",
+  "glasses",
+  "neck",
+  "jersey",
+  "backpack",
+  "bag",
+  "prop",
+  "propL",
+];
 
 function stripUnownedBuyables(outfit, fallback = null) {
   const owned = new Set(outfit?.ownedLuxuries || []);
@@ -2328,16 +2485,31 @@ function ClosetShelf({
     if (isCustomHairItem(item) || category === "hairStyle") {
       isEquipped = (outfit.hairStyleId || "hair-block") === item.id;
     } else if (isAccessoryItem(item)) {
-      isEquipped = outfit[item.kind] === item.id;
+      isEquipped =
+        item.kind === "prop"
+          ? outfit.prop === item.id || outfit.propL === item.id
+          : outfit[item.kind] === item.id;
     } else {
       isEquipped = outfit[`${category}Id`] === item.id || outfit[category] === item.color;
     }
     const isTrying = isEquipped && !isOwned;
     const canAfford = Number(cash) + 0.0001 >= item.price;
     let status = `Try on · ${money(item.price)}`;
-    if (isOwned && isEquipped) status = "Equipped";
-    else if (isOwned) status = "Tap to equip";
-    else if (isTrying) status = canAfford ? "Trying on" : "Trying on · save up to buy";
+    if (isOwned && isEquipped) {
+      if (item.kind === "prop") {
+        const hands = [];
+        if (outfit.prop === item.id) hands.push("right");
+        if (outfit.propL === item.id) hands.push("left");
+        status = hands.length === 2 ? "Both hands" : `Equipped · ${hands[0]}`;
+      } else {
+        status = "Equipped";
+      }
+    } else if (isOwned) {
+      status =
+        item.kind === "prop" && (outfit.prop || outfit.propL) && !(outfit.prop && outfit.propL)
+          ? "Tap for other hand"
+          : "Tap to equip";
+    } else if (isTrying) status = canAfford ? "Trying on" : "Trying on · save up to buy";
 
     const swatch = item.accent
       ? `linear-gradient(145deg, ${item.accent}, ${item.color})`
@@ -2863,7 +3035,7 @@ const CLOSET_AI_KINDS = [
   { id: "glasses", label: "Glasses" },
   { id: "backpack", label: "Backpack" },
   { id: "jersey", label: "Jersey" },
-  { id: "prop", label: "Hand prop" },
+  { id: "prop", label: "Hand props" },
 ];
 
 const CLOSET_AI_STYLES = [
@@ -3287,7 +3459,7 @@ function ClosetAiCreator({
       }
     };
     tick();
-    pollRef.current = setInterval(tick, 2500);
+    pollRef.current = setInterval(tick, 4000);
   }
 
   async function startGenerationFromBrief(brief) {
@@ -4520,7 +4692,12 @@ function ClosetModal({
 
   function isItemEquipped(item) {
     if (isCustomHairItem(item)) return (draft.hairStyleId || "hair-block") === item.id;
-    if (isAccessoryItem(item)) return draft[item.kind] === item.id;
+    if (isAccessoryItem(item)) {
+      if (item.kind === "prop") {
+        return draft.prop === item.id || draft.propL === item.id;
+      }
+      return draft[item.kind] === item.id;
+    }
     if (category === "hairStyle") return (draft.hairStyleId || "hair-block") === item.id;
     return draft[`${category}Id`] === item.id || draft[category] === item.color;
   }
@@ -4530,6 +4707,13 @@ function ClosetModal({
       return { ...draft, hairStyleId: "hair-block" };
     }
     if (isAccessoryItem(item)) {
+      if (item.kind === "prop") {
+        return {
+          ...draft,
+          prop: draft.prop === item.id ? null : draft.prop,
+          propL: draft.propL === item.id ? null : draft.propL,
+        };
+      }
       return { ...draft, [item.kind]: null };
     }
     const committed = committedRef.current;
@@ -4567,6 +4751,19 @@ function ClosetModal({
       };
     }
     if (isAccessoryItem(item)) {
+      if (item.kind === "prop") {
+        // Dual wield: fill the empty hand; if both are full, replace the right hand.
+        if (draft.prop === item.id || draft.propL === item.id) {
+          return {
+            ...draft,
+            prop: draft.prop === item.id ? null : draft.prop,
+            propL: draft.propL === item.id ? null : draft.propL,
+          };
+        }
+        if (!draft.prop) return { ...draft, prop: item.id };
+        if (!draft.propL) return { ...draft, propL: item.id };
+        return { ...draft, prop: item.id };
+      }
       return { ...draft, [item.kind]: item.id };
     }
     return applyCatalogSelection(draft, category, item);
@@ -4836,13 +5033,61 @@ export default function StudentCharacter({
     setStartInCreate(true);
     setOpen(true);
   }, [openCreateRequest]);
-  const [outfit, setOutfit] = useState(() => loadSavedOutfit(studentId, name));
+  const [outfit, setOutfit] = useState(() =>
+    loadSavedOutfit(studentId, name, [firestoreStudentId])
+  );
   const [classClosetItems, setClassClosetItems] = useState([]);
   const [studentEmail, setStudentEmail] = useState("");
 
+  // Load local keys + hydrate durable ownership from the Firestore seat.
   useEffect(() => {
-    setOutfit(loadSavedOutfit(studentId, name));
-  }, [studentId, name]);
+    const local = loadSavedOutfit(studentId, name, [firestoreStudentId]);
+    setOutfit(local);
+    if (!classId || !firestoreStudentId) {
+      saveOutfit(studentId, local, [firestoreStudentId]);
+      return undefined;
+    }
+    let cancelled = false;
+    getClassStudent(classId, firestoreStudentId)
+      .then((seat) => {
+        if (cancelled) return;
+        setStudentEmail(String(seat?.email || "").toLowerCase());
+        const seatOutfit = seat?.outfit;
+        if (!seatOutfit || typeof seatOutfit !== "object") {
+          // Push local ownership up so a wipe of browser data isn't fatal next time.
+          if ((local.ownedLuxuries || []).length > 0) {
+            updateClassStudent(classId, firestoreStudentId, { outfit: local }).catch(
+              () => {}
+            );
+          }
+          saveOutfit(studentId, local, [firestoreStudentId]);
+          return;
+        }
+        const merged = stripPlayerFishForm(
+          stripUnownedBuyables(
+            mergeOutfitOwnership(local, seatOutfit),
+            local
+          ),
+          local
+        );
+        setOutfit(merged);
+        saveOutfit(studentId, merged, [firestoreStudentId]);
+        const seatOwned = unionOwnedLuxuries(seatOutfit.ownedLuxuries);
+        const mergedOwned = unionOwnedLuxuries(merged.ownedLuxuries);
+        const seatMissingOwned = mergedOwned.some((id) => !seatOwned.includes(id));
+        if (seatMissingOwned) {
+          updateClassStudent(classId, firestoreStudentId, { outfit: merged }).catch(
+            () => {}
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setStudentEmail("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [studentId, name, classId, firestoreStudentId]);
 
   useEffect(() => {
     if (!classId) {
@@ -4862,7 +5107,7 @@ export default function StudentCharacter({
     setOutfit((prev) => {
       const migrated = migrateHairHatSlot(prev);
       if (migrated === prev) return prev;
-      saveOutfit(studentId, migrated);
+      saveOutfit(studentId, migrated, [firestoreStudentId]);
       if (classId && firestoreStudentId) {
         updateClassStudent(classId, firestoreStudentId, { outfit: migrated }).catch(
           () => {}
@@ -4872,36 +5117,25 @@ export default function StudentCharacter({
     });
   }, [classClosetItems, classId, firestoreStudentId, studentId]);
 
-  useEffect(() => {
-    if (!classId || !firestoreStudentId) {
-      setStudentEmail("");
-      return undefined;
-    }
-    let cancelled = false;
-    getClassStudent(classId, firestoreStudentId)
-      .then((seat) => {
-        if (!cancelled) setStudentEmail(String(seat?.email || "").toLowerCase());
-      })
-      .catch(() => {
-        if (!cancelled) setStudentEmail("");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [classId, firestoreStudentId]);
-
   const displayOutfit = useMemo(() => outfit, [outfit]);
   // Create Item is open to every enrolled student in the class.
   const canCreateAi = Boolean(firestoreStudentId || studentId);
   const creatorStudentId = firestoreStudentId || studentId;
 
   function handleOutfitChange(next) {
-    const cleaned = stripPlayerFishForm(next);
-    setOutfit(cleaned);
-    saveOutfit(studentId, cleaned);
-    if (classId && firestoreStudentId) {
-      updateClassStudent(classId, firestoreStudentId, { outfit: cleaned }).catch(() => {});
-    }
+    setOutfit((prev) => {
+      const cleaned = stripPlayerFishForm({
+        ...next,
+        ownedLuxuries: unionOwnedLuxuries(prev?.ownedLuxuries, next?.ownedLuxuries),
+      });
+      saveOutfit(studentId, cleaned, [firestoreStudentId]);
+      if (classId && firestoreStudentId) {
+        updateClassStudent(classId, firestoreStudentId, { outfit: cleaned }).catch(
+          () => {}
+        );
+      }
+      return cleaned;
+    });
   }
 
   return (

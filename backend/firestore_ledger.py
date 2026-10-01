@@ -390,6 +390,170 @@ def set_loans_outstanding(class_id: str, student_id: str, amount: float) -> None
     )
 
 
+def peer_offers_col(class_id: str):
+    return db().collection("classes").document(class_id).collection("peerLendOffers")
+
+
+def peer_loans_col(class_id: str, student_id: str):
+    return student_ref(class_id, student_id).collection("peerLoans")
+
+
+def list_peer_offers(class_id: str, *, open_only: bool = True) -> list[dict]:
+    rows = []
+    for snap in peer_offers_col(class_id).stream():
+        data = snap.to_dict() or {}
+        data["id"] = snap.id
+        if open_only and (
+            data.get("status") != "open" or float(data.get("amountRemaining") or 0) <= 0
+        ):
+            continue
+        rows.append(data)
+    rows.sort(key=lambda r: float(r.get("ratePct") or 0))
+    return rows
+
+
+def get_peer_offer(class_id: str, offer_id: str) -> dict | None:
+    snap = peer_offers_col(class_id).document(offer_id).get()
+    if not snap.exists:
+        return None
+    data = snap.to_dict() or {}
+    data["id"] = snap.id
+    return data
+
+
+def upsert_peer_offer(
+    class_id: str,
+    *,
+    lender_student_id: str,
+    lender_name: str,
+    amount: float,
+    rate_pct: float,
+) -> dict:
+    """One open offer per lender — replace remaining amount/rate if they re-list."""
+    amount = round(float(amount), 2)
+    rate_pct = round(float(rate_pct), 2)
+    existing = None
+    for row in list_peer_offers(class_id, open_only=False):
+        if str(row.get("lenderStudentId")) == str(lender_student_id) and row.get(
+            "status"
+        ) == "open":
+            existing = row
+            break
+    now = utc_now_iso()
+    payload = {
+        "lenderStudentId": str(lender_student_id),
+        "lenderName": str(lender_name or "Student")[:60],
+        "amountListed": amount,
+        "amountRemaining": amount,
+        "ratePct": rate_pct,
+        "status": "open",
+        "updatedAt": now,
+    }
+    if existing:
+        peer_offers_col(class_id).document(existing["id"]).update(payload)
+        payload["id"] = existing["id"]
+        payload["createdAt"] = existing.get("createdAt") or now
+        return payload
+    payload["createdAt"] = now
+    ref = peer_offers_col(class_id).document()
+    ref.set(payload)
+    payload["id"] = ref.id
+    return payload
+
+
+def cancel_peer_offer(class_id: str, offer_id: str, lender_student_id: str) -> bool:
+    offer = get_peer_offer(class_id, offer_id)
+    if not offer:
+        return False
+    if str(offer.get("lenderStudentId")) != str(lender_student_id):
+        return False
+    peer_offers_col(class_id).document(offer_id).update(
+        {"status": "cancelled", "amountRemaining": 0, "updatedAt": utc_now_iso()}
+    )
+    return True
+
+
+def list_peer_loans(class_id: str, student_id: str) -> list[dict]:
+    rows = []
+    for snap in peer_loans_col(class_id, student_id).stream():
+        data = snap.to_dict() or {}
+        data["id"] = snap.id
+        rows.append(data)
+    rows.sort(key=lambda r: str(r.get("lentAt") or ""), reverse=True)
+    return rows
+
+
+def get_peer_loan(class_id: str, student_id: str, loan_id: str) -> dict | None:
+    snap = peer_loans_col(class_id, student_id).document(loan_id).get()
+    if not snap.exists:
+        return None
+    data = snap.to_dict() or {}
+    data["id"] = snap.id
+    return data
+
+
+def create_peer_loan_pair(
+    class_id: str,
+    *,
+    borrower_id: str,
+    lender_id: str,
+    loan: dict,
+) -> str:
+    """Write the same loan doc under borrower and lender (role differs)."""
+    borrower_ref = peer_loans_col(class_id, borrower_id).document()
+    lid = borrower_ref.id
+    base = {**loan, "updatedAt": utc_now_iso()}
+    borrower_ref.set({**base, "role": "borrower"})
+    peer_loans_col(class_id, lender_id).document(lid).set({**base, "role": "lender"})
+    return lid
+
+
+def update_peer_loan_pair(
+    class_id: str,
+    *,
+    loan_id: str,
+    borrower_id: str,
+    lender_id: str,
+    patch: dict,
+) -> None:
+    patch = {**patch, "updatedAt": utc_now_iso()}
+    peer_loans_col(class_id, borrower_id).document(loan_id).update(patch)
+    lender_ref = peer_loans_col(class_id, lender_id).document(loan_id)
+    if lender_ref.get().exists:
+        lender_ref.update(patch)
+    else:
+        # Recover mirror if missing
+        borrower = get_peer_loan(class_id, borrower_id, loan_id) or {}
+        lender_ref.set({**borrower, **patch, "role": "lender"})
+
+
+def adjust_peer_offer_remaining(class_id: str, offer_id: str, amount: float) -> dict:
+    """Reduce remaining; close when depleted. Returns updated offer."""
+    ref = peer_offers_col(class_id).document(offer_id)
+    amount = round(float(amount), 2)
+    snap = ref.get()
+    if not snap.exists:
+        raise ValueError("That offer is gone.")
+    data = snap.to_dict() or {}
+    if data.get("status") != "open":
+        raise ValueError("That offer is no longer open.")
+    remaining = round(float(data.get("amountRemaining") or 0), 2)
+    if amount > remaining + 1e-9:
+        raise ValueError(f"Only ${remaining:,.2f} left on this offer.")
+    new_remaining = round(max(0.0, remaining - amount), 2)
+    patch = {
+        "amountRemaining": new_remaining,
+        "updatedAt": utc_now_iso(),
+    }
+    if new_remaining <= 1e-9:
+        patch["amountRemaining"] = 0
+        patch["status"] = "closed"
+    ref.update(patch)
+    data.update(patch)
+    data["id"] = offer_id
+    return data
+
+
 def list_holdings(class_id: str, student_id: str) -> list[dict]:
     snaps = holdings_col(class_id, student_id).stream()
     rows = []
@@ -1169,6 +1333,28 @@ def credit_student_cash(class_id: str, student_id: str, amount: float) -> float 
     holdings = list_holdings(class_id, student_id)
     set_cash(class_id, student_id, new_cash, holdings_count=len(holdings))
     return new_cash
+
+
+def grant_closet_ownership(class_id: str, student_id: str, item_id: str) -> bool:
+    """Durably record that a student bought a closet item (outfit.ownedLuxuries)."""
+    class_id = (class_id or "").strip()
+    student_id = (student_id or "").strip()
+    item_id = (item_id or "").strip()
+    if not class_id or not student_id or not item_id:
+        return False
+    try:
+        from firebase_admin import firestore as fs
+
+        student_ref(class_id, student_id).update(
+            {
+                "outfit.ownedLuxuries": fs.ArrayUnion([item_id]),
+                "updatedAt": fs.SERVER_TIMESTAMP,
+            }
+        )
+        return True
+    except Exception:
+        # Best-effort — client also mirrors ownership; never fail a paid purchase.
+        return False
 
 
 def _rank_popular_stocks(rows: list[dict]) -> list[dict]:

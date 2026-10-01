@@ -127,8 +127,11 @@ KIND_DEFAULTS = {
     "prop": {"attach": "handR", "scale": 0.55, "color": "#b88547"},
 }
 # Client also applies these; store on items so published props stay outside the arm.
+# Tuned to sit in the palm (same spot as the classroom Skull). Keep in sync with
+# ATTACH_AI_OFFSET / accessoryPose defaults in src/StudentCharacter.jsx.
 ATTACH_DEFAULT_OFFSETS = {
-    "handR": [0.62, 0.12, 0.42],
+    "handR": [0.18, 0.1, 0.22],
+    "handL": [-0.18, 0.1, 0.22],
     "torsoBack": [0, 0.05, -0.2],
     "shoulderL": [-0.2, -0.15, 0.25],
     "neck": [0, -0.06, 0.1],
@@ -137,8 +140,8 @@ ATTACH_DEFAULT_OFFSETS = {
     "torso": [0, 0, 0.15],
 }
 ATTACH_DEFAULT_ROTATION = {
-    # Tip slightly outward like the catalog baseball bat.
-    "handR": [0, 0, -0.45],
+    "handR": [0, 0, -0.28],
+    "handL": [0, 0, 0.28],
 }
 
 _VALID_ATTACH = {
@@ -149,6 +152,7 @@ _VALID_ATTACH = {
     "torsoBack",
     "shoulderL",
     "handR",
+    "handL",
 }
 
 
@@ -2987,6 +2991,9 @@ def purchase_closet_item(
     )
     if new_buyer_cash is None:
         raise RuntimeError("Could not charge buyer")
+
+    # Durable ownership on the seat (survives localStorage wipes / id healing).
+    fs_ledger.grant_closet_ownership(buyer_class_id, buyer_student_id, item_id)
 
     paid = []
     for sid, amt, role in payouts:

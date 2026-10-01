@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { buyShares, getMarket, getQuote, getQuotes, getStudent } from "./api";
+import { POLL, pollWhileVisible } from "./pollWhileVisible";
 import {
   AvatarCanvas,
   loadSavedOutfit,
@@ -1484,10 +1485,12 @@ export function HeadToHeadLiveMatchups({
       if (!cancelled) setLiveByTicker(next);
     }
     refresh();
-    const timer = setInterval(refresh, 45000);
+    const stopPoll = pollWhileVisible(() => {
+      if (!cancelled) refresh();
+    }, POLL.headToHead);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      stopPoll();
     };
   }, [allTickers.join("|")]);
 
@@ -1714,10 +1717,12 @@ export function HeadToHeadBattleModal({
       }
     }
     refresh();
-    const timer = setInterval(refresh, 45000);
+    const stopPoll = pollWhileVisible(() => {
+      if (!cancelled) refresh();
+    }, POLL.headToHead);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      stopPoll();
     };
   }, [open, quoteTickers.join("|")]);
 

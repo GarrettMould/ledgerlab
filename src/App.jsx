@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { buyHome, buyShares, createStudent, getLoans, getMarket, getQuote, getQuotes, getStudent, listStudents, sellShares } from "./api";
+import { buyHome, buyShares, createStudent, getLoans, getPeerLoans, getMarket, getQuote, getQuotes, getStudent, listStudents, sellShares } from "./api";
 import PriceChart from "./PriceChart";
 import PortfolioHistoryChart from "./PortfolioHistoryChart";
 import CommodityInfoTip from "./CommodityInfoTip";
@@ -17,13 +17,20 @@ import LendingInterestAlert from "./LendingInterestAlert";
 import PartnershipInviteAlert from "./PartnershipInviteAlert";
 import WhatsNewAlert from "./WhatsNewAlert";
 import LoanSellModal from "./LoanSellModal";
+import PeerLendingMarket from "./PeerLendingMarket";
+import PeerLoanRepayGate from "./PeerLoanRepayGate";
 import HeadToHeadModal, {
   HeadToHeadBattleModal,
   HeadToHeadLiveMatchups,
 } from "./HeadToHeadModal";
 import TradeSuccessModal from "./TradeSuccessModal";
 import StockBuyModal from "./StockBuyModal";
-import { AvatarCanvas, CLASS_FISH_OUTFIT, loadSavedOutfit } from "./StudentCharacter";
+import {
+  AvatarCanvas,
+  CLASS_FISH_OUTFIT,
+  loadSavedOutfit,
+  migrateOutfitStorageKey,
+} from "./StudentCharacter";
 import {
   DEFAULT_MARKETS,
   clearStudentSession,
@@ -219,14 +226,25 @@ const CATEGORIES = [
     mark: "06",
     tag: "Property",
   },
+  {
+    id: "lending",
+    title: "Lending",
+    blurb: "Low on cash? Borrow. Extra cash? Earn interest.",
+    mark: "07",
+    tag: "Credit",
+    dualCtas: [
+      { label: "Low on cash?", action: "Borrow money" },
+      { label: "Have extra cash?", action: "Put it to work & earn" },
+    ],
+  },
 ];
 
 /** Home-grid order by signup goal — riskier / more relevant markets float first. */
 const CATEGORY_ORDER_BY_GOAL = {
-  grow: ["stocks", "commodities", "etfs", "realestate", "currencies", "bonds"],
-  balanced: ["etfs", "stocks", "bonds", "realestate", "commodities", "currencies"],
-  learn: ["stocks", "etfs", "bonds", "commodities", "currencies", "realestate"],
-  preserve: ["bonds", "etfs", "realestate", "currencies", "stocks", "commodities"],
+  grow: ["stocks", "commodities", "etfs", "realestate", "lending", "currencies", "bonds"],
+  balanced: ["etfs", "stocks", "bonds", "lending", "realestate", "commodities", "currencies"],
+  learn: ["stocks", "etfs", "bonds", "lending", "commodities", "currencies", "realestate"],
+  preserve: ["bonds", "lending", "etfs", "realestate", "currencies", "stocks", "commodities"],
 };
 
 function categoriesForGoal(goalId) {
@@ -418,6 +436,7 @@ function StudentPortfolio({
     return Boolean(lockedStudentId);
   });
   const [category, setCategory] = useState(null);
+  const [lendingIntent, setLendingIntent] = useState(null);
   const [stockIndustry, setStockIndustry] = useState("All");
   const [showWorldLending, setShowWorldLending] = useState(false);
   const [marketPage, setMarketPage] = useState(0);
@@ -451,6 +470,8 @@ function StudentPortfolio({
     [portfolio?.holdings]
   );
   const [studentLoans, setStudentLoans] = useState([]);
+  const [peerLoansBorrower, setPeerLoansBorrower] = useState([]);
+  const [peerLoansLender, setPeerLoansLender] = useState([]);
   useEffect(() => {
     if (!classId || !portfolio?.id) {
       setStudentLoans([]);
@@ -466,6 +487,32 @@ function StudentPortfolio({
       cancelled = true;
     };
   }, [classId, portfolio?.id, portfolio?.cash, portfolio?.loans_outstanding]);
+  useEffect(() => {
+    if (!classId || !portfolio?.id) {
+      setPeerLoansBorrower([]);
+      setPeerLoansLender([]);
+      return undefined;
+    }
+    let cancelled = false;
+    getPeerLoans(portfolio.id, classId)
+      .then((data) => {
+        if (cancelled) return;
+        setPeerLoansBorrower(
+          (Array.isArray(data?.asBorrower) ? data.asBorrower : []).filter(
+            (l) => l.status === "active"
+          )
+        );
+        setPeerLoansLender(
+          (Array.isArray(data?.asLender) ? data.asLender : []).filter(
+            (l) => l.status === "active"
+          )
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [classId, portfolio?.id, portfolio?.cash]);
   const activeLoans = useMemo(
     () => studentLoans.filter((l) => l.status === "active"),
     [studentLoans]
@@ -477,6 +524,11 @@ function StudentPortfolio({
     let invested = 0;
     let value = 0;
     for (const loan of activeLoans) {
+      const principal = Number(loan.principal) || 0;
+      invested += principal;
+      value += principal;
+    }
+    for (const loan of peerLoansLender) {
       const principal = Number(loan.principal) || 0;
       invested += principal;
       value += principal;
@@ -498,7 +550,7 @@ function StudentPortfolio({
     const gain = value - invested;
     const gainPct = invested > 0 ? (gain / invested) * 100 : null;
     return { invested, value, gain, gainPct };
-  }, [portfolio?.holdings, activeLoans]);
+  }, [portfolio?.holdings, activeLoans, peerLoansLender]);
 
   const holdingsAvatarOutfit = useMemo(
     () =>
@@ -644,6 +696,14 @@ function StudentPortfolio({
     setChartTicker(null);
     setTradeDraft(null);
     setShowWorldLending(false);
+    // Peer lending has its own board — no ticker catalog / live quotes.
+    if (category === "lending") {
+      setMarketItems([]);
+      setPricingStatus(null);
+      setMarketLoading(false);
+      setMarketPricesPending(false);
+      return;
+    }
     let cancelled = false;
     (async () => {
       setMarketLoading(true);
@@ -1281,7 +1341,21 @@ function StudentPortfolio({
             <JobBoard
               classId={classId}
               studentId={firestoreStudentId || portfolio?.id || ""}
+              cash={portfolio?.cash ?? 0}
               onBack={() => setShowJobs(false)}
+              onOpenLending={(intent = "borrow") => {
+                setShowJobs(false);
+                setLendingIntent(intent);
+                setCategory("lending");
+                setShowNews(false);
+                setShowClass(false);
+                setShowPurchases(false);
+                setShowBoard(false);
+                setSelectedAsset(null);
+                setTradeDraft(null);
+                setChartTicker(null);
+                setStockBuyTarget(null);
+              }}
             />
           )}
 
@@ -1324,6 +1398,7 @@ function StudentPortfolio({
                 <HomeJobsPanel
                   classId={classId}
                   studentId={firestoreStudentId || portfolio?.id || ""}
+                  cash={portfolio?.cash ?? 0}
                   onOpenBoard={() => {
                     setShowJobs(true);
                     setShowNews(false);
@@ -1332,6 +1407,19 @@ function StudentPortfolio({
                     setShowBoard(false);
                     setSelectedAsset(null);
                     setTradeDraft(null);
+                  }}
+                  onOpenLending={(intent = "borrow") => {
+                    setLendingIntent(intent);
+                    setCategory("lending");
+                    setShowJobs(false);
+                    setShowNews(false);
+                    setShowClass(false);
+                    setShowPurchases(false);
+                    setShowBoard(false);
+                    setSelectedAsset(null);
+                    setTradeDraft(null);
+                    setChartTicker(null);
+                    setStockBuyTarget(null);
                   }}
                 />
               ) : null}
@@ -1457,10 +1545,20 @@ function StudentPortfolio({
                       <span className="market-lane-copy">
                         <span className="market-lane-tag">{c.tag || c.mark}</span>
                         <strong>{c.title}</strong>
-                        <span className="market-lane-blurb">{c.blurb}</span>
+                        {c.dualCtas ? (
+                          <span className="market-lane-dual">
+                            {c.dualCtas.map((line) => (
+                              <span key={line.action} className="market-lane-dual-line">
+                                <em>{line.label}</em> {line.action}
+                              </span>
+                            ))}
+                          </span>
+                        ) : (
+                          <span className="market-lane-blurb">{c.blurb}</span>
+                        )}
                       </span>
                       <span className="market-lane-go" aria-hidden="true">
-                        Open
+                        {c.id === "lending" ? "Go" : "Open"}
                       </span>
                     </button>
                   ))}
@@ -1482,6 +1580,7 @@ function StudentPortfolio({
                       return;
                     }
                     setCategory(null);
+                    setLendingIntent(null);
                     setSelectedAsset(null);
                     setChartTicker(null);
                     setTradeDraft(null);
@@ -1795,7 +1894,19 @@ function StudentPortfolio({
                 </button>
               )}
 
-              {SHOW_WORLD_LENDING && showWorldLending && category === "bonds" ? (
+              {category === "lending" ? (
+                <PeerLendingMarket
+                  classId={classId}
+                  studentId={firestoreStudentId || selectedId}
+                  studentName={portfolio?.name || "Student"}
+                  cash={portfolio?.cash}
+                  intent={lendingIntent}
+                  onIntentConsumed={() => setLendingIntent(null)}
+                  onPortfolio={(next) => {
+                    if (next) setPortfolio(next);
+                  }}
+                />
+              ) : SHOW_WORLD_LENDING && showWorldLending && category === "bonds" ? (
                 <WorldLendingMap
                   studentId={selectedId}
                   classId={classId}
@@ -2834,10 +2945,16 @@ function StudentPortfolio({
               <h3>Your holdings</h3>
               <p>Tap a holding, then Sell or Sell all</p>
             </div>
-            {!portfolio.holdings?.length && !activeLoans.length && (
+            {!portfolio.holdings?.length &&
+              !activeLoans.length &&
+              !peerLoansLender.length &&
+              !peerLoansBorrower.length && (
               <p className="empty">No shares yet. Pick a market above to start.</p>
             )}
-            {(portfolio.holdings?.length > 0 || activeLoans.length > 0) && (
+            {(portfolio.holdings?.length > 0 ||
+              activeLoans.length > 0 ||
+              peerLoansLender.length > 0 ||
+              peerLoansBorrower.length > 0) && (
               <>
                 <div
                   className="holdings-summary-row"
@@ -2930,7 +3047,10 @@ function StudentPortfolio({
                 </div>
               </div>
             </div>
-            {(portfolio.holdings?.length > 0 || activeLoans.length > 0) && (
+            {(portfolio.holdings?.length > 0 ||
+              activeLoans.length > 0 ||
+              peerLoansLender.length > 0 ||
+              peerLoansBorrower.length > 0) && (
               <div className="holdings-cols" aria-hidden="true">
                 <span>Holding</span>
                 <span className="holding-col-tip">
@@ -3539,11 +3659,115 @@ function StudentPortfolio({
                 })}
               </div>
             )}
+            {peerLoansLender.length > 0 && (
+              <div className="holdings-group holdings-group-peer-loans">
+                <div className="holdings-category">
+                  <h4>Loans to classmates</h4>
+                  <span>
+                    {peerLoansLender.length}{" "}
+                    {peerLoansLender.length === 1 ? "loan" : "loans"}
+                  </span>
+                </div>
+                {peerLoansLender.map((loan) => (
+                  <div key={loan.id} className="holding-row holding-row-loan">
+                    <div className="holding-identity">
+                      <strong>{loan.borrowerName || "Classmate"}</strong>
+                      <span>
+                        {Number(loan.ratePct).toFixed(1)}% · due{" "}
+                        {loan.dueLabel || "May 10"}
+                        {loan.isDue ? " · due now" : ""}
+                      </span>
+                    </div>
+                    <div className="holding-stat">
+                      <span className="holding-stat-label">Lent</span>
+                      <strong>{money(loan.principal)}</strong>
+                    </div>
+                    <div className="holding-stat">
+                      <span className="holding-stat-label">Due back</span>
+                      <strong>{money(loan.totalDue)}</strong>
+                      <span className="holding-stat-sub">
+                        +{money(loan.interestDue)} interest
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {peerLoansBorrower.length > 0 && (
+              <div className="holdings-group holdings-group-peer-debt">
+                <div className="holdings-category">
+                  <h4>Money you owe</h4>
+                  <span>
+                    {peerLoansBorrower.length}{" "}
+                    {peerLoansBorrower.length === 1 ? "loan" : "loans"}
+                  </span>
+                </div>
+                {peerLoansBorrower.map((loan) => (
+                  <div key={loan.id} className="holding-row holding-row-loan">
+                    <div className="holding-identity">
+                      <strong>{loan.lenderName || "Classmate"}</strong>
+                      <span>
+                        {Number(loan.ratePct).toFixed(1)}% · due{" "}
+                        {loan.dueLabel || "May 10"}
+                        {loan.isDue ? " · due now" : ""}
+                      </span>
+                    </div>
+                    <div className="holding-stat">
+                      <span className="holding-stat-label">Borrowed</span>
+                      <strong>{money(loan.principal)}</strong>
+                    </div>
+                    <div className="holding-stat">
+                      <span className="holding-stat-label">You repay</span>
+                      <strong>{money(loan.totalDue)}</strong>
+                      <span className="holding-stat-sub">
+                        +{money(loan.interestDue)} interest
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             </div>
           </section>
           )}
         </>
       )}
+      {classId && (firestoreStudentId || portfolio?.id) ? (
+        <PeerLoanRepayGate
+          classId={classId}
+          studentId={firestoreStudentId || portfolio?.id}
+          cash={portfolio?.cash ?? 0}
+          refreshKey={`${Number(portfolio?.cash) || 0}-${portfolio?.holdings?.length || 0}`}
+          onPortfolio={(next) => {
+            if (!next) return;
+            setPortfolio((prev) => {
+              if (!prev) return next;
+              if (
+                Number(prev.cash) === Number(next.cash) &&
+                (prev.holdings?.length || 0) === (next.holdings?.length || 0)
+              ) {
+                return prev;
+              }
+              return next;
+            });
+          }}
+          onGoSell={() => {
+            setCategory(null);
+            setShowClass(false);
+            setShowNews(false);
+            setShowJobs(false);
+            setShowPurchases(false);
+            setShowBoard(false);
+            setSelectedAsset(null);
+            setTradeDraft(null);
+            window.setTimeout(() => {
+              document
+                .querySelector(".holdings")
+                ?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }, 50);
+          }}
+        />
+      ) : null}
       <TradeSuccessModal trade={tradeSuccess} onClose={closeTradeSuccess} />
       <LoanSellModal
         loan={loanToSell}
@@ -3849,6 +4073,7 @@ export default function App() {
     const trading = studentSession.apiStudentId;
     if (!trading || String(trading) === String(seatId)) return;
     if (!/^\d+$/.test(String(trading))) return;
+    migrateOutfitStorageKey(trading, seatId);
     const next = {
       ...studentSession,
       apiStudentId: seatId,
