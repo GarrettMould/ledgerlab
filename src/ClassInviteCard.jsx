@@ -2,16 +2,30 @@ import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { inviteUrlForCode } from "./classStore";
 
+const QR_SIZES = {
+  compact: 160,
+  default: 200,
+  board: 360,
+};
+
 /**
- * Per-class invite QR (derived from the class invite code) + copy link.
+ * Per-class invite: QR + join code (the `join=` value in the invite URL) + copy actions.
+ * size="board" is the projector-friendly classroom layout.
  */
 export default function ClassInviteCard({
   inviteCode,
-  onCopy,
-  copied = false,
+  className = "",
+  onCopyLink,
+  onCopyCode,
+  linkCopied = false,
+  codeCopied = false,
   compact = false,
+  size = "default",
 }) {
+  const layout = compact ? "compact" : size === "board" ? "board" : "default";
+  const qrSize = QR_SIZES[layout] || QR_SIZES.default;
   const [qrUrl, setQrUrl] = useState("");
+  const link = inviteCode ? inviteUrlForCode(inviteCode) : "";
 
   useEffect(() => {
     if (!inviteCode) {
@@ -19,9 +33,8 @@ export default function ClassInviteCard({
       return;
     }
     let cancelled = false;
-    const link = inviteUrlForCode(inviteCode);
     QRCode.toDataURL(link, {
-      width: compact ? 148 : 180,
+      width: qrSize,
       margin: 1,
       errorCorrectionLevel: "M",
       color: {
@@ -38,10 +51,10 @@ export default function ClassInviteCard({
     return () => {
       cancelled = true;
     };
-  }, [inviteCode, compact]);
+  }, [inviteCode, qrSize, link]);
 
   return (
-    <div className={`invite-card${compact ? " invite-card-compact" : ""}`}>
+    <div className={`invite-card invite-card-${layout}`}>
       <div className="invite-qr-block">
         <div className="invite-qr-wrap">
           {qrUrl ? (
@@ -49,27 +62,56 @@ export default function ClassInviteCard({
               className="invite-qr"
               src={qrUrl}
               alt={`QR code to join class ${inviteCode}`}
-              width={compact ? 148 : 180}
-              height={compact ? 148 : 180}
+              width={qrSize}
+              height={qrSize}
             />
           ) : (
             <div
-              className={`invite-qr invite-qr-placeholder${compact ? " is-compact" : ""}`}
+              className={`invite-qr invite-qr-placeholder is-${layout}`}
               aria-hidden="true"
             />
           )}
         </div>
-        <p className="invite-scan-label">Scan this to join the class!</p>
+        <p className="invite-scan-label">Scan with a phone camera</p>
       </div>
-      <button
-        type="button"
-        className="primary-btn invite-copy-btn"
-        data-click="confirm"
-        onClick={onCopy}
-        disabled={!inviteCode}
-      >
-        {copied ? "Copied!" : "Copy invite link"}
-      </button>
+
+      <div className="invite-code-block">
+        {className ? (
+          <p className="invite-class-name">{className}</p>
+        ) : null}
+        <p className="invite-code-kicker">Join code</p>
+        <p className="invite-code" aria-label={`Join code ${inviteCode || ""}`}>
+          {inviteCode || "········"}
+        </p>
+        <p className="invite-code-hint">
+          Students enter this on the home page, or open the invite link.
+        </p>
+        {link ? (
+          <p className="invite-link-preview" title={link}>
+            {link}
+          </p>
+        ) : null}
+        <div className="invite-actions">
+          <button
+            type="button"
+            className="primary-btn invite-copy-btn"
+            data-click="confirm"
+            onClick={onCopyCode}
+            disabled={!inviteCode}
+          >
+            {codeCopied ? "Code copied!" : "Copy join code"}
+          </button>
+          <button
+            type="button"
+            className="ghost-btn invite-copy-link-btn"
+            data-click="confirm"
+            onClick={onCopyLink}
+            disabled={!inviteCode}
+          >
+            {linkCopied ? "Link copied!" : "Copy invite link"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

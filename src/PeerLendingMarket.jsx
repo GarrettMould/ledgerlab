@@ -12,10 +12,6 @@ import {
   cancelPeerLendOffer,
   createPeerLendOffer,
   listPeerLendOffers,
-  peerLendTestDrainCash,
-  peerLendTestForceDue,
-  peerLendTestSeedOffer,
-  settlePeerLoans,
 } from "./api";
 import TradeSuccessModal from "./TradeSuccessModal";
 import { POLL, pollWhileVisible } from "./pollWhileVisible";
@@ -43,15 +39,24 @@ function rateLabel(pct) {
   return `${n.toFixed(1)}%`;
 }
 
+const EXAMPLE_LENDER_ID = "peer-lend-lab";
+
 function normalizeOffer(row) {
   if (!row) return null;
+  const studentId = row.lenderStudentId || row.studentId;
+  const name = row.lenderName || row.name || "Student";
+  const isExample =
+    Boolean(row.testOffer) ||
+    String(studentId) === EXAMPLE_LENDER_ID ||
+    String(name).trim().toLowerCase() === "lending lab";
   return {
     id: row.id,
-    studentId: row.lenderStudentId || row.studentId,
-    name: row.lenderName || row.name || "Student",
+    studentId,
+    name,
     amountAvailable: Number(row.amountRemaining ?? row.amountAvailable) || 0,
     ratePct: Number(row.ratePct) || 0,
     createdAt: row.createdAt,
+    isExample,
   };
 }
 
@@ -70,130 +75,6 @@ function outfitForSeat(seat, fallbackName = "Student") {
 }
 
 const PAYBACK_LABEL = "May 10";
-
-function PeerLendTestWalkthrough({
-  classId,
-  studentId,
-  test,
-  busy,
-  note,
-  onBusy,
-  onNote,
-  onRefreshOffers,
-  onPortfolio,
-}) {
-  if (!test?.enabled) return null;
-
-  async function run(label, fn) {
-    onBusy(true);
-    onNote("");
-    try {
-      const data = await fn();
-      if (data?.portfolio) onPortfolio?.(data.portfolio);
-      onNote(data?.message || `${label} — done.`);
-      await onRefreshOffers?.();
-    } catch (err) {
-      onNote(err.message || `${label} failed`);
-    } finally {
-      onBusy(false);
-    }
-  }
-
-  return (
-    <section className="peer-lend-test" aria-label="Peer lending test walkthrough">
-      <div className="peer-lend-test-head">
-        <p className="peer-lend-test-kicker">Test walkthrough</p>
-        <h4>Run the full peer-lend loop locally</h4>
-        <p>
-          Loans are due <strong>{test.dueLabel || "per test timer"}</strong>. Follow the
-          steps in order — you only need one student account.
-        </p>
-      </div>
-      <ol className="peer-lend-test-steps">
-        <li>
-          <strong>1. Seed a Lab offer</strong>
-          <span>Creates “Lending Lab” lending $1,000 at 7%.</span>
-          <button
-            type="button"
-            className="primary-btn"
-            data-click="confirm"
-            disabled={busy || !classId}
-            onClick={() =>
-              run("Seed offer", () =>
-                peerLendTestSeedOffer(classId, { amount: 1000, ratePct: 7 })
-              )
-            }
-          >
-            Seed Lab offer
-          </button>
-        </li>
-        <li>
-          <strong>2. Borrow from Lending Lab</strong>
-          <span>Open the offer below, borrow any amount (try $200).</span>
-        </li>
-        <li>
-          <strong>3a. Auto-repay path</strong>
-          <span>Keep your cash, then mark the debt due — it should repay itself.</span>
-          <button
-            type="button"
-            className="ghost-btn"
-            data-click="select"
-            disabled={busy || !studentId}
-            onClick={() =>
-              run("Force due", async () => {
-                const forced = await peerLendTestForceDue(studentId, classId);
-                const settled = await settlePeerLoans(studentId, classId);
-                return {
-                  ...settled,
-                  message:
-                    settled?.blocked?.length > 0
-                      ? "Debt is due but cash is short — sell-assets gate should appear."
-                      : settled?.settled?.length > 0
-                        ? `Auto-repaid ${settled.settled.length} loan(s). Check cash + holdings.`
-                        : forced?.message || "Forced due — check settle result.",
-                };
-              })
-            }
-          >
-            Make my debt due now
-          </button>
-        </li>
-        <li>
-          <strong>3b. Forced-sell path</strong>
-          <span>Drain cash first, then force due — you’ll be blocked until you sell.</span>
-          <div className="peer-lend-test-actions">
-            <button
-              type="button"
-              className="ghost-btn"
-              data-click="select"
-              disabled={busy || !studentId}
-              onClick={() =>
-                run("Drain cash", () => peerLendTestDrainCash(studentId, classId, 25))
-              }
-            >
-              Drain my cash to $25
-            </button>
-            <button
-              type="button"
-              className="ghost-btn"
-              data-click="select"
-              disabled={busy || !studentId}
-              onClick={() =>
-                run("Force due (short cash)", async () => {
-                  await peerLendTestForceDue(studentId, classId);
-                  return settlePeerLoans(studentId, classId);
-                })
-              }
-            >
-              Force due while short
-            </button>
-          </div>
-        </li>
-      </ol>
-      {note ? <p className="peer-lend-test-note">{note}</p> : null}
-    </section>
-  );
-}
 
 function PeerLendHowItWorks() {
   return (
@@ -550,9 +431,6 @@ export default function PeerLendingMarket({
   const [borrowBusy, setBorrowBusy] = useState(false);
   const [error, setError] = useState("");
   const [borrowSuccess, setBorrowSuccess] = useState(null);
-  const [testStatus, setTestStatus] = useState(null);
-  const [testNote, setTestNote] = useState("");
-  const [testBusy, setTestBusy] = useState(false);
 
   const refreshOffers = useCallback(async () => {
     if (!classId) {
@@ -568,7 +446,6 @@ export default function PeerLendingMarket({
         .map(normalizeOffer)
         .filter((o) => o && Number(o.amountAvailable) > 0);
       setListings(rows);
-      setTestStatus(data?.test || null);
     } catch (err) {
       setError(err.message || "Could not load lenders");
       setListings([]);
@@ -705,18 +582,6 @@ export default function PeerLendingMarket({
     <div className="peer-lend">
       <PeerLendHowItWorks />
 
-      <PeerLendTestWalkthrough
-        classId={classId}
-        studentId={studentId}
-        test={testStatus}
-        busy={testBusy || busy || borrowBusy}
-        note={testNote}
-        onBusy={setTestBusy}
-        onNote={setTestNote}
-        onRefreshOffers={refreshOffers}
-        onPortfolio={onPortfolio}
-      />
-
       {myListing ? (
         <div className="peer-lend-my-bar">
           <p className="peer-lend-my-chip">
@@ -792,36 +657,49 @@ export default function PeerLendingMarket({
               const name = seat?.name || lender.name || "Student";
               const outfit = outfitForSeat(seat || { id: lender.studentId, name }, name);
               const isMine = String(lender.studentId) === String(studentId);
+              const isExample = Boolean(lender.isExample);
+              const locked = isMine || isExample;
               return (
-                <button
+                <span
                   key={lender.id}
-                  type="button"
-                  role="listitem"
-                  className={`peer-lend-row${isMine ? " is-mine" : ""}`}
-                  data-click="select"
-                  disabled={isMine}
-                  onClick={() => !isMine && setSelectedId(lender.id)}
+                  className={`peer-lend-row-shell${isExample ? " is-example" : ""}`}
+                  data-tooltip={isExample ? "This is just an example" : undefined}
                 >
-                  <span className="peer-lend-row-who">
-                    <LenderAvatar outfit={outfit} name={name} />
-                    <span>
-                      <strong>{name}</strong>
-                      {isMine ? <em> · you</em> : null}
+                  <button
+                    type="button"
+                    role="listitem"
+                    className={`peer-lend-row${isMine ? " is-mine" : ""}${
+                      isExample ? " is-example" : ""
+                    }`}
+                    data-click="select"
+                    disabled={locked}
+                    aria-disabled={locked}
+                    onClick={() => !locked && setSelectedId(lender.id)}
+                  >
+                    <span className="peer-lend-row-who">
+                      <LenderAvatar outfit={outfit} name={name} />
+                      <span>
+                        <strong>{name}</strong>
+                        {isMine ? <em> · you</em> : null}
+                        {isExample ? <em> · example</em> : null}
+                      </span>
                     </span>
-                  </span>
-                  <span className="peer-lend-row-rate">{rateLabel(lender.ratePct)}</span>
-                  <span className="peer-lend-row-cash">{money(lender.amountAvailable)}</span>
-                  <span className="peer-lend-row-go">
-                    {isMine ? "Your offer" : "Borrow"}
-                  </span>
-                </button>
+                    <span className="peer-lend-row-rate">{rateLabel(lender.ratePct)}</span>
+                    <span className="peer-lend-row-cash">{money(lender.amountAvailable)}</span>
+                    <span className="peer-lend-row-go">
+                      {isMine ? "Your offer" : isExample ? "Example" : "Borrow"}
+                    </span>
+                  </button>
+                </span>
               );
             })}
           </div>
         )}
       </div>
 
-      {selected && String(selected.studentId) !== String(studentId) ? (
+      {selected &&
+      String(selected.studentId) !== String(studentId) &&
+      !selected.isExample ? (
         <BorrowModal
           lender={{ ...selected, name: selectedSeat?.name || selected.name }}
           outfit={outfitForSeat(selectedSeat, selected.name)}

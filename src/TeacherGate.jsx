@@ -51,11 +51,14 @@ function GoogleIcon() {
   );
 }
 
-function PasswordField({ id, label, value, onChange, autoComplete }) {
+function PasswordField({ id, label, value, onChange, autoComplete, action = null }) {
   const [show, setShow] = useState(false);
   return (
-    <label htmlFor={id}>
-      {label}
+    <div className="auth-field">
+      <div className="auth-field-row">
+        <label htmlFor={id}>{label}</label>
+        {action}
+      </div>
       <div className="password-field">
         <input
           id={id}
@@ -63,6 +66,7 @@ function PasswordField({ id, label, value, onChange, autoComplete }) {
           value={value}
           onChange={onChange}
           autoComplete={autoComplete}
+          placeholder="••••••••"
           required
           minLength={6}
         />
@@ -75,7 +79,7 @@ function PasswordField({ id, label, value, onChange, autoComplete }) {
           <EyeIcon open={show} />
         </button>
       </div>
-    </label>
+    </div>
   );
 }
 
@@ -101,16 +105,52 @@ function GoogleButton({ onClick, children }) {
   );
 }
 
+function InfoIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"
+      />
+    </svg>
+  );
+}
+
 /**
- * Main-site auth: sign in for teachers and students; sign up is teachers only.
+ * Logged-out home: brand-led landing + auth for teachers and students.
+ * Sign up is teachers only; students join with a class join code or invite link.
  */
-export default function TeacherGate({ onAuthenticated, setError, setBusy }) {
-  const [authMode, setAuthMode] = useState("signin"); // signin | signup | reset
+export default function TeacherGate({
+  onAuthenticated,
+  onEnterJoinCode,
+  setError,
+  setBusy,
+}) {
+  const [authMode, setAuthMode] = useState("home"); // home | signin | signup | reset
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [instructorCode, setInstructorCode] = useState("");
   const [resetSent, setResetSent] = useState(false);
+  const [joinDraft, setJoinDraft] = useState("");
+  const [joinError, setJoinError] = useState("");
+
+  function switchMode(next) {
+    setAuthMode(next);
+    setResetSent(false);
+    setError("");
+    if (next !== "home") {
+      setJoinError("");
+    }
+  }
+
+  function normalizeJoinCode(raw) {
+    return String(raw || "")
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "")
+      .slice(0, 12);
+  }
 
   async function handleSignUp(e) {
     e.preventDefault();
@@ -189,211 +229,343 @@ export default function TeacherGate({ onAuthenticated, setError, setBusy }) {
     }
   }
 
-  const heading =
+  function handleJoinSubmit(e) {
+    e.preventDefault();
+    setJoinError("");
+    const code = normalizeJoinCode(joinDraft);
+    if (code.length < 4) {
+      setJoinError("Enter the join code from your teacher.");
+      return;
+    }
+    setJoinDraft(code);
+    onEnterJoinCode?.(code);
+  }
+
+  const panelHeading =
     authMode === "signup"
-      ? "Create teacher account"
+      ? "Teacher sign up"
       : authMode === "reset"
         ? "Reset password"
-        : "Sign in";
+        : authMode === "signin"
+          ? "Sign in"
+          : "Join code";
 
-  const subcopy =
+  const panelSub =
     authMode === "signup"
-      ? "Teacher registration only. You’ll need your school’s instructor code."
+      ? "You’ll need your school’s instructor code."
       : authMode === "reset"
-        ? "Enter your account email and we’ll send a link to choose a new password."
-        : "Teachers and students can sign in here. We’ll open the right home for your account.";
+        ? "We’ll email a link to choose a new password."
+        : authMode === "signin"
+          ? "Teachers and returning students."
+          : "From the board or the end of your invite link.";
 
   return (
-    <section className="panel teacher-gate-panel">
-      <header className="panel-header">
-        <div>
-          <p className="join-kicker">Ledger Lab</p>
-          <h2>{heading}</h2>
-          <p>{subcopy}</p>
-        </div>
-      </header>
+    <section className="landing is-home" aria-label="Ledger Lab home">
+      <div className="landing-atmosphere" aria-hidden="true">
+        <span className="landing-orb landing-orb-a" />
+        <span className="landing-orb landing-orb-b" />
+        <span className="landing-grid" />
+      </div>
 
-      <div className="student-auth-portal teacher-gate-portal">
-        {authMode !== "reset" && (
-          <div className="auth-mode-toggle" role="tablist" aria-label="Account">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={authMode === "signin"}
-              className={authMode === "signin" ? "active" : ""}
-              data-click="select"
-              onClick={() => {
-                setAuthMode("signin");
-                setResetSent(false);
-                setError("");
-              }}
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={authMode === "signup"}
-              className={authMode === "signup" ? "active" : ""}
-              data-click="select"
-              onClick={() => {
-                setAuthMode("signup");
-                setResetSent(false);
-                setError("");
-              }}
-            >
-              Teacher sign up
-            </button>
+      <div className="landing-home">
+        <div className="landing-hero landing-hero-home">
+          <h1 className="landing-brand">Ledger Lab</h1>
+          <p className="landing-tagline">Classroom investing</p>
+          {authMode === "home" ? (
+            <p className="landing-blurb">
+              Experiential learning that goes far beyond a typical stock
+              simulation — students trade markets, take credit, and live with
+              the outcomes.
+            </p>
+          ) : null}
+        </div>
+
+        {authMode === "home" ? (
+          <form
+            key="join"
+            className="landing-join-bar-wrap"
+            onSubmit={handleJoinSubmit}
+            aria-label="Join with class code"
+          >
+            <div className="landing-join-bar">
+              <label htmlFor="landing-join-code" className="sr-only">
+                Join code
+              </label>
+              <input
+                id="landing-join-code"
+                className="landing-join-bar-input"
+                value={joinDraft}
+                onChange={(e) => {
+                  setJoinDraft(normalizeJoinCode(e.target.value));
+                  setJoinError("");
+                }}
+                onPaste={(e) => {
+                  const text = e.clipboardData?.getData("text");
+                  if (!text) return;
+                  e.preventDefault();
+                  setJoinDraft(normalizeJoinCode(text));
+                  setJoinError("");
+                }}
+                placeholder="Enter a join code"
+                autoComplete="one-time-code"
+                autoCapitalize="characters"
+                spellCheck={false}
+                autoFocus
+                maxLength={12}
+                inputMode="text"
+              />
+              <button
+                type="submit"
+                className="landing-join-bar-btn"
+                data-click="confirm"
+                disabled={normalizeJoinCode(joinDraft).length < 4}
+              >
+                Join
+              </button>
+            </div>
+            {joinError ? (
+              <p className="landing-join-code-error" role="alert">
+                {joinError}
+              </p>
+            ) : null}
+          </form>
+        ) : (
+          <div className="landing-join-panel" aria-label={panelHeading}>
+              <header className="landing-panel-head">
+                <div className="landing-join-panel-top">
+                  <p className="landing-join-panel-label">{panelHeading}</p>
+                  <button
+                    type="button"
+                    className="landing-join-paste"
+                    data-click="select"
+                    onClick={() => switchMode("home")}
+                  >
+                    Join code
+                  </button>
+                </div>
+                <p className="landing-join-panel-hint">{panelSub}</p>
+              </header>
+
+              {authMode !== "reset" && (
+                <div
+                  className="landing-auth-toggle landing-panel-toggle"
+                  role="tablist"
+                  aria-label="Account"
+                  data-mode={authMode}
+                >
+                  <span
+                    className="landing-auth-toggle-thumb"
+                    aria-hidden="true"
+                  />
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={authMode === "signin"}
+                    className={authMode === "signin" ? "active" : ""}
+                    data-click="select"
+                    onClick={() => switchMode("signin")}
+                  >
+                    Sign in
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={authMode === "signup"}
+                    className={authMode === "signup" ? "active" : ""}
+                    data-click="select"
+                    onClick={() => switchMode("signup")}
+                  >
+                    Teacher sign up
+                  </button>
+                </div>
+              )}
+
+              {authMode === "signup" ? (
+                <form
+                  key="signup"
+                  className="join-auth-form landing-auth-form landing-panel-form"
+                  onSubmit={handleSignUp}
+                >
+                  <label htmlFor="teacher-name">
+                    Your name
+                    <input
+                      id="teacher-name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Ms. Rivera"
+                      autoComplete="name"
+                      autoFocus
+                    />
+                  </label>
+                  <label htmlFor="teacher-email">
+                    School email
+                    <input
+                      id="teacher-email"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@school.edu"
+                      autoComplete="email"
+                      required
+                    />
+                  </label>
+                  <PasswordField
+                    id="teacher-password"
+                    label="Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete="new-password"
+                  />
+                  <label htmlFor="instructor-code">
+                    Instructor code
+                    <input
+                      id="instructor-code"
+                      value={instructorCode}
+                      onChange={(e) => setInstructorCode(e.target.value)}
+                      placeholder="From your school"
+                      autoComplete="one-time-code"
+                      inputMode="numeric"
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="primary-btn landing-auth-submit"
+                    data-click="confirm"
+                  >
+                    Create teacher account
+                  </button>
+                  <AuthDivider />
+                  <GoogleButton onClick={handleGoogleTeacherSignUp}>
+                    Sign up with Google
+                  </GoogleButton>
+                  <p className="landing-auth-fine">
+                    Google sign up still needs the instructor code above.
+                  </p>
+                </form>
+              ) : authMode === "reset" ? (
+                <form
+                  key="reset"
+                  className="join-auth-form landing-auth-form landing-panel-form"
+                  onSubmit={handleReset}
+                >
+                  <label htmlFor="reset-email">
+                    Email
+                    <input
+                      id="reset-email"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@school.edu"
+                      autoComplete="email"
+                      autoFocus
+                      required
+                    />
+                  </label>
+                  {resetSent ? (
+                    <p className="landing-auth-success" role="status">
+                      If an account exists for that email, a reset link is on
+                      the way. Check your inbox (and spam).
+                    </p>
+                  ) : null}
+                  <button
+                    type="submit"
+                    className="primary-btn landing-auth-submit"
+                    data-click="confirm"
+                  >
+                    {resetSent ? "Send again" : "Send reset link"}
+                  </button>
+                  <button
+                    type="button"
+                    className="landing-auth-back"
+                    data-click="select"
+                    onClick={() => switchMode("signin")}
+                  >
+                    ← Back to sign in
+                  </button>
+                </form>
+              ) : (
+                <form
+                  key="signin"
+                  className="join-auth-form landing-auth-form landing-panel-form"
+                  onSubmit={handleSignIn}
+                >
+                  <GoogleButton onClick={handleGoogleSignIn}>
+                    Continue with Google
+                  </GoogleButton>
+                  <AuthDivider label="or with email" />
+                  <label htmlFor="account-signin-email">
+                    Email
+                    <input
+                      id="account-signin-email"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@school.edu"
+                      autoComplete="email"
+                      required
+                      autoFocus
+                    />
+                  </label>
+                  <PasswordField
+                    id="account-signin-password"
+                    label="Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete="current-password"
+                    action={
+                      <button
+                        type="button"
+                        className="landing-auth-link"
+                        data-click="select"
+                        onClick={() => switchMode("reset")}
+                      >
+                        Forgot?
+                      </button>
+                    }
+                  />
+                  <button
+                    type="submit"
+                    className="primary-btn landing-auth-submit"
+                    data-click="confirm"
+                  >
+                    Sign in
+                  </button>
+                </form>
+              )}
           </div>
         )}
 
-        {authMode === "signup" ? (
-          <form className="join-auth-form" onSubmit={handleSignUp}>
-            <label htmlFor="teacher-name">
-              Your name
-              <input
-                id="teacher-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Ms. Rivera"
-                autoComplete="name"
-                autoFocus
-              />
-            </label>
-            <label htmlFor="teacher-email">
-              Email
-              <input
-                id="teacher-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@school.edu"
-                autoComplete="email"
-                required
-              />
-            </label>
-            <PasswordField
-              id="teacher-password"
-              label="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="new-password"
-            />
-            <label htmlFor="instructor-code">
-              Instructor code
-              <input
-                id="instructor-code"
-                value={instructorCode}
-                onChange={(e) => setInstructorCode(e.target.value)}
-                placeholder="Enter your school’s code"
-                autoComplete="one-time-code"
-                inputMode="numeric"
-                required
-              />
-            </label>
-            <p className="teacher-code-hint">
-              Students join with a class invite link first, then sign in here.
-            </p>
-            <button type="submit" className="primary-btn" data-click="confirm">
-              Create teacher account
-            </button>
-            <AuthDivider />
-            <GoogleButton onClick={handleGoogleTeacherSignUp}>
-              Continue with Google
-            </GoogleButton>
-            <p className="teacher-code-hint">
-              Google teacher signup still needs a valid instructor code above.
-            </p>
-          </form>
-        ) : authMode === "reset" ? (
-          <form className="join-auth-form" onSubmit={handleReset}>
-            <label htmlFor="reset-email">
-              Email
-              <input
-                id="reset-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@school.edu"
-                autoComplete="email"
-                autoFocus
-                required
-              />
-            </label>
-            {resetSent ? (
-              <p className="auth-success-hint">
-                If an account exists for that email, a reset link is on the way.
-                Check your inbox (and spam), then sign in with your new password.
-              </p>
-            ) : (
-              <p className="teacher-code-hint">
-                Use the same email you signed up with.
-              </p>
-            )}
-            <button type="submit" className="primary-btn" data-click="confirm">
-              {resetSent ? "Send again" : "Send reset link"}
+        {authMode === "home" ? (
+          <div className="landing-home-auth" aria-label="Account options">
+            <button
+              type="button"
+              className="landing-home-signin"
+              data-click="select"
+              onClick={() => switchMode("signin")}
+            >
+              Sign in
             </button>
             <button
               type="button"
-              className="ghost-btn auth-back-btn"
+              className="landing-home-teacher"
               data-click="select"
-              onClick={() => {
-                setAuthMode("signin");
-                setResetSent(false);
-                setError("");
-              }}
+              onClick={() => switchMode("signup")}
             >
-              Back to sign in
+              Teacher? Create an account
             </button>
-          </form>
+          </div>
         ) : (
-          <form className="join-auth-form" onSubmit={handleSignIn}>
-            <GoogleButton onClick={handleGoogleSignIn}>
-              Continue with Google
-            </GoogleButton>
-            <AuthDivider />
-            <label htmlFor="account-signin-email">
-              Email
-              <input
-                id="account-signin-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@school.edu"
-                autoComplete="email"
-                autoFocus
-                required
-              />
-            </label>
-            <PasswordField
-              id="account-signin-password"
-              label="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-            />
-            <div className="auth-inline-actions">
-              <button
-                type="button"
-                className="text-link-btn"
-                data-click="select"
-                onClick={() => {
-                  setAuthMode("reset");
-                  setResetSent(false);
-                  setError("");
-                }}
-              >
-                Forgot password?
-              </button>
-            </div>
-            <p className="teacher-code-hint">
-              New student? Use the invite link from your teacher to create an
-              account.
-            </p>
-            <button type="submit" className="primary-btn" data-click="confirm">
-              Sign in
+          <div className="landing-home-auth">
+            <button
+              type="button"
+              className="landing-home-teacher"
+              data-click="select"
+              onClick={() => switchMode("home")}
+            >
+              ← Back to join code
             </button>
-          </form>
+          </div>
         )}
       </div>
     </section>

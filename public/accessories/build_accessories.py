@@ -275,12 +275,37 @@ def build_gold_chain():
 
 
 def build_scarf():
-    """Scarf. Attach to Torso at neck (z=0 local = neck base); drapes down front."""
-    red = mat("Scarf_Red", (0.62, 0.10, 0.12, 1.0))
-    return [
-        cylinder("Scarf_Neck", 0.55, 0.30, (0, 0, -0.05), material=red),
-        box("Scarf_Drape", (0.32, 0.10, 0.9), (0, 0.30, -0.55), red),
+    """Scarf. Attach at neck; front fold + knot + two tails (no full neck ring)."""
+    red = mat("Scarf_Red", (0.72, 0.12, 0.14, 1.0), roughness=0.78)
+    dark = mat("Scarf_Dark", (0.48, 0.08, 0.10, 1.0), roughness=0.82)
+    # Keep the whole scarf forward (-Y) of the torso so it doesn't intersect the shirt.
+    objs = [
+        box("Scarf_Front_Bulk", (0.58, 0.32, 0.24), (0, -0.58, -0.06), red),
+        box(
+            "Scarf_Knot",
+            (0.3, 0.24, 0.22),
+            (0.02, -0.68, -0.2),
+            dark,
+            rotation=(math.radians(18), math.radians(8), math.radians(-10)),
+        ),
+        box(
+            "Scarf_Tail_L",
+            (0.22, 0.12, 1.05),
+            (-0.16, -0.72, -0.78),
+            red,
+            rotation=(math.radians(6), math.radians(6), math.radians(12)),
+        ),
+        box(
+            "Scarf_Tail_R",
+            (0.2, 0.11, 0.88),
+            (0.18, -0.68, -0.68),
+            dark,
+            rotation=(math.radians(10), math.radians(-8), math.radians(-16)),
+        ),
+        box("Scarf_Tip_L", (0.17, 0.07, 0.12), (-0.22, -0.78, -1.32), dark),
+        box("Scarf_Tip_R", (0.15, 0.06, 0.1), (0.24, -0.72, -1.15), red),
     ]
+    return objs
 
 
 def build_sports_jersey():
@@ -309,13 +334,35 @@ def build_backpack():
 
 
 def build_purse():
-    """Purse. Attach to Torso/shoulder; strap loop sits at z=0 (shoulder), bag hangs below."""
-    tan = mat("Purse_Tan", (0.62, 0.42, 0.24, 1.0))
-    gold = mat("Purse_Hardware", (0.83, 0.68, 0.21, 1.0), roughness=0.25, metallic=0.8)
-    objs = [torus("Purse_Strap", 0.55, 0.03, (0, 0, -0.4), rotation=(0, math.radians(90), 0), material=tan)]
-    objs.append(box("Purse_Body", (0.7, 0.35, 0.55), (0, 0, -1.15), tan))
-    objs.append(box("Purse_Flap", (0.72, 0.08, 0.30), (0, -0.19, -0.95), tan))
-    objs.append(box("Purse_Clasp", (0.12, 0.05, 0.08), (0, -0.23, -0.95), gold))
+    """Purse. Attach at left shoulder; strap over shoulder, bag hangs outside the hip."""
+    tan = mat("Purse_Tan", (0.58, 0.38, 0.22, 1.0), roughness=0.62)
+    dark = mat("Purse_Dark", (0.42, 0.26, 0.14, 1.0), roughness=0.7)
+    gold = mat("Purse_Hardware", (0.83, 0.68, 0.21, 1.0), roughness=0.28, metallic=0.85)
+    # Origin = shoulder attach. Keep bag on -X (outboard) and -Y (forward) so it
+    # clears the torso after glTF Y-up conversion.
+    objs = [
+        # Shoulder pad / strap start.
+        box("Purse_Strap_Top", (0.14, 0.08, 0.22), (-0.08, -0.02, 0.02), tan),
+        # Long strap down the outside of the arm/hip.
+        box(
+            "Purse_Strap",
+            (0.08, 0.06, 1.05),
+            (-0.42, -0.18, -0.55),
+            tan,
+            rotation=(math.radians(6), 0, math.radians(18)),
+        ),
+        # Soft connector into the bag.
+        box("Purse_Strap_Join", (0.16, 0.1, 0.14), (-0.55, -0.28, -1.05), dark),
+        # Main bag body — clearly outside the shirt.
+        box("Purse_Body", (0.62, 0.28, 0.5), (-0.62, -0.32, -1.35), tan),
+        box("Purse_Side", (0.1, 0.26, 0.46), (-0.95, -0.32, -1.35), dark),
+        # Flap + clasp on the front face of the bag.
+        box("Purse_Flap", (0.58, 0.08, 0.28), (-0.62, -0.48, -1.18), dark),
+        box("Purse_Clasp", (0.1, 0.05, 0.08), (-0.62, -0.54, -1.2), gold),
+        # Tiny feet so it reads as a bag, not a block.
+        box("Purse_Foot_L", (0.1, 0.08, 0.06), (-0.8, -0.34, -1.62), gold),
+        box("Purse_Foot_R", (0.1, 0.08, 0.06), (-0.45, -0.34, -1.62), gold),
+    ]
     return objs
 
 

@@ -18,8 +18,7 @@ import {
 import {
   getClassStudent,
   listClassStudents,
-  markClosetAiScenarioAnswered,
-  resetClosetAiAnsweredScenarios,
+  markBusinessLicenseUnlocked,
   subscribeClassClosetItems,
   updateClassStudent,
 } from "./classStore";
@@ -92,7 +91,8 @@ const ATTACH = {
   neck: [0, 3.48, 0.58],
   torso: [0, 2.5, 0],
   torsoBack: [0, 2.55, -0.55],
-  shoulderL: [-0.95, 3.15, 0.05],
+  // Outside the left shoulder so bags hang clear of the shirt, not through it.
+  shoulderL: [-1.15, 3.2, 0.12],
   // Palm of right hand — AI props still need an outward offset (see below).
   handR: [1.35, 1.85, 0.2],
   // Palm of left hand (mirror of handR).
@@ -264,22 +264,29 @@ export const CLOSET_CATALOG = {
       id: "acc-scarf",
       kind: "neck",
       label: "Scarf",
-      url: "/accessories/Scarf.glb",
+      url: "/accessories/Scarf.glb?v=drape4",
       attach: "neck",
-      offset: [0, -0.02, 0.08],
+      offset: [0, -0.02, 0.28],
+      scale: 1.1,
+      rotation: [0.12, 0, 0],
       color: "#9e1a1f",
       accent: "#c42a30",
       price: 900,
+      overlayShirt: true,
     },
     {
       id: "acc-purse",
       kind: "bag",
       label: "Purse",
-      url: "/accessories/Purse.glb",
+      url: "/accessories/Purse.glb?v=hip3",
       attach: "shoulderL",
+      offset: [-0.22, -0.15, 0.38],
+      scale: 0.95,
+      rotation: [0.1, 0.4, 0.14],
       color: "#9e6b3d",
       accent: "#d4ad35",
       price: 8500,
+      overlayShirt: true,
     },
     {
       id: "acc-bat",
@@ -292,8 +299,34 @@ export const CLOSET_CATALOG = {
       accent: "#1a1a1a",
       price: 1200,
     },
+    {
+      id: "acc-founder-badge",
+      kind: "hat",
+      label: "Founder’s crown",
+      procedural: "founderCrown",
+      attach: "headTop",
+      offset: [0, 0.14, 0],
+      scale: 1.05,
+      color: "#d4ad35",
+      accent: "#ffe08a",
+      price: 0,
+      earnOnly: true,
+      earnFrom: "create-business-approved",
+      earnLabel: "Earn when a teacher approves your Create a Business product",
+      keepHair: true,
+    },
   ],
 };
+
+/** Exercise id → closet item ids granted when that exercise is completed. */
+export const CLOSET_EARN_REWARDS = {
+  "create-business-approved": ["acc-founder-badge"],
+};
+
+export function closetRewardsForExercise(exerciseId) {
+  const key = String(exerciseId || "").trim();
+  return Array.isArray(CLOSET_EARN_REWARDS[key]) ? [...CLOSET_EARN_REWARDS[key]] : [];
+}
 
 function isAccessoryItem(item) {
   return Boolean(
@@ -306,6 +339,126 @@ function isAccessoryItem(item) {
 
 function isCustomHairItem(item) {
   return item?.kind === "hair" && isAccessoryItem(item);
+}
+
+/** Gold crown with multicolor diamond gems — earn reward for Create-a-Business. */
+function FounderCrown({
+  position = [0, 0, 0],
+  rotation = [0, 0, 0],
+  scale = 1,
+  color = "#d4ad35",
+  accent = "#ffe08a",
+}) {
+  const bandR = 0.52;
+  const gemColors = ["#e8486a", "#3b82f6", "#22c55e", "#a855f7", "#06b6d4", "#f59e0b"];
+  const spikes = useMemo(() => {
+    const n = 5;
+    return Array.from({ length: n }, (_, i) => {
+      const a = (i / n) * Math.PI * 2 + Math.PI / 2;
+      const tall = i === 0;
+      return {
+        a,
+        x: Math.cos(a) * bandR * 0.9,
+        z: Math.sin(a) * bandR * 0.9,
+        h: tall ? 0.62 : 0.4,
+        tipY: tall ? 0.78 : 0.54,
+        gem: gemColors[i % gemColors.length],
+      };
+    });
+  }, []);
+  const bandGems = useMemo(
+    () =>
+      gemColors.map((gem, i) => {
+        const a = ((i + 0.5) / gemColors.length) * Math.PI * 2 + Math.PI / 2;
+        return {
+          gem,
+          x: Math.cos(a) * (bandR + 0.02),
+          z: Math.sin(a) * (bandR + 0.02),
+          a,
+        };
+      }),
+    []
+  );
+
+  return (
+    <group position={position} rotation={rotation} scale={scale}>
+      {/* Outer band */}
+      <mesh castShadow position={[0, 0.1, 0]}>
+        <cylinderGeometry args={[bandR, bandR * 1.06, 0.2, 32]} />
+        <meshStandardMaterial color={color} metalness={0.94} roughness={0.16} />
+      </mesh>
+      {/* Inner velvet lining hint */}
+      <mesh position={[0, 0.12, 0]}>
+        <cylinderGeometry args={[bandR * 0.82, bandR * 0.86, 0.16, 28]} />
+        <meshStandardMaterial color="#5b1d2a" metalness={0.05} roughness={0.85} />
+      </mesh>
+      {/* Polished rim */}
+      <mesh castShadow position={[0, 0.21, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[bandR * 0.98, 0.04, 10, 36]} />
+        <meshStandardMaterial color={accent} metalness={0.96} roughness={0.1} />
+      </mesh>
+      {/* Crown spikes */}
+      {spikes.map((s, i) => (
+        <group key={`spike-${i}`} position={[s.x, 0.22, s.z]} rotation={[0, -s.a, 0]}>
+          <mesh castShadow position={[0, s.h * 0.45, 0]}>
+            <coneGeometry args={[0.13, s.h, 5]} />
+            <meshStandardMaterial color={color} metalness={0.93} roughness={0.14} />
+          </mesh>
+          {/* Tip diamond */}
+          <mesh
+            castShadow
+            position={[0, s.tipY, 0]}
+            rotation={[0, Math.PI / 4, 0]}
+            scale={[0.09, 0.12, 0.09]}
+          >
+            <octahedronGeometry args={[1, 0]} />
+            <meshStandardMaterial
+              color={s.gem}
+              metalness={0.35}
+              roughness={0.12}
+              emissive={s.gem}
+              emissiveIntensity={0.22}
+            />
+          </mesh>
+        </group>
+      ))}
+      {/* Band gems between spikes */}
+      {bandGems.map((g, i) => (
+        <mesh
+          key={`gem-${i}`}
+          castShadow
+          position={[g.x, 0.12, g.z]}
+          rotation={[0, -g.a, 0]}
+          scale={[0.075, 0.1, 0.075]}
+        >
+          <octahedronGeometry args={[1, 0]} />
+          <meshStandardMaterial
+            color={g.gem}
+            metalness={0.4}
+            roughness={0.1}
+            emissive={g.gem}
+            emissiveIntensity={0.28}
+          />
+        </mesh>
+      ))}
+      {/* Center brow jewel */}
+      <mesh
+        castShadow
+        position={[0, 0.28, bandR * 0.95]}
+        rotation={[0.35, 0, 0]}
+        scale={[0.12, 0.16, 0.12]}
+      >
+        <octahedronGeometry args={[1, 0]} />
+        <meshStandardMaterial
+          color="#f8fafc"
+          metalness={0.55}
+          roughness={0.05}
+          emissive="#e2e8f0"
+          emissiveIntensity={0.35}
+        />
+      </mesh>
+    </group>
+  );
 }
 
 /** Interlocking gold oval links draped as a necklace (not a single hoop). */
@@ -362,15 +515,24 @@ function GoldChainNecklace({
 }
 
 function isPaidItem(item) {
-  return Number(item?.price) > 0;
+  return Number(item?.price) > 0 && !item?.earnOnly;
+}
+
+function isEarnOnlyItem(item) {
+  return Boolean(item?.earnOnly);
+}
+
+/** Paid shop items + earn-only unlocks (not free color swatches). */
+function isShelfLuxury(item) {
+  return isPaidItem(item) || isEarnOnlyItem(item);
 }
 
 function freeCatalogItems(category) {
-  return (CLOSET_CATALOG[category] || []).filter((item) => !isPaidItem(item));
+  return (CLOSET_CATALOG[category] || []).filter((item) => !isShelfLuxury(item));
 }
 
 function paidCatalogItems(category) {
-  return (CLOSET_CATALOG[category] || []).filter((item) => isPaidItem(item));
+  return (CLOSET_CATALOG[category] || []).filter(isShelfLuxury);
 }
 
 /** Flat list of purchasable accessory GLBs (built-in only). */
@@ -953,6 +1115,18 @@ function AccessoryModel({ item }) {
     );
   }
 
+  if (item.procedural === "founderCrown") {
+    return (
+      <FounderCrown
+        position={pose.position}
+        rotation={pose.rotation}
+        scale={pose.scale}
+        color={item.color}
+        accent={item.accent}
+      />
+    );
+  }
+
   // Preferred path for AI blocky items — no remote GLB dependency.
   if (Array.isArray(item.parts) && item.parts.length > 0) {
     return <BlockyPartsModel parts={item.parts} pose={pose} />;
@@ -1094,26 +1268,57 @@ function AiSpriteFromGlb({ url, pose, item }) {
 
 function GlbAccessoryModel({ item, pose }) {
   const { scene } = useGLTF(item.url);
-  const cloned = useMemo(() => scene.clone(true), [scene]);
+  // Clone materials too — mutating shared GLTF mats causes hologram z-fighting
+  // across instances and fights the shirt depth buffer.
+  const cloned = useMemo(() => {
+    const root = scene.clone(true);
+    root.traverse((obj) => {
+      if (!obj.isMesh) return;
+      if (Array.isArray(obj.material)) {
+        obj.material = obj.material.map((m) => (m ? m.clone() : m));
+      } else if (obj.material) {
+        obj.material = obj.material.clone();
+      }
+    });
+    return root;
+  }, [scene]);
+
+  const overlayShirt =
+    item.overlayShirt === true ||
+    item.id === "acc-scarf" ||
+    item.id === "acc-purse" ||
+    item.kind === "bag";
 
   useLayoutEffect(() => {
     cloned.traverse((obj) => {
       if (!obj.isMesh) return;
       obj.castShadow = true;
       obj.receiveShadow = true;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      if (overlayShirt) {
+        // Always paint over the shirt so tails/bags don't z-fight through it.
+        obj.renderOrder = 40;
+        mats.forEach((m) => {
+          if (!m) return;
+          m.depthTest = false;
+          m.depthWrite = false;
+          m.polygonOffset = false;
+          m.needsUpdate = true;
+        });
+        return;
+      }
       if (item.kind === "neck" || item.attach === "neck") {
         obj.renderOrder = 4;
-        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
         mats.forEach((m) => {
           if (!m) return;
           m.polygonOffset = true;
-          m.polygonOffsetFactor = -2;
-          m.polygonOffsetUnits = -2;
+          m.polygonOffsetFactor = -4;
+          m.polygonOffsetUnits = -4;
           m.needsUpdate = true;
         });
       }
     });
-  }, [cloned, item]);
+  }, [cloned, item, overlayShirt]);
 
   return (
     <primitive
@@ -1135,6 +1340,16 @@ function AccessoryAtOrigin({ item, scale = 1 }) {
         radiusX={0.5}
         radiusY={0.42}
         depth={0.32}
+      />
+    );
+  }
+
+  if (item.procedural === "founderCrown") {
+    return (
+      <FounderCrown
+        scale={scale * 0.95}
+        color={item.color}
+        accent={item.accent}
       />
     );
   }
@@ -1957,6 +2172,9 @@ function CameraRig({ mode }) {
       // Frame face/shoulders only — head sits ~0.7–0.95 world Y after scale.
       camera.position.set(0, 0.82, 1.55);
       camera.lookAt(0, 0.78, 0);
+    } else if (mode === "report") {
+      camera.position.set(0, 0.2, 4.6);
+      camera.lookAt(0, 0.12, 0);
     } else {
       camera.position.set(0, 0.12, 4.05);
       camera.lookAt(0, -0.02, 0);
@@ -2207,6 +2425,186 @@ export function classFishWalker() {
   };
 }
 
+export const NEWS_ANCHORS = [
+  {
+    id: "anchor-dana",
+    name: "Dana Reyes",
+    tie: null,
+    outfit: {
+      ...DEFAULT_OUTFIT,
+      skin: "#c68a5c",
+      hair: "#1f1a16",
+      hairStyleId: "hair-bob",
+      shirt: "#8c1d2c",
+      pants: "#1a1f1c",
+      shoes: "#1a1f1c",
+    },
+  },
+  {
+    id: "anchor-marcus",
+    name: "Marcus Bell",
+    tie: "#b3202a",
+    outfit: {
+      ...DEFAULT_OUTFIT,
+      skin: "#f0c9a8",
+      hair: "#3b2a1e",
+      hairStyleId: "hair-side",
+      shirt: "#1f2c4a",
+      pants: "#141a26",
+      shoes: "#141a26",
+    },
+  },
+];
+
+/** White collar V (and optional tie), in avatar-local units on the torso front. */
+function AnchorCollar({ tie }) {
+  return (
+    <group position={[0, AVATAR_BASE_Y, 0]} scale={AVATAR_SCALE}>
+      <mesh position={[0, 3.25, 0.505]} rotation={[0, 0, -Math.PI / 2]} scale={[1.5, 1, 1]}>
+        <circleGeometry args={[0.32, 3]} />
+        <meshStandardMaterial color="#f4f4f0" roughness={0.6} />
+      </mesh>
+      {tie ? (
+        <>
+          <mesh position={[0, 3.32, 0.53]}>
+            <boxGeometry args={[0.2, 0.16, 0.05]} />
+            <meshStandardMaterial color={tie} roughness={0.45} />
+          </mesh>
+          <mesh position={[0, 2.78, 0.525]}>
+            <boxGeometry args={[0.18, 0.95, 0.04]} />
+            <meshStandardMaterial color={tie} roughness={0.45} />
+          </mesh>
+          <mesh position={[0, 2.27, 0.525]} rotation={[0, 0, Math.PI / 4]}>
+            <boxGeometry args={[0.13, 0.13, 0.04]} />
+            <meshStandardMaterial color={tie} roughness={0.45} />
+          </mesh>
+        </>
+      ) : null}
+    </group>
+  );
+}
+
+/** Gentle "on air" motion: small yaw toward the co-anchor plus a talking bob. */
+function AnchorIdle({ children, x, facing, phase }) {
+  const ref = useRef();
+  useFrame((state) => {
+    if (!ref.current) return;
+    const t = state.clock.getElapsedTime() + phase;
+    const talking = Math.sin(t * 0.45) > 0;
+    ref.current.rotation.y = facing + Math.sin(t * 0.7) * 0.06;
+    ref.current.position.y = talking ? Math.abs(Math.sin(t * 6)) * 0.012 : 0;
+  });
+  return (
+    <group position={[x, -0.05, 0]} scale={0.8}>
+      <group ref={ref}>{children}</group>
+    </group>
+  );
+}
+
+const ANCHOR_X = 0.95;
+const NEWS_CAMERA = { position: [0, 0.36, 4.4], target: [0, 0.2, 0], fov: 30 };
+
+function NewsDeskScene({ useBlender }) {
+  const deskTop = -0.2;
+  return (
+    <>
+      <NewsDeskCamera />
+      <ambientLight intensity={0.85} />
+      <directionalLight position={[1.5, 3, 3]} intensity={1.2} />
+      <directionalLight position={[-2.5, 2, 1]} intensity={0.45} color="#9ec5ff" />
+      {NEWS_ANCHORS.map((a, i) => (
+        <AnchorIdle
+          key={a.id}
+          x={i === 0 ? -ANCHOR_X : ANCHOR_X}
+          facing={i === 0 ? 0.22 : -0.22}
+          phase={i * 3.1}
+        >
+          <AvatarModel outfit={a.outfit} waving={false} still useBlender={useBlender} />
+          <AnchorCollar tie={a.tie} />
+        </AnchorIdle>
+      ))}
+      <group position={[0, deskTop, 0.5]}>
+        <mesh position={[0, 0.02, 0]}>
+          <boxGeometry args={[3.7, 0.05, 0.55]} />
+          <meshStandardMaterial color="#e9eef5" roughness={0.3} metalness={0.2} />
+        </mesh>
+        <mesh position={[0, -0.32, 0.22]}>
+          <boxGeometry args={[3.6, 0.62, 0.08]} />
+          <meshStandardMaterial color="#122440" roughness={0.45} metalness={0.25} />
+        </mesh>
+        <mesh position={[0, -0.12, 0.265]}>
+          <boxGeometry args={[3.6, 0.035, 0.01]} />
+          <meshStandardMaterial color="#3fa9ff" emissive="#3fa9ff" emissiveIntensity={0.9} />
+        </mesh>
+        {NEWS_ANCHORS.map((a, i) => (
+          <Html
+            key={a.id}
+            position={[i === 0 ? -ANCHOR_X : ANCHOR_X, -0.17, 0.28]}
+            center
+            zIndexRange={[20, 0]}
+            style={{ pointerEvents: "none" }}
+          >
+            <span className="news-desk-nameplate">{a.name}</span>
+          </Html>
+        ))}
+      </group>
+    </>
+  );
+}
+
+function NewsDeskCamera() {
+  const { camera } = useThree();
+  useLayoutEffect(() => {
+    camera.position.set(...NEWS_CAMERA.position);
+    camera.lookAt(...NEWS_CAMERA.target);
+    camera.updateProjectionMatrix();
+  }, [camera]);
+  return null;
+}
+
+/** Channel 5 news set: two anchors at a desk in front of the studio screen. */
+export function NewsDeskStage({ headlines = [], className }) {
+  const useBlender = useBlenderCharacterAvailable();
+  const ticker = headlines.filter(Boolean).slice(0, 6);
+  return (
+    <div className={className ? `news-desk ${className}` : "news-desk"}>
+      <div className="news-desk-backdrop" aria-hidden="true">
+        <span className="news-desk-live">
+          <i /> Live
+        </span>
+        <div className="news-desk-screen">
+          <strong>
+            Channel <b>5</b>
+          </strong>
+          <em>Ledger Lab News</em>
+        </div>
+      </div>
+      <Canvas
+        className="news-desk-canvas"
+        camera={{ position: NEWS_CAMERA.position, fov: NEWS_CAMERA.fov, near: 0.1, far: 30 }}
+        dpr={[1, 1.75]}
+        gl={{ antialias: true, alpha: true }}
+      >
+        <Suspense fallback={null}>
+          <NewsDeskScene useBlender={useBlender} />
+        </Suspense>
+      </Canvas>
+      {ticker.length > 0 ? (
+        <div className="news-desk-ticker" aria-label="Top headlines">
+          <span className="news-desk-ticker-tag">Breaking</span>
+          <div className="news-desk-ticker-track">
+            <div className="news-desk-ticker-run">
+              {[...ticker, ...ticker].map((h, i) => (
+                <span key={i}>{h}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Shared class stage: every student’s avatar pacing the board. */
 export function ClassWalkingStage({ walkers = [], className }) {
   const useBlender = useBlenderCharacterAvailable();
@@ -2312,7 +2710,9 @@ export function AvatarCanvas({ outfit, mode, className }) {
                   ? [0, 0.52, 2.35]
                   : isHeadshot
                     ? [0, 0.82, 1.55]
-                    : [0, 0.1, 3.85],
+                    : mode === "report"
+                      ? [0, 0.2, 4.6]
+                      : [0, 0.1, 3.85],
           fov: mode === "closet" ? 40 : mode === "dash" ? 38 : isBust ? 30 : isHeadshot ? 28 : 32,
           near: 0.1,
           far: 50,
@@ -2364,7 +2764,7 @@ function stripUnownedBuyables(outfit, fallback = null) {
     const selectedId = next[idKey];
     if (!selectedId) continue;
     const item = (CLOSET_CATALOG[category] || []).find((entry) => entry.id === selectedId);
-    if (!item || isAccessoryItem(item) || !isPaidItem(item) || owned.has(item.id)) continue;
+    if (!item || isAccessoryItem(item) || !isShelfLuxury(item) || owned.has(item.id)) continue;
 
     if (category === "hairStyle") {
       next.hairStyleId = base.hairStyleId || "hair-block";
@@ -2397,10 +2797,13 @@ function ClosetShelf({
   freeOnly = false,
 }) {
   const owned = new Set(outfit.ownedLuxuries || []);
-  const freeItems = items.filter((item) => !isPaidItem(item));
-  const paidItems = freeOnly ? [] : items.filter((item) => isPaidItem(item));
+  const freeItems = items.filter((item) => !isShelfLuxury(item));
+  const paidItems = freeOnly ? [] : items.filter((item) => isShelfLuxury(item));
   const classCreations = paidItems.filter((item) => item.aiCreated);
-  const catalogPaid = paidItems.filter((item) => !item.aiCreated);
+  const catalogEarn = paidItems.filter((item) => !item.aiCreated && isEarnOnlyItem(item));
+  const catalogPaid = paidItems.filter(
+    (item) => !item.aiCreated && !isEarnOnlyItem(item)
+  );
 
   function renderFreeItem(item) {
     const selectedId = outfit[`${category}Id`];
@@ -2481,6 +2884,7 @@ function ClosetShelf({
 
   function renderPaidItem(item) {
     const isOwned = owned.has(item.id);
+    const earnOnly = isEarnOnlyItem(item);
     let isEquipped = false;
     if (isCustomHairItem(item) || category === "hairStyle") {
       isEquipped = (outfit.hairStyleId || "hair-block") === item.id;
@@ -2493,8 +2897,10 @@ function ClosetShelf({
       isEquipped = outfit[`${category}Id`] === item.id || outfit[category] === item.color;
     }
     const isTrying = isEquipped && !isOwned;
-    const canAfford = Number(cash) + 0.0001 >= item.price;
-    let status = `Try on · ${money(item.price)}`;
+    const canAfford = !earnOnly && Number(cash) + 0.0001 >= item.price;
+    let status = earnOnly
+      ? item.earnLabel || "Earn by completing an exercise"
+      : `Try on · ${money(item.price)}`;
     if (isOwned && isEquipped) {
       if (item.kind === "prop") {
         const hands = [];
@@ -2509,7 +2915,13 @@ function ClosetShelf({
         item.kind === "prop" && (outfit.prop || outfit.propL) && !(outfit.prop && outfit.propL)
           ? "Tap for other hand"
           : "Tap to equip";
-    } else if (isTrying) status = canAfford ? "Trying on" : "Trying on · save up to buy";
+    } else if (isTrying) {
+      status = earnOnly
+        ? "Preview · complete the exercise to keep it"
+        : canAfford
+          ? "Trying on"
+          : "Trying on · save up to buy";
+    }
 
     const swatch = item.accent
       ? `linear-gradient(145deg, ${item.accent}, ${item.color})`
@@ -2522,6 +2934,8 @@ function ClosetShelf({
         className={[
           "closet-item",
           "closet-item-luxury",
+          earnOnly ? "is-earn-only" : "",
+          !isOwned && earnOnly ? "is-locked-earn" : "",
           isEquipped ? "selected" : "",
           isTrying ? "is-trying" : "",
         ]
@@ -2552,6 +2966,9 @@ function ClosetShelf({
           <span className="closet-item-copy">
             <strong>
               {item.label}
+              {earnOnly ? (
+                <span className="closet-item-earn-tag">Earn</span>
+              ) : null}
               {item.aiCreated ? (
                 <span className="closet-item-ai-tag">Class Creation</span>
               ) : null}
@@ -2559,7 +2976,7 @@ function ClosetShelf({
             <span>{buyingId === item.id ? "Buying…" : status}</span>
           </span>
         </button>
-        {isTrying && (
+        {isTrying && !earnOnly ? (
           <button
             type="button"
             className="closet-buy-btn"
@@ -2569,7 +2986,10 @@ function ClosetShelf({
           >
             {canAfford ? `Buy · ${money(item.price)}` : `Need ${money(item.price)}`}
           </button>
-        )}
+        ) : null}
+        {isTrying && earnOnly ? (
+          <p className="closet-earn-hint">{item.earnLabel || "Complete the exercise to unlock"}</p>
+        ) : null}
       </div>
     );
   }
@@ -2599,11 +3019,23 @@ function ClosetShelf({
               {classCreations.map(renderPaidItem)}
             </>
           ) : null}
+          {catalogEarn.length > 0 ? (
+            <>
+              <p className="closet-shelf-label">Earn</p>
+              {catalogEarn.map(renderPaidItem)}
+            </>
+          ) : null}
           <p className="closet-shelf-label">Shop</p>
-          {catalogPaid.length === 0 && classCreations.length === 0 ? (
+          {catalogPaid.length === 0 &&
+          catalogEarn.length === 0 &&
+          classCreations.length === 0 ? (
             <p className="closet-ai-empty">No accessories yet.</p>
           ) : catalogPaid.length === 0 ? (
-            <p className="closet-ai-empty">Catalog gear loads with the app.</p>
+            <p className="closet-ai-empty">
+              {catalogEarn.length > 0
+                ? "Cash shop gear loads with the app."
+                : "Catalog gear loads with the app."}
+            </p>
           ) : (
             catalogPaid.map(renderPaidItem)
           )}
@@ -2784,42 +3216,24 @@ function ClosetAiBuildSpinner({ label = "Building your 3D item…" }) {
   );
 }
 
-/** Roblox-style mystery crate teasing the item waiting after the strategy response. */
-function ClosetAiMysteryBox({
-  primary = "#3f8f68",
-  secondary = "#24312b",
-  tertiary = null,
-  quaternary = null,
-}) {
-  const accent = tertiary || secondary;
-  const lid = quaternary || primary;
+/** Spotlight preview for the earn-only Founder’s crown on the Create-a-Business intro. */
+function FounderCrownSpotlight() {
   return (
-    <div className="closet-ai-mystery" aria-hidden="true">
-      <div
-        className="closet-ai-mystery-stage"
-        style={{
-          "--mystery-primary": primary,
-          "--mystery-secondary": secondary,
-          "--mystery-accent": accent,
-          "--mystery-lid": lid,
-        }}
+    <div className="closet-ai-intro-reward-stage" aria-hidden="true">
+      <Canvas
+        camera={{ position: [0.45, 0.7, 3.2], fov: 34, near: 0.1, far: 40 }}
+        dpr={[1, 1.5]}
+        gl={{ antialias: true, alpha: true }}
       >
-        <div className="closet-ai-mystery-glow" />
-        <div className="closet-ai-mystery-crate">
-          <span className="mystery-face mystery-back" />
-          <span className="mystery-face mystery-left" />
-          <span className="mystery-face mystery-right" />
-          <span className="mystery-face mystery-bottom" />
-          <span className="mystery-face mystery-front">
-            <span className="mystery-band" />
-            <span className="mystery-mark">?</span>
-          </span>
-          <span className="mystery-face mystery-top" />
-          <span className="mystery-silhouette" />
-        </div>
-        <div className="closet-ai-mystery-shadow" />
-      </div>
-      <p className="closet-ai-mystery-caption">Your creation is sealed inside</p>
+        <ambientLight intensity={0.95} />
+        <directionalLight position={[2.2, 3.2, 2]} intensity={1.35} />
+        <directionalLight position={[-2, 1.2, -1]} intensity={0.45} color="#f0d078" />
+        <Suspense fallback={null}>
+          <Float speed={1.35} rotationIntensity={0.45} floatIntensity={0.35}>
+            <FounderCrown scale={1.05} />
+          </Float>
+        </Suspense>
+      </Canvas>
     </div>
   );
 }
@@ -2924,83 +3338,123 @@ function crewTierFor(slots) {
   return CREW_TIERS.find((t) => t.slots === n) || CREW_TIERS[0];
 }
 
-const CLOSET_AI_SCENARIOS = [
+/** Short MC unlock before Create-a-Business (hire crew → design product). */
+const BUSINESS_LICENSE_QUESTIONS = [
   {
-    id: "opportunity-cost-chain",
-    title: "Gold chain vs investing",
+    id: "biz-entity",
     prompt:
-      "A classmate spends $5,000 of classroom cash on the gold chain for their character in the closet. If they invested that $5,000 instead, it could grow to about $87,000 in 30 years at roughly 10% average annual return. What is the real opportunity cost of buying that necklace? Explain what they give up, why the long-term number matters, and when spending on something fun could still make sense.",
-    modelAnswer:
-      "The opportunity cost isn’t just “$5,000.” It’s also the future growth that money might have earned: around $87,000 in 30 years at ~10% if left invested (before fees/taxes, and with returns that aren’t guaranteed). Buying the chain trades long-term wealth for short-term enjoyment and style on their avatar. That can still be a good choice if they value the fun now, already have other savings invested, and understand they’re choosing consumption over compound growth. A thoughtful answer names both the cash spent and the forgone future value, plus time horizon and risk.",
-    placeholder:
-      "What’s the real opportunity cost of the $5,000 gold chain vs investing it…",
+      "In real life, what’s a main reason someone forms an LLC (limited liability company) instead of running as a sole proprietorship?",
+    explain:
+      "An LLC’s main job is liability protection — it helps keep business debts and lawsuits from reaching the owner’s personal assets.",
+    choices: [
+      {
+        id: "a",
+        text: "An LLC usually separates personal assets from business debts and lawsuits",
+        correct: true,
+      },
+      {
+        id: "b",
+        text: "An LLC means the owner never has to pay any taxes",
+        correct: false,
+      },
+      {
+        id: "c",
+        text: "Only LLCs are allowed to hire employees",
+        correct: false,
+      },
+      {
+        id: "d",
+        text: "An LLC guarantees the business will make a profit",
+        correct: false,
+      },
+    ],
   },
   {
-    id: "panic-sell",
-    title: "Market drop & Fear",
-    prompt:
-      "Markets just swung hard: popular tech stocks dropped about 8% in a week, and the Fear & Greed meter flipped toward Fear. Several classmates are panic-selling into cash so they can “feel safe,” even if it locks in losses. How would you change your investment strategy (if at all)? Be specific about buy, sell, or hold, and how risk and time horizon factor in.",
-    modelAnswer:
-      "A short-term drop doesn’t automatically mean sell. If your time horizon is years (not days), panic-selling often turns a temporary loss into a permanent one and can miss the rebound. A calmer plan reviews goals and diversification: maybe rebalance, buy quality assets on sale if you still believe in them, or hold rather than dump everything into cash from fear. Selling can make sense if you truly need cash soon or your risk level was too high, but “everyone is scared” alone isn’t a strategy.",
-    placeholder:
-      "Would you buy, sell, or hold, and why? Tie it to risk and time horizon…",
+    id: "biz-types",
+    prompt: "Which statement about business types is most accurate?",
+    explain:
+      "A corporation is its own legal person owned by shareholders, unlike a sole proprietorship where one person owns and is personally on the hook.",
+    choices: [
+      {
+        id: "a",
+        text: "A partnership means one person owns everything and takes all risk alone",
+        correct: false,
+      },
+      {
+        id: "b",
+        text: "A corporation is owned by shareholders and is a separate legal entity from its owners",
+        correct: true,
+      },
+      {
+        id: "c",
+        text: "A sole proprietorship can never sell products to customers",
+        correct: false,
+      },
+      {
+        id: "d",
+        text: "All businesses are required to be publicly traded on the stock market",
+        correct: false,
+      },
+    ],
   },
   {
-    id: "crew-payroll",
-    title: "Paying a crew",
+    id: "biz-liability",
     prompt:
-      "Hiring a Team of 3 or bigger means you’ll owe crew wages if the teacher approves your product: money that could have stayed invested instead. Why might paying classmates still be worth it, and what opportunity cost should you weigh before you hire?",
-    modelAnswer:
-      "Crew wages are a real cost: cash that won’t stay invested and won’t compound for you. The upside is help finishing the product, shared work, and possibly a higher sell price with a bigger team. Worth it if the extra help/price potential outweighs the payroll and you can still afford it after approval. Not worth it if you’re hiring just to “look big” while draining cash you’d rather keep growing in the market. Weigh payroll vs expected profit and your remaining portfolio.",
-    placeholder:
-      "When is hiring a crew worth the opportunity cost of those wages…",
-  },
-  {
-    id: "diversify-project",
-    title: "All-in on one product",
-    prompt:
-      "A classmate says you should put almost all your classroom cash into this one product because “it’ll print money.” What’s risky about that plan, and how would you balance funding the project with keeping some money diversified in stocks, ETFs, or cash?",
-    modelAnswer:
-      "Putting almost all cash into one product concentrates risk: if the item doesn’t sell, the crew costs money, or the teacher rejects it, you can lose a large share of your portfolio at once. Diversification means keeping some money in broader assets (stocks/ETFs) and cash reserves so one project can’t wipe you out. A smart plan funds the product with an amount you can afford to risk, keeps a buffer, and doesn’t treat one classroom business like a sure thing.",
-    placeholder:
-      "Explain the risk of going all-in and how you’d still fund the project wisely…",
+      "A customer slips in a shop and sues. If the owner is a sole proprietor with no liability protection, what can happen?",
+    explain:
+      "Sole proprietors have unlimited personal liability, so a lawsuit can reach personal savings, a car, or other assets — not just the shop.",
+    choices: [
+      {
+        id: "a",
+        text: "Only the shop’s inventory can ever be at risk — never the owner’s personal savings",
+        correct: false,
+      },
+      {
+        id: "b",
+        text: "The owner’s personal assets (like a car or savings) may also be at risk",
+        correct: true,
+      },
+      {
+        id: "c",
+        text: "Lawsuits against a business are illegal, so nothing can happen",
+        correct: false,
+      },
+      {
+        id: "d",
+        text: "The government always pays the full claim for the owner",
+        correct: false,
+      },
+    ],
   },
 ];
 
-function shuffleClosetAiScenarios(list) {
-  const arr = [...list];
-  for (let i = arr.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const tmp = arr[i];
-    arr[i] = arr[j];
-    arr[j] = tmp;
+const BUSINESS_LICENSE_LOCAL_KEY = "ledgerlab.businessLicenseUnlocked";
+
+function readLocalBusinessLicense(studentId) {
+  try {
+    return localStorage.getItem(`${BUSINESS_LICENSE_LOCAL_KEY}:${studentId}`) === "1";
+  } catch {
+    return false;
   }
-  return arr;
 }
 
-/**
- * Pick a shuffled scenario the student hasn't answered yet.
- * After every live scenario is used, clear history and start a new unique cycle.
- */
-function pickClosetAiScenario(answeredIds = []) {
-  const answered = new Set(
-    (Array.isArray(answeredIds) ? answeredIds : [])
-      .map((id) => String(id || "").trim())
-      .filter(Boolean)
-  );
-  const liveIds = new Set(CLOSET_AI_SCENARIOS.map((s) => s.id));
-  for (const id of [...answered]) {
-    if (!liveIds.has(id)) answered.delete(id);
+function writeLocalBusinessLicense(studentId) {
+  try {
+    localStorage.setItem(`${BUSINESS_LICENSE_LOCAL_KEY}:${studentId}`, "1");
+  } catch {
+    /* private mode */
   }
-  const pool = CLOSET_AI_SCENARIOS.filter((s) => !answered.has(s.id));
-  const cycleReset = pool.length === 0;
-  const list = shuffleClosetAiScenarios(
-    cycleReset ? CLOSET_AI_SCENARIOS : pool
-  );
-  return { scenario: list[0], cycleReset };
 }
 
-const CLOSET_AI_STRATEGY_MIN_CHARS = 80;
+function clearLocalBusinessLicense(studentId) {
+  try {
+    if (studentId) {
+      localStorage.removeItem(`${BUSINESS_LICENSE_LOCAL_KEY}:${studentId}`);
+    }
+  } catch {
+    /* private mode */
+  }
+}
 
 /** Classroom palette for Create-an-Item — major hues + neutrals for products. */
 const CLOSET_AI_COLORS = [
@@ -3183,10 +3637,10 @@ function ClosetAiCreator({
   onExit,
   onGateStepChange,
   onPreviewChange,
-  quizHostReady = false,
 }) {
   const [status, setStatus] = useState(null);
-  const [gateStep, setGateStep] = useState("crew"); // crew | notice | create | partner | quiz | review
+  // intro → license → crew → notice|partner → create → review
+  const [gateStep, setGateStep] = useState("intro");
   const [prompt, setPrompt] = useState("");
   const [productName, setProductName] = useState("");
   const [primaryColorId, setPrimaryColorId] = useState("tee-forest");
@@ -3203,22 +3657,19 @@ function ClosetAiCreator({
   const [error, setError] = useState("");
   const [sellPrice, setSellPrice] = useState("1200");
   const [crewSlots, setCrewSlots] = useState(null);
-  const [strategyAnswer, setStrategyAnswer] = useState("");
-  const [answeredScenarioIds, setAnsweredScenarioIds] = useState([]);
-  const [activeScenario, setActiveScenario] = useState(
-    () => pickClosetAiScenario([]).scenario
-  );
-  const [quizShowModel, setQuizShowModel] = useState(false);
   const [pendingBrief, setPendingBrief] = useState(null);
   const [quizDone, setQuizDone] = useState(false);
   const [redoPrompt, setRedoPrompt] = useState("");
   const [redoOpen, setRedoOpen] = useState(false);
   const [redoAvailable, setRedoAvailable] = useState(true);
-  const [quizHostEl, setQuizHostEl] = useState(null);
   const [partnerRoster, setPartnerRoster] = useState([]);
   const [partnerLoading, setPartnerLoading] = useState(false);
   const [selectedPartnerId, setSelectedPartnerId] = useState("");
   const [invitedPartnerName, setInvitedPartnerName] = useState("");
+  const [licenseIndex, setLicenseIndex] = useState(0);
+  const [licenseChoiceId, setLicenseChoiceId] = useState("");
+  const [licenseRevealed, setLicenseRevealed] = useState(false);
+  const [licenseChecking, setLicenseChecking] = useState(true);
   const pollRef = useRef(null);
   const messagesEndRef = useRef(null);
   const briefTeaseTokenRef = useRef(null);
@@ -3243,7 +3694,13 @@ function ClosetAiCreator({
 
   useEffect(() => {
     if (!open) return;
-    setGateStep("crew");
+    const already =
+      Boolean(studentId) && readLocalBusinessLicense(String(studentId));
+    setGateStep(already ? "crew" : "intro");
+    setLicenseIndex(0);
+    setLicenseChoiceId("");
+    setLicenseRevealed(false);
+    setLicenseChecking(Boolean(classId && studentId) && !already);
     setPrompt("");
     setProductName("");
     setPrimaryColorId("tee-forest");
@@ -3260,10 +3717,6 @@ function ClosetAiCreator({
     setError("");
     setSellPrice("1500");
     setCrewSlots(null);
-    setStrategyAnswer("");
-    setAnsweredScenarioIds([]);
-    setActiveScenario(pickClosetAiScenario([]).scenario);
-    setQuizShowModel(false);
     setPendingBrief(null);
     setQuizDone(false);
     setRedoPrompt("");
@@ -3275,7 +3728,7 @@ function ClosetAiCreator({
     onPreviewChange?.(null);
     briefTeaseTokenRef.current = null;
     stopPoll();
-  }, [open]);
+  }, [open, studentId, classId]);
 
   useEffect(() => {
     return () => {
@@ -3342,21 +3795,6 @@ function ClosetAiCreator({
     };
   }, [open, gateStep, classId, studentId]);
 
-  useLayoutEffect(() => {
-    if (gateStep !== "quiz") {
-      setQuizHostEl(null);
-      return undefined;
-    }
-    const find = () => document.getElementById("closet-ai-quiz-host");
-    const el = find();
-    if (el) {
-      setQuizHostEl(el);
-      return undefined;
-    }
-    const raf = window.requestAnimationFrame(() => setQuizHostEl(find()));
-    return () => window.cancelAnimationFrame(raf);
-  }, [gateStep, quizHostReady]);
-
   useEffect(() => {
     if (!open || !studentId || !classId) return undefined;
     let cancelled = false;
@@ -3374,16 +3812,20 @@ function ClosetAiCreator({
     getClassStudent(classId, studentId)
       .then((seat) => {
         if (cancelled) return;
-        const answered = Array.isArray(seat?.closetAiAnsweredScenarios)
-          ? seat.closetAiAnsweredScenarios
-              .map((id) => String(id || "").trim())
-              .filter(Boolean)
-          : [];
-        setAnsweredScenarioIds(answered);
-        setActiveScenario(pickClosetAiScenario(answered).scenario);
+        if (seat?.businessLicenseUnlocked) {
+          writeLocalBusinessLicense(String(studentId));
+          setGateStep((step) =>
+            step === "intro" || step === "license" ? "crew" : step
+          );
+        } else {
+          // Stale local unlock (e.g. after a teacher/admin reset) — show quiz again.
+          clearLocalBusinessLicense(String(studentId));
+          setGateStep((step) => (step === "crew" ? "intro" : step));
+        }
+        setLicenseChecking(false);
       })
       .catch(() => {
-        if (!cancelled) setAnsweredScenarioIds([]);
+        if (!cancelled) setLicenseChecking(false);
       });
     return () => {
       cancelled = true;
@@ -3510,7 +3952,7 @@ function ClosetAiCreator({
     e?.preventDefault?.();
     if (busy || briefTeasing || gateStep !== "create") return;
 
-    // Retry path: brief + quiz already done, generation failed — rebuild without re-quiz.
+    // Retry path: generation failed — rebuild from the saved brief.
     if (quizDone && pendingBrief) {
       await startGenerationFromBrief(pendingBrief);
       return;
@@ -3569,37 +4011,24 @@ function ClosetAiCreator({
     setBriefTeasing(true);
     const teaseToken = Symbol("brief-tease");
     briefTeaseTokenRef.current = teaseToken;
-    // Let React paint the loading chat before the wait.
     await new Promise((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(resolve))
     );
-    await new Promise((resolve) => setTimeout(resolve, 1600));
+    await new Promise((resolve) => setTimeout(resolve, 900));
     if (briefTeaseTokenRef.current !== teaseToken) return;
     briefTeaseTokenRef.current = null;
     setBriefTeasing(false);
-    setBusy(false);
-    setStrategyAnswer("");
-    setQuizShowModel(false);
-    {
-      const picked = pickClosetAiScenario(answeredScenarioIds);
-      if (picked.cycleReset) {
-        setAnsweredScenarioIds([]);
-        if (classId && studentId) {
-          resetClosetAiAnsweredScenarios(classId, studentId).catch(() => {});
-        }
-      }
-      setActiveScenario(picked.scenario);
-    }
-    setGateStep("quiz");
+    setQuizDone(true);
+    await startGenerationFromBrief(brief);
   }
 
-  function strategyAnswersPayload() {
-    const scenario = activeScenario || CLOSET_AI_SCENARIOS[0];
+  function licenseAnswersPayload() {
     return [
       {
-        id: scenario.id,
-        prompt: scenario.prompt,
-        answer: String(strategyAnswer || "").trim(),
+        id: "business-license",
+        prompt: "Classroom business license (multiple choice)",
+        answer:
+          "Completed the real-world business license quiz covering business types, LLCs, and personal liability before creating this product.",
       },
     ];
   }
@@ -3671,13 +4100,6 @@ function ClosetAiCreator({
       setError("Pick a crew size on the Hire a crew step first.");
       return;
     }
-    const answer = String(strategyAnswer || "").trim();
-    if (answer.length < CLOSET_AI_STRATEGY_MIN_CHARS) {
-      setError(
-        `Strategy response is missing — go back and write at least ${CLOSET_AI_STRATEGY_MIN_CHARS} characters.`
-      );
-      return;
-    }
     const maxP = selectedTier.maxSellPrice || 1500;
     const payroll = selectedTier.payroll || 0;
     const parsed = Math.round(Number(String(sellPrice).replace(/[^0-9.]/g, "")));
@@ -3708,7 +4130,7 @@ function ClosetAiCreator({
         studentId,
         job.id,
         classId,
-        strategyAnswersPayload()
+        licenseAnswersPayload()
       );
       setJob((prev) => ({
         ...prev,
@@ -3768,58 +4190,6 @@ function ClosetAiCreator({
     }
   }
 
-  async function handleQuizSubmit(e) {
-    e?.preventDefault?.();
-    if (busy || briefTeasing || quizShowModel) return;
-    const answer = String(strategyAnswer || "").trim();
-    if (answer.length < CLOSET_AI_STRATEGY_MIN_CHARS) {
-      setError(
-        `Write a thoughtful response (at least ${CLOSET_AI_STRATEGY_MIN_CHARS} characters).`
-      );
-      return;
-    }
-    setError("");
-    if (!pendingBrief?.text) {
-      setError("Describe your item first, then come back to this scenario.");
-      setGateStep("create");
-      return;
-    }
-    // Reveal the sample answer first; Continue starts the real AI build.
-    setQuizShowModel(true);
-    const scenarioId = String(
-      (activeScenario || CLOSET_AI_SCENARIOS[0])?.id || ""
-    ).trim();
-    if (scenarioId) {
-      setAnsweredScenarioIds((prev) =>
-        prev.includes(scenarioId) ? prev : [...prev, scenarioId]
-      );
-      if (classId && studentId) {
-        markClosetAiScenarioAnswered(classId, studentId, scenarioId).catch(
-          () => {}
-        );
-      }
-    }
-  }
-
-  async function handleQuizContinue() {
-    if (busy || briefTeasing || !quizShowModel) return;
-    if (!pendingBrief?.text) {
-      setError("Describe your item first, then come back to this scenario.");
-      setGateStep("create");
-      return;
-    }
-    setError("");
-    try {
-      setQuizDone(true);
-      setQuizShowModel(false);
-      setGateStep("create");
-      await startGenerationFromBrief(pendingBrief);
-    } catch (err) {
-      setError(err.message || "Could not start building");
-      setBusy(false);
-    }
-  }
-
   if (status && !status.allowed) return null;
   if (!status && gateStep === "create") return null;
 
@@ -3839,6 +4209,179 @@ function ClosetAiCreator({
     : "Building your 3D item…";
   const showBriefForm =
     !formLocked && !job && !briefTeasing && !quizDone;
+
+  async function finishBusinessLicense() {
+    writeLocalBusinessLicense(String(studentId || ""));
+    if (classId && studentId) {
+      try {
+        await markBusinessLicenseUnlocked(classId, studentId);
+      } catch {
+        /* local unlock still lets them continue */
+      }
+    }
+    setGateStep("crew");
+  }
+
+  function handleLicenseContinue() {
+    const q = BUSINESS_LICENSE_QUESTIONS[licenseIndex];
+    if (!q) return;
+    const picked = q.choices.find((c) => c.id === licenseChoiceId);
+    if (!picked) return;
+    // First click: reveal correct/incorrect; second click: advance either way.
+    if (!licenseRevealed) {
+      setLicenseRevealed(true);
+      return;
+    }
+    setLicenseChoiceId("");
+    setLicenseRevealed(false);
+    if (licenseIndex >= BUSINESS_LICENSE_QUESTIONS.length - 1) {
+      finishBusinessLicense();
+      return;
+    }
+    setLicenseIndex((i) => i + 1);
+  }
+
+  if (gateStep === "intro") {
+    return (
+      <div className="closet-ai-panel closet-ai-gate closet-ai-intro-gate">
+        <p className="closet-kicker">Create a Business</p>
+        <strong className="closet-ai-gate-title">Launch your own product</strong>
+        <p className="closet-ai-gate-copy">
+          Design a closet item, hire a crew or partner, and sell it to your
+          class — after you earn your classroom business license.
+        </p>
+        <div className="closet-ai-intro-reward">
+          <FounderCrownSpotlight />
+          <div className="closet-ai-intro-reward-copy">
+            <strong>Unlock: Founder’s crown</strong>
+            <span className="closet-ai-intro-earn-tag">Earn-only</span>
+            <p>
+              Finish the license quiz, hire a crew, and get your product
+              approved by your teacher — then the gold crown unlocks in your
+              closet. You can’t buy it with cash.
+            </p>
+          </div>
+        </div>
+        <div className="closet-ai-gate-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            data-click="confirm"
+            disabled={licenseChecking}
+            onClick={() => setGateStep("license")}
+          >
+            {licenseChecking ? "Checking…" : "Take the license quiz"}
+          </button>
+          <button
+            type="button"
+            className="ghost-btn"
+            data-click="select"
+            onClick={() => onExit?.()}
+          >
+            Exit
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (gateStep === "license") {
+    const q = BUSINESS_LICENSE_QUESTIONS[licenseIndex] || BUSINESS_LICENSE_QUESTIONS[0];
+    const stepNum = Math.min(licenseIndex + 1, BUSINESS_LICENSE_QUESTIONS.length);
+    const picked = q.choices.find((c) => c.id === licenseChoiceId);
+    const pickedCorrect = Boolean(picked?.correct);
+    const showMissExplain = licenseRevealed && picked && !picked.correct;
+    let continueLabel = "Check answer";
+    if (licenseRevealed) {
+      continueLabel =
+        licenseIndex >= BUSINESS_LICENSE_QUESTIONS.length - 1
+          ? "Unlock business"
+          : "Next question";
+    }
+    return (
+      <div className="closet-ai-panel closet-ai-gate closet-ai-license-gate">
+        <p className="closet-kicker">Business license</p>
+        <strong className="closet-ai-gate-title">Earn your license</strong>
+        <p className="closet-ai-gate-copy">
+          Answer each question to unlock Create a Business — you’ll see the
+          right answer either way. The Founder’s crown unlocks later, when a
+          teacher approves your product.
+        </p>
+        {licenseChecking ? (
+          <p className="closet-note">Checking your license…</p>
+        ) : (
+          <>
+            <p className="closet-ai-license-progress">
+              Question {stepNum} of {BUSINESS_LICENSE_QUESTIONS.length}
+            </p>
+            <p className="closet-ai-license-prompt">{q.prompt}</p>
+            <div
+              className="closet-ai-license-choices"
+              role="radiogroup"
+              aria-label="Answer choices"
+            >
+              {q.choices.map((c) => {
+                const selected = licenseChoiceId === c.id;
+                let choiceClass = "closet-ai-license-choice";
+                if (licenseRevealed) {
+                  if (c.correct) choiceClass += " is-correct";
+                  else if (selected) choiceClass += " is-wrong";
+                } else if (selected) {
+                  choiceClass += " is-selected";
+                }
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    className={choiceClass}
+                    data-click="select"
+                    disabled={licenseRevealed}
+                    onClick={() => {
+                      if (licenseRevealed) return;
+                      setLicenseChoiceId(c.id);
+                    }}
+                  >
+                    {c.text}
+                  </button>
+                );
+              })}
+            </div>
+            {licenseRevealed && pickedCorrect ? (
+              <p className="closet-ai-license-explain is-correct" role="status">
+                Nice — that’s right.
+              </p>
+            ) : null}
+            {showMissExplain ? (
+              <p className="closet-ai-license-explain" role="status">
+                {q.explain}
+              </p>
+            ) : null}
+          </>
+        )}
+        <div className="closet-ai-gate-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            data-click="confirm"
+            disabled={licenseChecking || !licenseChoiceId || busy}
+            onClick={handleLicenseContinue}
+          >
+            {continueLabel}
+          </button>
+          <button
+            type="button"
+            className="ghost-btn"
+            data-click="select"
+            onClick={() => onExit?.()}
+          >
+            Exit
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (gateStep === "crew") {
     return (
@@ -3910,11 +4453,11 @@ function ClosetAiCreator({
     return (
       <div className="closet-ai-panel closet-ai-gate">
         <p className="closet-kicker">Before you create</p>
-        <strong className="closet-ai-gate-title">Strategy response required</strong>
+        <strong className="closet-ai-gate-title">Design your product</strong>
         <p className="closet-ai-gate-copy">
-          You’ll describe your item, then answer one market scenario before we
-          build it. Your teacher will not approve the item unless your answer is
-          thoughtful and original.
+          Next you’ll name it, pick colors and style, and describe what to
+          build. We’ll generate a 3D preview you can post for teacher review
+          once your crew is ready.
           {selectedTier?.payMode === "profit_share"
             ? invitedPartnerName
               ? ` You’ve invited ${invitedPartnerName} as your partner — they’ll get a notification when they open LedgerLab.`
@@ -4047,13 +4590,12 @@ function ClosetAiCreator({
       <div className="closet-ai-panel closet-ai-gate closet-ai-review-done">
         <p className="closet-kicker">Submitted</p>
         <strong className="closet-ai-gate-title">
-          {waitingOnCrew ? "Response saved" : "Under teacher review"}
+          {waitingOnCrew ? "Item saved" : "Under teacher review"}
         </strong>
         <p className="closet-ai-gate-copy">
           {waitingOnCrew ? (
             <>
-              Your strategy response for
-              {job?.label ? ` “${job.label}”` : " your item"} is saved. Your
+              Your item{job?.label ? ` “${job.label}”` : ""} is saved. Your
               teacher won’t see it until the crew is full
               {crewSlots === 1
                 ? invitedPartnerName
@@ -4104,102 +4646,6 @@ function ClosetAiCreator({
     );
   }
 
-  if (gateStep === "quiz") {
-    const scenario = activeScenario || CLOSET_AI_SCENARIOS[0];
-    const trimmed = String(strategyAnswer || "").trim();
-    const ready = trimmed.length >= CLOSET_AI_STRATEGY_MIN_CHARS;
-    const quizForm = quizShowModel ? (
-      <div className="closet-ai-quiz closet-ai-quiz-stage-form closet-ai-quiz-model">
-        <p className="closet-ai-quiz-stage-kicker">Sample answer</p>
-        <p className="closet-ai-quiz-prompt">{scenario.title}</p>
-        <div className="closet-ai-quiz-model-box" role="region" aria-label="Sample answer">
-          <p>{scenario.modelAnswer}</p>
-        </div>
-        <p className="closet-ai-quiz-model-note">
-          Compare this with what you wrote, then continue to build your item.
-        </p>
-        {error ? <p className="closet-note closet-note-error">{error}</p> : null}
-        <div className="closet-ai-gate-actions">
-          <button
-            type="button"
-            className="primary-btn"
-            data-click="confirm"
-            disabled={busy}
-            onClick={handleQuizContinue}
-          >
-            {busy ? "Starting…" : "Continue"}
-          </button>
-        </div>
-      </div>
-    ) : (
-      <form className="closet-ai-quiz closet-ai-quiz-stage-form" onSubmit={handleQuizSubmit}>
-        <p className="closet-ai-quiz-stage-kicker">Free response</p>
-        <p className="closet-ai-quiz-prompt">{scenario.prompt}</p>
-        <textarea
-          className="closet-ai-quiz-input"
-          rows={9}
-          value={strategyAnswer}
-          disabled={busy}
-          placeholder={scenario.placeholder}
-          maxLength={1200}
-          aria-label="Strategy response"
-          onChange={(e) => setStrategyAnswer(e.target.value)}
-        />
-        <p className="closet-ai-quiz-progress">
-          {trimmed.length}/{CLOSET_AI_STRATEGY_MIN_CHARS}+ characters
-        </p>
-        {error ? <p className="closet-note closet-note-error">{error}</p> : null}
-        <div className="closet-ai-gate-actions">
-          <button
-            type="submit"
-            className="primary-btn"
-            data-click="confirm"
-            disabled={busy || !ready}
-          >
-            Submit response
-          </button>
-        </div>
-      </form>
-    );
-    const host = quizHostEl;
-    return (
-      <>
-        <div className="closet-ai-panel closet-ai-gate">
-          <p className="closet-kicker">Go live</p>
-          <strong className="closet-ai-gate-title">Strategy scenario</strong>
-          <p className="closet-ai-gate-copy">
-            {quizShowModel
-              ? "Read the sample answer, then continue to build your item. Your teacher only sees your response once the crew is full."
-              : "Answer the scenario to the right. After you submit, you’ll see a sample answer, then continue to build. Your teacher only sees this once the crew is full."}
-          </p>
-          {crewSlots === 1 && !invitedPartnerName ? (
-            <div className="closet-ai-gate-actions">
-              <button
-                type="button"
-                className="ghost-btn"
-                data-click="select"
-                onClick={() => setGateStep("partner")}
-              >
-                Invite partner
-              </button>
-            </div>
-          ) : null}
-          <p className="closet-ai-gate-copy closet-ai-gate-copy-soft">
-            Your teacher will not approve this item if your response is thin,
-            copied, or not an original thought.
-          </p>
-          <ClosetAiMysteryBox
-            primary={pendingBrief?.primaryColor || "#3f8f68"}
-            secondary={pendingBrief?.secondaryColor || "#24312b"}
-            tertiary={pendingBrief?.tertiaryColor || null}
-            quaternary={pendingBrief?.quaternaryColor || null}
-          />
-        </div>
-        {host ? createPortal(quizForm, host) : null}
-      </>
-    );
-  }
-
   return (
     <div
       className={
@@ -4226,7 +4672,7 @@ function ClosetAiCreator({
         ) : showBuildSpinner ? (
           <span className="closet-ai-quota">
             {briefTeasing
-              ? "Hang tight — strategy next"
+              ? "Hang tight — starting your build"
               : "Creating your 3D item"}
           </span>
         ) : (
@@ -4239,9 +4685,8 @@ function ClosetAiCreator({
       <div className="closet-ai-messages" aria-live="polite">
         {messages.length === 0 && !showBuildSpinner ? (
           <p className="closet-ai-empty">
-            Pick colors, type, and style — describe what to build, then continue.
-            We’ll show a quick setup, then the strategy scenario, then build your
-            item.
+            Pick colors, type, and style — describe what to build, then we’ll
+            generate your 3D item.
           </p>
         ) : (
           messages.map((m, i) => (
@@ -4721,10 +5166,10 @@ function ClosetModal({
       return { ...draft, hairStyleId: committed.hairStyleId || "hair-block" };
     }
     const free =
-      (mergedCatalog[category] || []).filter((entry) => !isPaidItem(entry)).find(
+      (mergedCatalog[category] || []).filter((entry) => !isShelfLuxury(entry)).find(
         (entry) => entry.id === committed[`${category}Id`]
       ) ||
-      (mergedCatalog[category] || []).find((entry) => !isPaidItem(entry));
+      (mergedCatalog[category] || []).find((entry) => !isShelfLuxury(entry));
     return free
       ? {
           ...draft,
@@ -4785,6 +5230,12 @@ function ClosetModal({
     }
 
     setDraft(equipPaidItem(item));
+    if (isEarnOnlyItem(item)) {
+      setShopNote(
+        `${item.label} is earn-only — ${item.earnLabel || "complete the exercise to unlock it"}.`
+      );
+      return;
+    }
     const canAfford = Number(cash) + 0.0001 >= item.price;
     setShopNote(
       canAfford
@@ -4797,6 +5248,13 @@ function ClosetModal({
     const owned = new Set(draft.ownedLuxuries || []);
     setShopError("");
     setShopNote("");
+
+    if (isEarnOnlyItem(item)) {
+      setShopError(
+        `${item.label} can’t be bought — ${item.earnLabel || "earn it by completing an exercise"}.`
+      );
+      return;
+    }
 
     if (owned.has(item.id)) {
       persistWithoutTryOns(equipPaidItem(item));
@@ -4846,7 +5304,7 @@ function ClosetModal({
     }
   }
 
-  const paidInCategory = items.some((item) => isPaidItem(item));
+  const paidInCategory = items.some((item) => isShelfLuxury(item));
 
   const modal = (
     <div className="closet-overlay" onClick={commitAndClose} role="presentation">
@@ -4939,7 +5397,6 @@ function ClosetModal({
                 onCashChange={onCashChange}
                 onGateStepChange={setAiGateStep}
                 onPreviewChange={setAiPreviewAccessory}
-                quizHostReady={aiGateStep === "quiz"}
                 onExit={() => {
                   setShowAi(false);
                   setAiGateStep(null);
@@ -4980,33 +5437,17 @@ function ClosetModal({
             ) : null}
           </aside>
 
-          <div
-            className={
-              showAi && aiGateStep === "quiz"
-                ? "closet-preview closet-preview--quiz"
-                : "closet-preview"
-            }
-          >
-            {showAi && aiGateStep === "quiz" ? (
-              <div
-                id="closet-ai-quiz-host"
-                className="closet-ai-quiz-stage"
-                aria-label="Strategy quiz"
-              />
-            ) : (
-              <>
-                <AvatarCanvas
-                  outfit={previewOutfit}
-                  mode="closet"
-                  className="closet-stage"
-                />
-                <p className="closet-hint">
-                  {aiPreviewAccessory
-                    ? "Your creation is on the character"
-                    : "Try buyables free — only purchases leave with you"}
-                </p>
-              </>
-            )}
+          <div className="closet-preview">
+            <AvatarCanvas
+              outfit={previewOutfit}
+              mode="closet"
+              className="closet-stage"
+            />
+            <p className="closet-hint">
+              {aiPreviewAccessory
+                ? "Your creation is on the character"
+                : "Try buyables free — only purchases leave with you"}
+            </p>
           </div>
         </div>
       </div>

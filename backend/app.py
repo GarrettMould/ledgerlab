@@ -1701,6 +1701,13 @@ BOND_BY_TICKER = {b["ticker"]: b for b in MARKET_CATALOG["bonds"]}
 CURRENCY_BY_TICKER = {c["ticker"]: c for c in MARKET_CATALOG["currencies"]}
 COMMODITY_BY_TICKER = {c["ticker"]: c for c in MARKET_CATALOG["commodities"]}
 REALESTATE_BY_TICKER = {h["ticker"]: h for h in MARKET_CATALOG["realestate"]}
+CATALOG_NAME_BY_TICKER = {
+    item["ticker"]: item["name"]
+    for items in MARKET_CATALOG.values()
+    if isinstance(items, list)
+    for item in items
+    if isinstance(item, dict) and item.get("ticker") and item.get("name")
+}
 # Apply cached Zillow prices at startup so no request ever sees the placeholder
 # catalog price (quotes read REALESTATE_BY_TICKER directly without syncing).
 _startup_zhvi = housing_index.load_cached_bundle()
@@ -3850,6 +3857,7 @@ def serialize_student(conn: sqlite3.Connection, row: sqlite3.Row, with_portfolio
 
         payload = {
             "ticker": ticker,
+            "name": CATALOG_NAME_BY_TICKER.get(ticker),
             "shares": round(h["shares"], 4),
             "avg_cost": round(h["avg_cost"], 2),
             "cost_basis": round(cost_basis, 2),
@@ -5453,6 +5461,12 @@ def peer_lend_borrow(class_id: str):
         return jsonify({"error": "Invalid offer."}), 400
     if lender_id == borrower_id:
         return jsonify({"error": "You can’t borrow from your own offer."}), 400
+    if (
+        lender_id == peer_lending.TREASURY_ID
+        or offer.get("testOffer")
+        or str(offer.get("lenderName") or "").strip().lower() == "lending lab"
+    ):
+        return jsonify({"error": "Lending Lab is just an example — pick a real classmate."}), 400
 
     borrower = fs_ledger.get_student(class_id, borrower_id)
     lender = fs_ledger.get_student(class_id, lender_id)

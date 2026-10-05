@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getNews } from "./api";
+import { NewsDeskStage } from "./StudentCharacter";
 
 function timeAgo(iso) {
   if (!iso) return "";
@@ -19,6 +20,10 @@ export default function NewsFeed({ onBack }) {
   const [error, setError] = useState("");
   const [disclaimer, setDisclaimer] = useState("");
   const [openId, setOpenId] = useState(null);
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,6 +50,8 @@ export default function NewsFeed({ onBack }) {
 
   return (
     <div className="news-feed">
+      <NewsDeskStage headlines={items.map((item) => item.title)} />
+
       <div className="market-toolbar">
         <button type="button" className="ghost-btn" data-click="select" onClick={onBack}>
           ← Markets

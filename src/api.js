@@ -228,31 +228,6 @@ export function settlePeerLoans(studentId, classId) {
   });
 }
 
-/** Local walkthrough helpers — require PEER_LEND_TEST=1 on the API. */
-export function peerLendTestSeedOffer(classId, { amount = 1000, ratePct = 7 } = {}) {
-  return request(`/classes/${classId}/peer-lend/test/seed-offer`, {
-    method: "POST",
-    classId,
-    body: JSON.stringify({ amount, ratePct }),
-  });
-}
-
-export function peerLendTestForceDue(studentId, classId) {
-  return request(`/students/${studentId}/peer-loans/test/force-due`, {
-    method: "POST",
-    classId,
-    body: JSON.stringify({}),
-  });
-}
-
-export function peerLendTestDrainCash(studentId, classId, cash = 25) {
-  return request(`/students/${studentId}/peer-loans/test/drain-cash`, {
-    method: "POST",
-    classId,
-    body: JSON.stringify({ cash }),
-  });
-}
-
 export function createLoan(studentId, countryId, amount, classId) {
   return request(`/students/${studentId}/loans`, {
     method: "POST",

@@ -92,6 +92,8 @@ export default function TeacherDashboard({
   const [aggRefreshing, setAggRefreshing] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(null);
   const [showStandings, setShowStandings] = useState(false);
   const [showJobs, setShowJobs] = useState(false);
@@ -104,6 +106,7 @@ export default function TeacherDashboard({
   const [reviewBusyId, setReviewBusyId] = useState(null);
   const [stockRequests, setStockRequests] = useState([]);
   const [stockRequestBusyId, setStockRequestBusyId] = useState(null);
+  const [inboxOpen, setInboxOpen] = useState(null); // null | "closet" | "stock" | "bug"
   const [bugReports, setBugReports] = useState([]);
   const [bugReportBusyId, setBugReportBusyId] = useState(null);
   const [marketSearch, setMarketSearch] = useState("");
@@ -116,6 +119,8 @@ export default function TeacherDashboard({
     () => classes.find((c) => c.id === activeClassId) || null,
     [classes, activeClassId]
   );
+
+  const inboxRows = inboxOpen === "stock" ? stockRequests : bugReports;
 
   async function refreshClasses() {
     const rows = await listClasses();
@@ -467,9 +472,25 @@ export default function TeacherDashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, activeClassId]);
 
-  async function copyInviteLink() {
+  async function ensureActiveInviteCode() {
     const code = inviteCode || (await ensureInviteCode(activeClassId));
     setInviteCode(code);
+    return code;
+  }
+
+  async function openInviteModal() {
+    if (!activeClassId) return;
+    setError("");
+    try {
+      await ensureActiveInviteCode();
+      setShowInviteModal(true);
+    } catch (err) {
+      setError(err.message || "Could not load invite code");
+    }
+  }
+
+  async function copyInviteLink() {
+    const code = await ensureActiveInviteCode();
     const link = inviteUrlForCode(code);
     try {
       await navigator.clipboard.writeText(link);
@@ -477,6 +498,17 @@ export default function TeacherDashboard({
       setTimeout(() => setInviteCopied(false), 2000);
     } catch {
       window.prompt("Copy this invite link:", link);
+    }
+  }
+
+  async function copyJoinCode() {
+    const code = await ensureActiveInviteCode();
+    try {
+      await navigator.clipboard.writeText(code);
+      setCodeCopied(true);
+      setTimeout(() => setCodeCopied(false), 2000);
+    } catch {
+      window.prompt("Copy this join code:", code);
     }
   }
 
@@ -602,7 +634,17 @@ export default function TeacherDashboard({
     }
   }
 
-  const showClassBack = view === "class" || view === "roster" || view === "settings";
+  const showClassBack =
+    showJobs || view === "class" || view === "roster" || view === "settings";
+
+  // Class-scoped tools — hide on the all-classes list / create screens.
+  const inClassView =
+    Boolean(activeClass) &&
+    (view === "class" ||
+      view === "roster" ||
+      view === "settings" ||
+      showJobs ||
+      showStandings);
 
   return (
     <section className="panel teacher-panel">
@@ -614,7 +656,9 @@ export default function TeacherDashboard({
               className="panel-back-btn"
               data-click="select"
               aria-label={
-                view === "class" ? "Back to all classes" : "Back to class"
+                showJobs || view !== "class"
+                  ? "Back to class"
+                  : "Back to all classes"
               }
               onClick={goBackFromClassView}
             >
@@ -638,7 +682,9 @@ export default function TeacherDashboard({
           )}
           <div>
             <h2>
-              {view === "class" && activeClass
+              {showJobs && activeClass
+                ? `${activeClass.name} job board`
+                : view === "class" && activeClass
                 ? activeClass.name
                 : view === "roster" && activeClass
                   ? `${activeClass.name} roster`
@@ -647,17 +693,29 @@ export default function TeacherDashboard({
                     : "Teacher dashboard"}
             </h2>
             <p>
-              {view === "class"
+              {showJobs
+                ? "Live crew postings for this class."
+                : view === "class"
                 ? "Class-wide portfolio value and how the group is invested."
                 : view === "roster"
                   ? "Students who joined with your invite link. Adjust cash or remove accounts here."
                   : view === "settings"
                     ? "Starting cash and markets available to this class."
-                    : "Create a class, then share its invite link with students."}
+                    : "Create a class, then invite students with a QR code or join code."}
             </p>
           </div>
         </div>
         <div className="teacher-header-actions">
+          {activeClass && (view === "class" || view === "roster") && !showJobs && (
+            <button
+              type="button"
+              className="primary-btn"
+              data-click="select"
+              onClick={openInviteModal}
+            >
+              Invite students
+            </button>
+          )}
           {showNewClass && (
             <button
               type="button"
@@ -756,13 +814,44 @@ export default function TeacherDashboard({
         </form>
       )}
 
-      {view === "class" && activeClass && (
+      {showJobs && activeClass ? (
+        <JobBoard
+          classId={activeClass.id}
+          studentId=""
+          readOnly
+          onBack={() => setShowJobs(false)}
+        />
+      ) : null}
+
+      {view === "class" && activeClass && !showJobs && (
         <div className="class-dashboard">
-          <ClassInviteCard
-            inviteCode={inviteCode}
-            onCopy={copyInviteLink}
-            copied={inviteCopied}
-          />
+          <div className="teacher-inbox" aria-label="Student inbox">
+            {[
+              { id: "stock", label: "Stock requests", count: stockRequests.length },
+              { id: "bug", label: "Bug reports", count: bugReports.length },
+              { id: "closet", label: "Closet creations", count: closetReviews.length },
+            ].map((tile) => (
+              <button
+                key={tile.id}
+                type="button"
+                className="teacher-inbox-tile"
+                data-click="select"
+                onClick={() => setInboxOpen(tile.id)}
+                aria-label={`${tile.label}: ${tile.count} unaddressed`}
+              >
+                <span className="teacher-inbox-label">{tile.label}</span>
+                {tile.count > 0 ? (
+                  <span className="teacher-inbox-badge" aria-hidden="true">
+                    {tile.count > 99 ? "99+" : tile.count}
+                  </span>
+                ) : (
+                  <span className="teacher-inbox-clear" aria-hidden="true">
+                    All clear
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
 
           <ClassAggregatePanel
             className={activeClass.name}
@@ -834,226 +923,6 @@ export default function TeacherDashboard({
             ) : null}
           </div>
 
-          <div className="closet-review-panel">
-            <div className="closet-review-head">
-              <div>
-                <p className="closet-kicker">All classes</p>
-                <strong>Stock requests</strong>
-              </div>
-            </div>
-            {stockRequests.length === 0 ? (
-              <p className="empty">No pending stock requests from students.</p>
-            ) : (
-              <div className="closet-review-list">
-                {stockRequests.map((row) => (
-                  <article key={row.id} className="closet-review-card">
-                    <div className="closet-review-card-main">
-                      <strong>{row.query}</strong>
-                      <span>
-                        requested by {row.studentName || "Student"}
-                        {row.className ? ` · ${row.className}` : ""}
-                        {row.createdAt
-                          ? ` · ${row.createdAt.toLocaleString?.(undefined, {
-                              month: "short",
-                              day: "numeric",
-                              hour: "numeric",
-                              minute: "2-digit",
-                            }) || ""}`
-                          : ""}
-                      </span>
-                    </div>
-                    <div className="closet-review-actions">
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        data-click="confirm"
-                        disabled={stockRequestBusyId === row.id}
-                        onClick={() => handleResolveStockRequest(row.id, "done")}
-                      >
-                        {stockRequestBusyId === row.id ? "…" : "Done"}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-btn"
-                        data-click="select"
-                        disabled={stockRequestBusyId === row.id}
-                        onClick={() =>
-                          handleResolveStockRequest(row.id, "dismissed")
-                        }
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="closet-review-panel">
-            <div className="closet-review-head">
-              <div>
-                <p className="closet-kicker">All classes</p>
-                <strong>Bug reports</strong>
-              </div>
-            </div>
-            {bugReports.length === 0 ? (
-              <p className="empty">No pending bug reports from students.</p>
-            ) : (
-              <div className="closet-review-list">
-                {bugReports.map((row) => (
-                  <article key={row.id} className="closet-review-card">
-                    <div className="closet-review-card-main">
-                      <strong>{row.message}</strong>
-                      <span>
-                        reported by {row.studentName || "Student"}
-                        {row.className ? ` · ${row.className}` : ""}
-                        {row.createdAt
-                          ? ` · ${row.createdAt.toLocaleString?.(undefined, {
-                              month: "short",
-                              day: "numeric",
-                              hour: "numeric",
-                              minute: "2-digit",
-                            }) || ""}`
-                          : ""}
-                      </span>
-                    </div>
-                    <div className="closet-review-actions">
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        data-click="confirm"
-                        disabled={bugReportBusyId === row.id}
-                        onClick={() => handleResolveBugReport(row.id, "done")}
-                      >
-                        {bugReportBusyId === row.id ? "…" : "Done"}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-btn"
-                        data-click="select"
-                        disabled={bugReportBusyId === row.id}
-                        onClick={() =>
-                          handleResolveBugReport(row.id, "dismissed")
-                        }
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="closet-review-panel">
-            <div className="closet-review-head">
-              <div>
-                <p className="closet-kicker">Closet creations</p>
-                <strong>Teacher review</strong>
-              </div>
-              <button
-                type="button"
-                className="ghost-btn"
-                data-click="select"
-                disabled={reviewsLoading || !teacher?.uid}
-                onClick={() => refreshClosetReviews(activeClass.id)}
-              >
-                {reviewsLoading ? "Loading…" : "Refresh"}
-              </button>
-            </div>
-            {!teacher?.uid ? (
-              <p className="empty">Sign in again to review student creations.</p>
-            ) : closetReviews.length === 0 ? (
-              <p className="empty">
-                {reviewsLoading
-                  ? "Checking for submissions…"
-                  : "No closet items waiting for review."}
-              </p>
-            ) : (
-              <div className="closet-review-list">
-                {closetReviews.map((row) => (
-                  <article key={row.jobId} className="closet-review-card">
-                    <ClosetReviewPreview
-                      thumbnailUrl={row.thumbnailUrl}
-                      glbUrl={row.glbUrl}
-                      parts={row.parts || row.item?.parts}
-                      label={row.label || "Untitled item"}
-                    />
-                    <div className="closet-review-card-main">
-                      <strong>{row.label || "Untitled item"}</strong>
-                      <span>
-                        by {row.creatorName || "Student"}
-                        {row.kind ? ` · ${row.kind}` : ""}
-                        {row.sellPrice != null
-                          ? ` · sells for ${money(row.sellPrice)}`
-                          : ""}
-                      </span>
-                      {row.sourcePrompt ? (
-                        <p className="closet-review-prompt">
-                          Prompt: {row.sourcePrompt}
-                        </p>
-                      ) : null}
-                      {Array.isArray(row.quizAnswers) &&
-                      row.quizAnswers.length > 0 ? (
-                        <div className="closet-review-answers">
-                          {row.quizAnswers.map((qa, i) => (
-                            <div key={qa.id || i}>
-                              <em>
-                                {row.quizAnswers.length === 1
-                                  ? "Strategy response"
-                                  : `Q${i + 1}.`}{" "}
-                                {qa.prompt || "Scenario"}
-                              </em>
-                              <p>{qa.answer || "—"}</p>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                      <p className="closet-review-fee">
-                        {row.crew?.payMode === "profit_share"
-                          ? `Partnership — approve goes live; partner shares ${row.crew.profitSharePct || 50}% of sales.`
-                          : row.crew?.slots > 0
-                            ? `Approve pays ${money(row.publishFee || 0)} crew wages (${row.crew.members?.length || 0}/${row.crew.slots} hired).`
-                            : "Approve goes live with no payroll."}{" "}
-                        Deny deletes the item with no charge.
-                      </p>
-                      {Array.isArray(row.crew?.members) &&
-                      row.crew.members.length > 0 ? (
-                        <p className="closet-review-prompt">
-                          Crew:{" "}
-                          {row.crew.members
-                            .map((m) => m.studentName || "Student")
-                            .join(", ")}
-                        </p>
-                      ) : null}
-                    </div>
-                    <div className="closet-review-actions">
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        data-click="confirm"
-                        disabled={reviewBusyId === row.jobId}
-                        onClick={() => handleClosetReview(row.jobId, "approve")}
-                      >
-                        {reviewBusyId === row.jobId ? "…" : "Approve"}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-btn danger"
-                        data-click="select"
-                        disabled={reviewBusyId === row.jobId}
-                        onClick={() => handleClosetReview(row.jobId, "reject")}
-                      >
-                        Deny
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </div>
-
           <div className="class-dashboard-actions">
             <button
               type="button"
@@ -1067,7 +936,10 @@ export default function TeacherDashboard({
               type="button"
               className="ghost-btn"
               data-click="select"
-              onClick={() => setShowJobs(true)}
+              onClick={() => {
+                setShowJobs(true);
+                window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+              }}
             >
               Job board
             </button>
@@ -1236,16 +1108,11 @@ export default function TeacherDashboard({
 
       {view === "roster" && activeClass && (
         <div className="roster-page">
-          <ClassInviteCard
-            inviteCode={inviteCode}
-            onCopy={copyInviteLink}
-            copied={inviteCopied}
-            compact
-          />
-
           <div className="roster" role="list">
             {roster.length === 0 && (
-              <p className="empty">Waiting for students to join with the invite link.</p>
+              <p className="empty">
+                Waiting for students — use Invite students for the QR code and join code.
+              </p>
             )}
             {roster.map((s, i) => {
               const live = s.apiStudentId ? apiById.get(s.apiStudentId) : null;
@@ -1356,17 +1223,6 @@ export default function TeacherDashboard({
         />
       )}
 
-      {showJobs && activeClass ? (
-        <div className="teacher-job-board-shell">
-          <JobBoard
-            classId={activeClass.id}
-            studentId=""
-            readOnly
-            onBack={() => setShowJobs(false)}
-          />
-        </div>
-      ) : null}
-
       {pendingRemove && activeClass
         ? createPortal(
             <div
@@ -1469,6 +1325,264 @@ export default function TeacherDashboard({
           )
         : null}
 
+      {inboxOpen
+        ? createPortal(
+            <div
+              className="confirm-overlay"
+              role="presentation"
+              onClick={() => setInboxOpen(null)}
+            >
+              <div
+                className={
+                  inboxOpen === "closet"
+                    ? "confirm-modal teacher-inbox-modal is-wide"
+                    : "confirm-modal teacher-inbox-modal"
+                }
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="teacher-inbox-title"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <header className="teacher-inbox-modal-head">
+                  <div>
+                    <p className="confirm-kicker">
+                      {inboxOpen === "closet"
+                        ? activeClass?.name || "This class"
+                        : "All classes"}
+                    </p>
+                    <h3 id="teacher-inbox-title">
+                      {inboxOpen === "closet"
+                        ? "Closet creations"
+                        : inboxOpen === "stock"
+                          ? "Stock requests"
+                          : "Bug reports"}
+                    </h3>
+                  </div>
+                  <div className="teacher-inbox-head-actions">
+                    {inboxOpen === "closet" && activeClass ? (
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        data-click="select"
+                        disabled={reviewsLoading || !teacher?.uid}
+                        onClick={() => refreshClosetReviews(activeClass.id)}
+                      >
+                        {reviewsLoading ? "Loading…" : "Refresh"}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="teacher-inbox-close"
+                      data-click="select"
+                      aria-label="Close"
+                      onClick={() => setInboxOpen(null)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </header>
+                {inboxOpen === "closet" ? (
+                  !teacher?.uid ? (
+                    <p className="empty">Sign in again to review student creations.</p>
+                  ) : closetReviews.length === 0 ? (
+                    <p className="empty">
+                      {reviewsLoading
+                        ? "Checking for submissions…"
+                        : "No closet items waiting for review. You’re all caught up."}
+                    </p>
+                  ) : (
+                    <div className="closet-review-list teacher-inbox-list">
+                      {closetReviews.map((row) => (
+                        <article key={row.jobId} className="closet-review-card">
+                          <ClosetReviewPreview
+                            thumbnailUrl={row.thumbnailUrl}
+                            glbUrl={row.glbUrl}
+                            parts={row.parts || row.item?.parts}
+                            label={row.label || "Untitled item"}
+                          />
+                          <div className="closet-review-card-main">
+                            <strong>{row.label || "Untitled item"}</strong>
+                            <span>
+                              by {row.creatorName || "Student"}
+                              {row.kind ? ` · ${row.kind}` : ""}
+                              {row.sellPrice != null
+                                ? ` · sells for ${money(row.sellPrice)}`
+                                : ""}
+                            </span>
+                            {row.sourcePrompt ? (
+                              <p className="closet-review-prompt">
+                                Prompt: {row.sourcePrompt}
+                              </p>
+                            ) : null}
+                            {Array.isArray(row.quizAnswers) &&
+                            row.quizAnswers.length > 0 ? (
+                              <div className="closet-review-answers">
+                                {row.quizAnswers.map((qa, i) => (
+                                  <div key={qa.id || i}>
+                                    <em>
+                                      {qa.id === "business-license"
+                                        ? "Business license"
+                                        : row.quizAnswers.length === 1
+                                          ? "License note"
+                                          : `Q${i + 1}.`}{" "}
+                                      {qa.prompt || ""}
+                                    </em>
+                                    <p>{qa.answer || "—"}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                            <p className="closet-review-fee">
+                              {row.crew?.payMode === "profit_share"
+                                ? `Partnership — approve goes live; partner shares ${row.crew.profitSharePct || 50}% of sales.`
+                                : row.crew?.slots > 0
+                                  ? `Approve pays ${money(row.publishFee || 0)} crew wages (${row.crew.members?.length || 0}/${row.crew.slots} hired).`
+                                  : "Approve goes live with no payroll."}{" "}
+                              Deny deletes the item with no charge.
+                            </p>
+                            {Array.isArray(row.crew?.members) &&
+                            row.crew.members.length > 0 ? (
+                              <p className="closet-review-prompt">
+                                Crew:{" "}
+                                {row.crew.members
+                                  .map((m) => m.studentName || "Student")
+                                  .join(", ")}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="closet-review-actions">
+                            <button
+                              type="button"
+                              className="primary-btn"
+                              data-click="confirm"
+                              disabled={reviewBusyId === row.jobId}
+                              onClick={() => handleClosetReview(row.jobId, "approve")}
+                            >
+                              {reviewBusyId === row.jobId ? "…" : "Approve"}
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-btn danger"
+                              data-click="select"
+                              disabled={reviewBusyId === row.jobId}
+                              onClick={() => handleClosetReview(row.jobId, "reject")}
+                            >
+                              Deny
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )
+                ) : inboxRows.length === 0 ? (
+                  <p className="empty">
+                    {inboxOpen === "stock"
+                      ? "No pending stock requests. You’re all caught up."
+                      : "No pending bug reports. You’re all caught up."}
+                  </p>
+                ) : (
+                  <div className="closet-review-list teacher-inbox-list">
+                    {inboxRows.map((row) => {
+                      const isStock = inboxOpen === "stock";
+                      const busyRow = isStock
+                        ? stockRequestBusyId === row.id
+                        : bugReportBusyId === row.id;
+                      const resolve = isStock
+                        ? handleResolveStockRequest
+                        : handleResolveBugReport;
+                      return (
+                        <article key={row.id} className="closet-review-card">
+                          <div className="closet-review-card-main">
+                            <strong>{isStock ? row.query : row.message}</strong>
+                            <span>
+                              {isStock ? "requested by " : "reported by "}
+                              {row.studentName || "Student"}
+                              {row.className ? ` · ${row.className}` : ""}
+                              {row.createdAt
+                                ? ` · ${row.createdAt.toLocaleString?.(undefined, {
+                                    month: "short",
+                                    day: "numeric",
+                                    hour: "numeric",
+                                    minute: "2-digit",
+                                  }) || ""}`
+                                : ""}
+                            </span>
+                          </div>
+                          <div className="closet-review-actions">
+                            <button
+                              type="button"
+                              className="primary-btn"
+                              data-click="confirm"
+                              disabled={busyRow}
+                              onClick={() => resolve(row.id, "done")}
+                            >
+                              {busyRow ? "…" : "Done"}
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-btn"
+                              data-click="select"
+                              disabled={busyRow}
+                              onClick={() => resolve(row.id, "dismissed")}
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+
+      {showInviteModal && activeClass
+        ? createPortal(
+            <div
+              className="teacher-invite-overlay"
+              role="presentation"
+              onClick={() => setShowInviteModal(false)}
+            >
+              <div
+                className="teacher-invite-board"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="teacher-invite-title"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <header className="teacher-invite-board-head">
+                  <div>
+                    <p className="confirm-kicker">Put this on the board</p>
+                    <h3 id="teacher-invite-title">Invite students</h3>
+                  </div>
+                  <button
+                    type="button"
+                    className="teacher-inbox-close"
+                    data-click="select"
+                    aria-label="Close"
+                    onClick={() => setShowInviteModal(false)}
+                  >
+                    ×
+                  </button>
+                </header>
+                <ClassInviteCard
+                  inviteCode={inviteCode}
+                  className={activeClass.name}
+                  size="board"
+                  onCopyLink={copyInviteLink}
+                  onCopyCode={copyJoinCode}
+                  linkCopied={inviteCopied}
+                  codeCopied={codeCopied}
+                />
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+
       {showH2HMatchups && activeClass && headToHead ? (
         <TeacherHeadToHeadModal
           open
@@ -1480,9 +1594,14 @@ export default function TeacherDashboard({
         />
       ) : null}
 
-      <SpinWheelFab onClick={() => setShowSpinWheel(true)} />
+      {inClassView
+        ? createPortal(
+            <SpinWheelFab onClick={() => setShowSpinWheel(true)} />,
+            document.body
+          )
+        : null}
       <SpinWheelModal
-        open={showSpinWheel}
+        open={showSpinWheel && inClassView}
         onClose={() => setShowSpinWheel(false)}
         students={roster}
         onAward={

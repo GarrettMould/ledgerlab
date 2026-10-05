@@ -1,4 +1,13 @@
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   declineCrewInvite,
   joinCrewJob,
@@ -64,7 +73,14 @@ function MemberAvatar({ outfit, name }) {
   );
 }
 
-function JobProductPreview({ job }) {
+function jobHasPreview(job) {
+  const thumb = String(job?.thumbnailUrl || "").trim();
+  const glb = String(job?.glbUrl || "").trim();
+  const parts = Array.isArray(job?.parts) ? job.parts : [];
+  return Boolean(thumb || glb || parts.length);
+}
+
+function JobProductPreview({ job, onOpen }) {
   const label = job?.itemLabel || job?.jobTitle || "Item";
   const thumb = String(job?.thumbnailUrl || "").trim();
   const glb = String(job?.glbUrl || "").trim();
@@ -76,7 +92,7 @@ function JobProductPreview({ job }) {
       </div>
     );
   }
-  return (
+  const preview = (
     <ClosetReviewPreview
       thumbnailUrl={thumb}
       glbUrl={glb}
@@ -85,6 +101,69 @@ function JobProductPreview({ job }) {
       className="job-board-product-preview"
       lowerInFrame
     />
+  );
+  if (!onOpen) return preview;
+  return (
+    <button
+      type="button"
+      className="job-board-product-btn"
+      data-click="select"
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen(job);
+      }}
+      aria-label={`View larger preview of ${label}`}
+    >
+      {preview}
+    </button>
+  );
+}
+
+function JobProductModal({ job, onClose }) {
+  if (!job) return null;
+  const label = job.itemLabel || job.jobTitle || "Item";
+  const thumb = String(job.thumbnailUrl || "").trim();
+  const glb = String(job.glbUrl || "").trim();
+  const parts = Array.isArray(job.parts) ? job.parts : [];
+  return createPortal(
+    <div
+      className="job-product-modal-overlay"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        className="job-product-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="job-product-modal-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="job-product-modal-kicker">Product preview</p>
+        <h3 id="job-product-modal-title">{label}</h3>
+        <p className="job-product-modal-meta">
+          by {job.creatorName || "Student"}
+          {job.sellPrice != null ? ` · sells for ${money(job.sellPrice)}` : ""}
+        </p>
+        <div className="job-product-modal-stage">
+          <ClosetReviewPreview
+            thumbnailUrl={thumb}
+            glbUrl={glb}
+            parts={parts}
+            label={label}
+            className="job-product-modal-preview"
+          />
+        </div>
+        <button
+          type="button"
+          className="primary-btn"
+          data-click="confirm"
+          onClick={onClose}
+        >
+          Close
+        </button>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -218,6 +297,15 @@ export default function JobBoard({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState(null);
+  const [productModalJob, setProductModalJob] = useState(null);
+  const openProductModal = useCallback((job) => {
+    if (jobHasPreview(job)) setProductModalJob(job);
+  }, []);
+  const rootRef = useRef(null);
+
+  useLayoutEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [classId]);
 
   const rosterById = useMemo(() => {
     const map = new Map();
@@ -367,7 +455,7 @@ export default function JobBoard({
   const emptyJobsIntent = flushCash ? "lend" : "borrow";
 
   return (
-    <div className="job-board">
+    <div className="job-board" ref={rootRef}>
       <div className="market-toolbar">
         <button type="button" className="ghost-btn" data-click="select" onClick={onBack}>
           {readOnly ? "← Dashboard" : "← Markets"}
@@ -415,7 +503,7 @@ export default function JobBoard({
           <div className="job-board-list">
             {invites.map((job) => (
               <article key={job.id} className="job-board-card is-invite">
-                <JobProductPreview job={job} />
+                <JobProductPreview job={job} onOpen={openProductModal} />
                 <div className="job-board-card-main">
                   <strong>{job.jobTitle || job.itemLabel}</strong>
                   <span>
@@ -516,7 +604,7 @@ export default function JobBoard({
               return (
                 <article key={job.id} className="job-board-card job-board-card-crew">
                   <div className="job-board-card-top">
-                    <JobProductPreview job={job} />
+                    <JobProductPreview job={job} onOpen={openProductModal} />
                     <div className="job-board-card-main">
                       <strong>{job.itemLabel || job.jobTitle}</strong>
                       <span>
@@ -562,7 +650,7 @@ export default function JobBoard({
                   }
                 >
                   <div className="job-board-card-top">
-                    <JobProductPreview job={job} />
+                    <JobProductPreview job={job} onOpen={openProductModal} />
                     <div className="job-board-card-main">
                       <strong>{job.itemLabel || job.jobTitle}</strong>
                       <span>
@@ -586,6 +674,11 @@ export default function JobBoard({
           </div>
         )}
       </section>
+
+      <JobProductModal
+        job={productModalJob}
+        onClose={() => setProductModalJob(null)}
+      />
     </div>
   );
 }

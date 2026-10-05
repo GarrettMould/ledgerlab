@@ -1007,6 +1007,36 @@ export async function markClosetAiScenarioAnswered(classId, studentId, scenarioI
   });
 }
 
+/** Unlock Create-a-Business after the student finishes the license quiz. */
+export async function markBusinessLicenseUnlocked(classId, studentId) {
+  if (!classId || !studentId) return;
+  await updateDoc(doc(db, "classes", classId, "students", studentId), {
+    businessLicenseUnlocked: true,
+    businessLicenseUnlockedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Clear Create-a-Business license so the student sees the quiz again. */
+export async function clearBusinessLicenseUnlocked(classId, studentId) {
+  if (!classId || !studentId) return;
+  await updateDoc(doc(db, "classes", classId, "students", studentId), {
+    businessLicenseUnlocked: false,
+    businessLicenseUnlockedAt: null,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Grant an earn-only closet item (cannot be bought — unlocked by exercises). */
+export async function grantClosetItemUnlock(classId, studentId, itemId) {
+  const id = String(itemId || "").trim();
+  if (!classId || !studentId || !id) return;
+  await updateDoc(doc(db, "classes", classId, "students", studentId), {
+    "outfit.ownedLuxuries": arrayUnion(id),
+    updatedAt: serverTimestamp(),
+  });
+}
+
 /** Clear answered-scenario history so a new unique cycle can begin. */
 export async function resetClosetAiAnsweredScenarios(classId, studentId) {
   if (!classId || !studentId) return;

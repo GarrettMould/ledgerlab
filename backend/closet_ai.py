@@ -19,6 +19,8 @@ from closet_blocky import build_blocky_glb, fallback_parts, normalize_parts, par
 MESHY_BASE = "https://api.meshy.ai/openapi/v2"
 
 CLOSET_CREATOR_EMAIL = "test@gmail.com"
+# Earn-only hat granted to the creator when a teacher approves their product.
+FOUNDER_CROWN_ITEM_ID = "acc-founder-badge"
 # Legacy name kept for responses; payroll replaces the flat fee on approve.
 CREATOR_PUBLISH_FEE = 2000
 
@@ -1741,7 +1743,7 @@ def submit_quiz_for_review(
     crew_ready = _crew_is_filled(job)
 
     if not isinstance(answers, list) or len(answers) < 1:
-        raise ValueError("Submit your strategy response before continuing")
+        raise ValueError("Complete the business license quiz before continuing")
 
     normalized = []
     for i, raw in enumerate(answers[:1]):
@@ -1753,9 +1755,13 @@ def submit_quiz_for_review(
             prompt = ""
             answer = str(raw or "").strip()[:1200]
             qid = f"q{i + 1}"
-        if len(answer) < 80:
+        # Business-license MC replaces the old free-response strategy quiz.
+        min_len = 20 if qid == "business-license" else 80
+        if len(answer) < min_len:
             raise ValueError(
-                "Write a thoughtful strategy response (at least 80 characters)"
+                "Complete the business license quiz before continuing"
+                if qid == "business-license"
+                else "Write a thoughtful strategy response (at least 80 characters)"
             )
         normalized.append({"id": qid, "prompt": prompt, "answer": answer})
 
@@ -2862,6 +2868,15 @@ def review_submission(
     crew_job_id = _ensure_paid_crew_job(class_id, job_id, job, members)
     if crew_job_id and not job.get("crewJobId"):
         job["crewJobId"] = crew_job_id
+
+    # Earn-only Founder's crown — unlocks for the creator once the product is live.
+    try:
+        fs_ledger.grant_closet_ownership(
+            class_id, student_id, FOUNDER_CROWN_ITEM_ID
+        )
+    except Exception:
+        pass
+
     return {
         "action": "approve",
         "feeCharged": fee,
@@ -2869,6 +2884,7 @@ def review_submission(
         "item": updated,
         "crewPaid": len(members),
         "crewJobId": crew_job_id,
+        "rewardItemId": FOUNDER_CROWN_ITEM_ID,
         "message": (
             f"Item is live. Creator paid {fee:,.0f} in crew wages."
             if fee > 0
