@@ -13,6 +13,37 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
+def _apply_dotenv_file(path: Path, *, override: bool) -> None:
+    """Load key=value from a dotenv file without wiping platform secrets.
+
+    Empty values are skipped. On Vercel, existing os.environ (OPENAI_API_KEY, etc.)
+    always wins so a generated/empty .env cannot blank out dashboard env vars.
+    """
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        return
+    if not path.is_file():
+        return
+    for key, val in (dotenv_values(path) or {}).items():
+        if not key:
+            continue
+        new = str(val).strip() if val is not None else ""
+        if not new:
+            continue
+        existing = (os.environ.get(key) or "").strip()
+        if existing and not override:
+            continue
+        os.environ[key] = new
+
+
+_on_vercel = bool(os.environ.get("VERCEL"))
+_env_root = Path(__file__).resolve().parent
+_env_repo = _env_root.parent
+for _env_path in (_env_root / ".env", _env_repo / ".env", _env_repo / ".env.local"):
+    _apply_dotenv_file(_env_path, override=not _on_vercel)
+
 import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -22,6 +53,7 @@ import housing_index
 import housing_settlement
 import lending
 import peer_lending
+from openai_env import openai_api_key, openai_configured
 from portfolio_service import (
     build_history_payload,
     compute_totals as portfolio_compute_totals,
@@ -30,16 +62,6 @@ from portfolio_service import (
     serialize_portfolio,
     using_firestore,
 )
-
-try:
-    from dotenv import load_dotenv
-
-    # override=True so .env edits (e.g. FIREBASE_STORAGE_BUCKET) apply on Flask reload
-    load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env.local", override=True)
-except ImportError:
-    pass
 
 BASE_DIR = Path(__file__).resolve().parent
 # Vercel Functions only allow writes under /tmp (local keeps files next to the app).
@@ -2508,7 +2530,7 @@ def _llm_company_summary(
         f"FACTS:\n{json.dumps(facts, indent=2)}"
     )
 
-    openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    openai_key = openai_api_key()
     openai_model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
     if openai_key:
         try:
@@ -3970,6 +3992,7 @@ def health():
         "ledger": ledger,
         "firestore_ok": firestore_ok,
         "firestore_error": firestore_error,
+        "openai": openai_configured(),
     })
 
 

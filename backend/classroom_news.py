@@ -11,7 +11,8 @@ from pathlib import Path
 
 import requests
 
-OPENAI_API_KEY = (os.environ.get("OPENAI_API_KEY") or "").strip()
+from openai_env import openai_api_key
+
 OPENAI_MODEL = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
 THEME_KEYWORDS = [
@@ -205,7 +206,8 @@ def template_rewrite(item: dict) -> dict:
 
 
 def _openai_rewrite_batch(items: list[dict]) -> list[dict] | None:
-    if not OPENAI_API_KEY or not items:
+    openai_key = openai_api_key()
+    if not openai_key or not items:
         return None
 
     catalog_hint = []
@@ -239,7 +241,7 @@ def _openai_rewrite_batch(items: list[dict]) -> list[dict] | None:
         res = requests.post(
             "https://api.openai.com/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Authorization": f"Bearer {openai_key}",
                 "Content-Type": "application/json",
             },
             json={

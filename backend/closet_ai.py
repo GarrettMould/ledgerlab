@@ -15,6 +15,7 @@ import requests
 import firestore_ledger as fs_ledger
 from closet_glb import build_billboard_glb
 from closet_blocky import build_blocky_glb, fallback_parts, normalize_parts, parts_look_weak
+from openai_env import openai_api_key as _openai_api_key
 
 MESHY_BASE = "https://api.meshy.ai/openapi/v2"
 
@@ -58,10 +59,6 @@ CREW_TIERS = {
     },
 }
 MAX_PUBLISHES_PER_DAY = 8
-
-
-def _openai_api_key() -> str:
-    return (os.environ.get("OPENAI_API_KEY") or "").strip()
 
 
 def _openai_model() -> str:

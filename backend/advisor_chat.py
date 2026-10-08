@@ -8,14 +8,11 @@ from typing import Any
 import requests
 
 import firestore_ledger as fs_ledger
+from openai_env import openai_api_key as _openai_api_key
 
 MAX_MESSAGE_CHARS = 800
 MAX_HISTORY = 12
 MAX_REPLY_CHARS = 1200
-
-
-def _openai_api_key() -> str:
-    return (os.environ.get("OPENAI_API_KEY") or "").strip()
 
 
 def _openai_model() -> str:
@@ -418,7 +415,11 @@ def chat(
 
     key = _openai_api_key()
     if not key:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+        raise RuntimeError(
+            "OPENAI_API_KEY is missing on the backend. In Vercel: Settings → "
+            "Environment Variables, add OPENAI_API_KEY for Production, apply it to "
+            "the backend service (not only frontend), then Redeploy."
+        )
 
     text = str(message or "").strip()
     if not text:

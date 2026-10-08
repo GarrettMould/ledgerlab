@@ -63,7 +63,7 @@ Set environment variables in the Vercel project (Production + Preview):
 | --- | --- |
 | `VITE_FIREBASE_*` (all keys from `.env.example`) | Frontend build |
 | `FINNHUB_API_KEY` | Backend |
-| `OPENAI_API_KEY` (optional) | Backend news rewrite |
+| `OPENAI_API_KEY` | Backend advisor chat + news rewrite. Must apply to the **backend** service (or All services), Production + Preview, then **Redeploy**. |
 
 After deploy, add your `*.vercel.app` domain under Firebase Auth → **Authorized domains**.
 
