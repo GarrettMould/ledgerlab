@@ -3,14 +3,17 @@ import { createLoan, getLoans, sellLoan } from "./api";
 import TradeSuccessModal from "./TradeSuccessModal";
 import { LAND_PATH } from "./data/worldLandPath";
 import {
+  LENDING_COUNTRIES,
   LENDING_COUNTRIES_WITH_POINTS,
   LENDING_FACE_VALUE,
-  LENDING_HORIZON_LABEL,
   LENDING_RECOVERY_PCT,
   LENDING_SALE_DISCOUNT_PER_MISS_PCT,
   OCEAN_LABELS,
   WORLD_MAP_VIEW,
+  interestToHorizon,
+  projectLonLat,
 } from "./data/worldLending";
+import { contestEndDate, formatContestLabel, formatShortDate } from "./contestDates";
 
 const FACE_LABEL = LENDING_FACE_VALUE.toLocaleString("en-US");
 
@@ -53,7 +56,17 @@ function longDate(iso) {
   });
 }
 
-export default function WorldLendingMap({ studentId, classId, cash, onPortfolio }) {
+export default function WorldLendingMap({
+  studentId,
+  classId,
+  contestEnd,
+  cash,
+  onPortfolio,
+}) {
+  const horizonKey = String(contestEnd || "");
+  const horizonDate = useMemo(() => contestEndDate(horizonKey), [horizonKey]);
+  const horizonLabel = formatContestLabel(horizonDate);
+  const horizonShort = formatShortDate(horizonDate);
   const [activeId, setActiveId] = useState(
     LENDING_COUNTRIES_WITH_POINTS[0]?.id || null
   );
@@ -161,7 +174,20 @@ export default function WorldLendingMap({ studentId, classId, cash, onPortfolio 
   const activeLoans = loans.filter((l) => l.status === "active");
   const doneLoans = loans.filter((l) => l.status !== "active");
 
-  const markers = LENDING_COUNTRIES_WITH_POINTS;
+  const markers = useMemo(
+    () =>
+      LENDING_COUNTRIES.map((c) => {
+        const income = interestToHorizon(c.ratePct, { horizon: horizonKey || undefined });
+        const base = LENDING_COUNTRIES_WITH_POINTS.find((row) => row.id === c.id);
+        return {
+          ...(base || c),
+          point: base?.point || projectLonLat(c.lon, c.lat),
+          interestByHorizon: income.interest,
+          monthsToHorizon: income.months,
+        };
+      }),
+    [horizonKey]
+  );
   const active = useMemo(
     () => markers.find((m) => m.id === activeId) || null,
     [markers, activeId]
@@ -179,7 +205,7 @@ export default function WorldLendingMap({ studentId, classId, cash, onPortfolio 
       <p className="world-lending-hint">
         Tap a country on the map or in the list. Earnings assume you lend $
         {FACE_LABEL} today and every payment comes through by{" "}
-        {LENDING_HORIZON_LABEL}. Loans are in U.S. dollars. Each month you spin
+        {horizonLabel}. Loans are in U.S. dollars. Each month you spin
         against that country’s default risk — a miss skips that month’s interest,
         and missing the final payment returns only {LENDING_RECOVERY_PCT}% of your
         money. You can sell a loan early, but buyers pay less for riskier countries
@@ -345,7 +371,7 @@ export default function WorldLendingMap({ studentId, classId, cash, onPortfolio 
                   <dd>{rateLabel(active.ratePct)}</dd>
                 </div>
                 <div>
-                  <dt>Earned on ${FACE_LABEL} by {LENDING_HORIZON_LABEL}</dt>
+                  <dt>Earned on ${FACE_LABEL} by {horizonLabel}</dt>
                   <dd>{money(active.interestByHorizon)}</dd>
                 </div>
                 <div>
@@ -405,7 +431,7 @@ export default function WorldLendingMap({ studentId, classId, cash, onPortfolio 
               {notice && <p className="world-lending-notice">{notice}</p>}
               <p className="world-lending-note">
                 Each month you spin once for that month’s interest. Your money comes
-                back with the last payment before {LENDING_HORIZON_LABEL} — but if that
+                back with the last payment before {horizonLabel} — but if that
                 final spin defaults, you only get {LENDING_RECOVERY_PCT}% of it back.
               </p>
             </>
@@ -514,7 +540,7 @@ export default function WorldLendingMap({ studentId, classId, cash, onPortfolio 
           <h4>All countries</h4>
           <p>
             Sorted by rate · earnings on ${FACE_LABEL} lent today, if every payment
-            comes through by {LENDING_HORIZON_LABEL}
+            comes through by {horizonLabel}
           </p>
         </div>
         <div className="world-lending-table" role="list">
@@ -522,7 +548,7 @@ export default function WorldLendingMap({ studentId, classId, cash, onPortfolio 
             <span>Country</span>
             <span>Rate</span>
             <span>
-              ${FACE_LABEL} earns by {LENDING_HORIZON_LABEL.replace(", 2027", "")}
+              ${FACE_LABEL} earns by {horizonShort}
             </span>
             <span>Default risk</span>
           </div>

@@ -152,10 +152,11 @@ export function getQuotes(tickers = []) {
   return request(`/quotes?${params}`, { timeoutMs: 45000 });
 }
 
-export function getMarket(category, refresh = false, { catalog = false } = {}) {
+export function getMarket(category, refresh = false, { catalog = false, contestEnd } = {}) {
   const params = new URLSearchParams();
   if (refresh) params.set("refresh", "1");
   if (catalog) params.set("catalog", "1");
+  if (contestEnd) params.set("contestEnd", String(contestEnd));
   const q = params.toString() ? `?${params}` : "";
   // Live quotes can take a bit on cold cache; catalog stays on the default timeout.
   return request(`/market/${encodeURIComponent(category)}${q}`, {
@@ -478,4 +479,24 @@ export function removeMarketExtra(classId, teacherUid, ticker) {
       classId,
     }
   );
+}
+
+/** Classroom AI investment advisor (OpenAI). */
+export function askAdvisorChat(
+  classId,
+  studentId,
+  message,
+  { history = [], portfolio = null } = {}
+) {
+  return request("/advisor/chat", {
+    method: "POST",
+    classId,
+    timeoutMs: 60000,
+    body: JSON.stringify({
+      studentId,
+      message,
+      history,
+      portfolio,
+    }),
+  });
 }

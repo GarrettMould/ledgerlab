@@ -32,7 +32,8 @@ COUNTRIES: dict[str, dict] = {
     "AR": {"name": "Argentina", "rate_pct": 11.0, "default_pct": 10.0},
 }
 
-HORIZON = datetime(2027, 5, 15, 23, 59, 59, tzinfo=timezone.utc)
+DEFAULT_HORIZON = datetime(2027, 5, 15, 23, 59, 59, tzinfo=timezone.utc)
+HORIZON = DEFAULT_HORIZON
 MIN_LOAN = 100.0
 # Share of principal returned when the final payment defaults.
 RECOVERY_PCT = 75.0
@@ -59,10 +60,33 @@ def add_months(dt: datetime, months: int) -> datetime:
     return dt.replace(year=year, month=month, day=day)
 
 
-def total_payments(lent_at: datetime) -> int:
+def horizon_at(contest_end=None) -> datetime:
+    if contest_end is None or contest_end == "":
+        return DEFAULT_HORIZON
+    if isinstance(contest_end, datetime):
+        dt = contest_end
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.replace(hour=23, minute=59, second=59, microsecond=0)
+    raw = str(contest_end).strip()
+    try:
+        if "T" in raw or raw.endswith("Z"):
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        else:
+            d = datetime.fromisoformat(raw[:10])
+            dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.replace(hour=23, minute=59, second=59, microsecond=0)
+    except ValueError:
+        return DEFAULT_HORIZON
+
+
+def total_payments(lent_at: datetime, contest_end=None) -> int:
     """Monthly payments that fall on or before the class horizon."""
+    end = horizon_at(contest_end)
     n = 0
-    while add_months(lent_at, n + 1) <= HORIZON:
+    while add_months(lent_at, n + 1) <= end:
         n += 1
     return n
 

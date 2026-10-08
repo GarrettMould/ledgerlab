@@ -18,7 +18,8 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { db } from "./firebase";
+import { auth, db } from "./firebase";
+import { contestEndIso, DEFAULT_CONTEST_END } from "./contestDates";
 
 const ACTIVE_CLASS_KEY = "ledgerlab.activeClassId";
 const STUDENT_SESSION_KEY = "ledgerlab.studentSession";
@@ -88,15 +89,82 @@ export function inviteUrlForCode(code) {
   return url.toString();
 }
 
-export async function listClasses() {
-  const snap = await getDocs(query(classesCol(), orderBy("createdAt", "desc")));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+function classCreatedMs(row) {
+  const value = row?.createdAt;
+  if (!value) return 0;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  if (typeof value.seconds === "number") return value.seconds * 1000;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortClassesNewestFirst(rows) {
+  return [...rows].sort((a, b) => classCreatedMs(b) - classCreatedMs(a));
+}
+
+function withContestEnd(cls) {
+  if (!cls) return null;
+  return { ...cls, contestEnd: contestEndIso(cls.contestEnd) };
+}
+
+function currentTeacherUid(teacher) {
+  return String(teacher?.uid || auth.currentUser?.uid || "").trim();
+}
+
+function isAdminTeacher(teacher) {
+  return String(teacher?.role || "").toLowerCase() === "admin";
+}
+
+async function writeInviteIndex({ code, classId, name, ownerUid }) {
+  const inviteCode = String(code || "").trim().toUpperCase();
+  if (!inviteCode || !classId) return;
+  await setDoc(
+    doc(db, "invites", inviteCode),
+    {
+      classId,
+      name: String(name || "").slice(0, 80),
+      ownerUid: String(ownerUid || ""),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+async function inviteCodeTaken(code, exceptClassId = "") {
+  const inviteCode = String(code || "").trim().toUpperCase();
+  if (!inviteCode) return false;
+  try {
+    const snap = await getDoc(doc(db, "invites", inviteCode));
+    if (!snap.exists()) return false;
+    const classId = String(snap.data()?.classId || "");
+    return Boolean(classId && classId !== exceptClassId);
+  } catch {
+    return false;
+  }
+}
+
+/** Classes this teacher owns. Admins see every class. */
+export async function listClasses(teacher = null) {
+  const uid = currentTeacherUid(teacher);
+  if (!uid) return [];
+
+  if (isAdminTeacher(teacher)) {
+    const snap = await getDocs(classesCol());
+    return sortClassesNewestFirst(
+      snap.docs.map((d) => withContestEnd({ id: d.id, ...d.data() }))
+    );
+  }
+
+  const snap = await getDocs(query(classesCol(), where("ownerUid", "==", uid)));
+  return sortClassesNewestFirst(
+    snap.docs.map((d) => withContestEnd({ id: d.id, ...d.data() }))
+  );
 }
 
 export async function getClass(classId) {
   const snap = await getDoc(doc(db, "classes", classId));
   if (!snap.exists()) return null;
-  return { id: snap.id, ...snap.data() };
+  return withContestEnd({ id: snap.id, ...snap.data() });
 }
 
 /** Live class-doc fields for the popular-stocks ticker (1 listener, no holdings fan-out). */
@@ -255,18 +323,46 @@ export async function getClassByInviteCode(inviteCode) {
     .trim()
     .toUpperCase();
   if (!code) return null;
-  const snap = await getDocs(
-    query(classesCol(), where("inviteCode", "==", code), limit(1))
-  );
-  if (snap.empty) return null;
-  const d = snap.docs[0];
-  return { id: d.id, ...d.data() };
+  try {
+    const inviteSnap = await getDoc(doc(db, "invites", code));
+    if (inviteSnap.exists()) {
+      const classId = String(inviteSnap.data()?.classId || "").trim();
+      if (classId) {
+        const cls = await getClass(classId);
+        if (cls) return cls;
+      }
+    }
+  } catch {
+    /* invites index may not be readable until rules are deployed */
+  }
+  try {
+    const snap = await getDocs(
+      query(classesCol(), where("inviteCode", "==", code), limit(1))
+    );
+    if (snap.empty) return null;
+    const d = snap.docs[0];
+    return withContestEnd({ id: d.id, ...d.data() });
+  } catch {
+    return null;
+  }
 }
 
 export async function ensureInviteCode(classId) {
   const cls = await getClass(classId);
   if (!cls) throw new Error("Class not found");
-  if (cls.inviteCode) return cls.inviteCode;
+  if (cls.inviteCode) {
+    try {
+      await writeInviteIndex({
+        code: cls.inviteCode,
+        classId,
+        name: cls.name,
+        ownerUid: cls.ownerUid,
+      });
+    } catch {
+      /* join still works from the class doc until rules are tightened */
+    }
+    return cls.inviteCode;
+  }
   let inviteCode = makeInviteCode();
   for (let i = 0; i < 5; i += 1) {
     const existing = await getClassByInviteCode(inviteCode);
@@ -276,6 +372,12 @@ export async function ensureInviteCode(classId) {
   await updateDoc(doc(db, "classes", classId), {
     inviteCode,
     updatedAt: serverTimestamp(),
+  });
+  await writeInviteIndex({
+    code: inviteCode,
+    classId,
+    name: cls.name,
+    ownerUid: cls.ownerUid,
   });
   return inviteCode;
 }
@@ -284,31 +386,54 @@ export async function createClass({
   name,
   startingCash = 100000,
   markets = DEFAULT_MARKETS,
+  owner = null,
+  contestEnd = DEFAULT_CONTEST_END,
 }) {
   const trimmed = name.trim();
   if (!trimmed) throw new Error("Class name is required");
+  const ownerUid = currentTeacherUid(owner);
+  if (!ownerUid) {
+    throw new Error("Sign in as a teacher to create a class.");
+  }
   let inviteCode = makeInviteCode();
   for (let i = 0; i < 5; i += 1) {
-    const existing = await getClassByInviteCode(inviteCode);
-    if (!existing) break;
+    const taken = await inviteCodeTaken(inviteCode);
+    if (!taken) break;
     inviteCode = makeInviteCode();
   }
+  const ownerName = String(owner?.name || auth.currentUser?.displayName || "").slice(0, 80);
+  const ownerEmail = String(owner?.email || auth.currentUser?.email || "").slice(0, 120);
   const ref = await addDoc(classesCol(), {
     name: trimmed,
     startingCash: Number(startingCash) || 0,
     markets: { ...DEFAULT_MARKETS, ...markets },
     inviteCode,
+    ownerUid,
+    ownerName,
+    ownerEmail,
+    contestEnd: contestEndIso(contestEnd),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+  try {
+    await writeInviteIndex({
+      code: inviteCode,
+      classId: ref.id,
+      name: trimmed,
+      ownerUid,
+    });
+  } catch {
+    /* class doc still has inviteCode; join works from that until invites rules are live */
+  }
   return { id: ref.id, inviteCode };
 }
 
 export async function updateClassSettings(classId, patch) {
-  await updateDoc(doc(db, "classes", classId), {
-    ...patch,
-    updatedAt: serverTimestamp(),
-  });
+  const next = { ...patch, updatedAt: serverTimestamp() };
+  if (patch?.contestEnd != null) {
+    next.contestEnd = contestEndIso(patch.contestEnd);
+  }
+  await updateDoc(doc(db, "classes", classId), next);
 }
 
 function toJsDate(value) {
@@ -698,9 +823,18 @@ export async function listH2hMatches(classId) {
 }
 
 export async function deleteClass(classId) {
+  const cls = await getClass(classId);
   const students = await listClassStudents(classId);
   await Promise.all(students.map((s) => deleteDoc(doc(db, "classes", classId, "students", s.id))));
   await deleteDoc(doc(db, "classes", classId));
+  const code = String(cls?.inviteCode || "").trim().toUpperCase();
+  if (code) {
+    try {
+      await deleteDoc(doc(db, "invites", code));
+    } catch {
+      /* invite index may already be gone */
+    }
+  }
   if (getActiveClassId() === classId) setActiveClassId("");
   const session = getStudentSession();
   if (session?.classId === classId) clearStudentSession();
@@ -718,6 +852,41 @@ export async function listClassStudents(classId) {
     return ta - tb;
   });
   return rows;
+}
+
+/** Count class-wide trade-log rows per student id. */
+export async function listClassTradeCounts(classId) {
+  const counts = new Map();
+  if (!classId) return counts;
+  try {
+    const snap = await getDocs(collection(db, "classes", classId, "trades"));
+    for (const d of snap.docs) {
+      const id = String(d.data()?.studentId || "").trim();
+      if (!id) continue;
+      counts.set(id, (counts.get(id) || 0) + 1);
+    }
+  } catch {
+    /* class trade log is optional analytics */
+  }
+  if (counts.size > 0) return counts;
+  try {
+    const seats = await getDocs(studentsCol(classId));
+    await Promise.all(
+      seats.docs.map(async (seat) => {
+        try {
+          const trades = await getDocs(
+            collection(db, "classes", classId, "students", seat.id, "trades")
+          );
+          if (trades.size > 0) counts.set(seat.id, trades.size);
+        } catch {
+          /* skip a seat that can't be read */
+        }
+      })
+    );
+  } catch {
+    /* roster fallback is best-effort */
+  }
+  return counts;
 }
 
 /** True when an id looks like a leftover local SQLite row id (not a Firestore doc id). */
@@ -963,6 +1132,7 @@ export async function buildStudentSessionFromAuth(authUid, profile = {}) {
   const session = {
     classId: membership.classId,
     className: cls?.name || "",
+    contestEnd: contestEndIso(cls?.contestEnd),
     inviteCode: cls?.inviteCode || "",
     firestoreStudentId: membership.id,
     apiStudentId: tradingId,

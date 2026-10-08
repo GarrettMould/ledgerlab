@@ -2146,10 +2146,10 @@ def apply_live_treasury_yields(items: list[dict], *, force_refresh: bool = False
     return out
 
 
-def bond_interest_to_horizon(bond: dict, today=None) -> dict:
+def bond_interest_to_horizon(bond: dict, today=None, contest_end=None) -> dict:
     """
-    Estimate interest on one $face unit from today through May 15, 2027
-    (or maturity if earlier). Coupon bonds use coupon; T-bills use yield.
+    Estimate interest on one $face unit from today through the class contest
+    end (or maturity if earlier). Coupon bonds use coupon; T-bills use yield.
     Sold at par in class, so this is simple face * rate * years.
     """
     today = today or datetime.now(timezone.utc).date()
@@ -2158,7 +2158,7 @@ def bond_interest_to_horizon(bond: dict, today=None) -> dict:
     yld = float(bond.get("yield_pct") or 0)
     rate = coupon if coupon > 0 else yld
     maturity = parse_bond_maturity(bond.get("maturity") or "")
-    horizon = BOND_INTEREST_HORIZON
+    horizon = peer_lending.contest_end_date(contest_end)
 
     if maturity is None:
         end = horizon
@@ -2172,7 +2172,7 @@ def bond_interest_to_horizon(bond: dict, today=None) -> dict:
     interest = round(face * (rate / 100.0) * years, 2)
 
     return {
-        "horizon": "May 15, 2027",
+        "horizon": peer_lending.format_contest_label(horizon),
         "horizon_date": horizon.isoformat(),
         "earn_until": end.isoformat() if end else horizon.isoformat(),
         "years": round(years, 3),
@@ -2967,6 +2967,11 @@ def init_db() -> None:
                 ON portfolio_snapshots(student_id, recorded_at)
             """
         )
+    try:
+        if using_firestore():
+            fs_ledger.ensure_legacy_class_owners()
+    except Exception:
+        pass
 
 
 HOME_CLOSING_COST_PCT = 1.0
@@ -3617,19 +3622,28 @@ def catalog_snapshot(category: str) -> list[dict]:
     return final
 
 
-def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
+def enrich_catalog(category: str, *, force_refresh: bool = False, contest_end=None) -> list[dict]:
     items = MARKET_CATALOG.get(category, [])
     now = datetime.now(timezone.utc).timestamp()
 
     # Bonds: Treasuries use the official daily par yield curve; corporates stay fixed.
     if category == "bonds":
+        horizon = peer_lending.contest_end_date(contest_end)
+        cache_key = f"bonds:{horizon.isoformat()}"
+        cached_bonds = _category_cache.get(cache_key)
+        if (
+            not force_refresh
+            and cached_bonds
+            and now - cached_bonds[0] < CACHE_TTL_SECONDS
+        ):
+            return cached_bonds[1]
         live_items = apply_live_treasury_yields(items, force_refresh=force_refresh)
         # Keep quote lookup in sync with any catalog overlays.
         for row in live_items:
             BOND_BY_TICKER[row["ticker"]] = row
         final = []
         for item in live_items:
-            income = bond_interest_to_horizon(item)
+            income = bond_interest_to_horizon(item, contest_end=horizon)
             if income["matured"]:
                 summary = (
                     f"This bond’s maturity ({item.get('maturity')}) is already past, "
@@ -3675,7 +3689,7 @@ def enrich_catalog(category: str, *, force_refresh: bool = False) -> list[dict]:
                     },
                 }
             )
-        _category_cache[category] = (now, final)
+        _category_cache[cache_key] = (now, final)
         return final
 
     # Real estate: ZHVI city indexes + classroom mortgage terms.
@@ -4701,6 +4715,7 @@ def market_category(category: str):
         return jsonify({"error": "Unknown market category"}), 404
     force = request.args.get("refresh") == "1"
     catalog_only = request.args.get("catalog") == "1"
+    contest_end = request.args.get("contestEnd") or request.args.get("contest_end")
     if catalog_only:
         items = catalog_snapshot(key)
         items = append_class_extra_market(items, key, catalog_only=True)
@@ -4736,7 +4751,7 @@ def market_category(category: str):
         except Exception:
             pass
 
-    items = enrich_catalog(key, force_refresh=force)
+    items = enrich_catalog(key, force_refresh=force, contest_end=contest_end)
     items = append_class_extra_market(
         items, key, catalog_only=False, force_refresh=force
     )
@@ -5000,9 +5015,13 @@ def create_student_loan(student_id: str):
         return jsonify({"error": f"Not enough cash. Need ${amount:,.2f}, have ${cash:,.2f}."}), 400
 
     now = datetime.now(timezone.utc)
-    total = lending.total_payments(now)
+    contest_end = _class_contest_end(class_id)
+    total = lending.total_payments(now, contest_end=contest_end)
     if total < 1:
-        return jsonify({"error": "Too close to May 15 — no interest payments are left."}), 400
+        end_label = peer_lending.format_contest_label(contest_end)
+        return jsonify({
+            "error": f"Too close to {end_label} — no interest payments are left."
+        }), 400
 
     loan = {
         "countryId": country_id,
@@ -5196,11 +5215,21 @@ def sell_loan(student_id: str, loan_id: str):
     return jsonify(_loans_response(loans, portfolio))
 
 
-def _peer_loan_settle_one(class_id: str, loan: dict) -> dict | None:
+def _class_contest_end(class_id: str):
+    try:
+        cls = fs_ledger.get_class(class_id) or {}
+    except Exception:
+        return None
+    return cls.get("contestEnd")
+
+
+def _peer_loan_settle_one(class_id: str, loan: dict, *, contest_end=None) -> dict | None:
     """If due and borrower has cash, repay in full. Returns settle result or None."""
     if (loan.get("status") or "active") != "active":
         return None
-    if not peer_lending.is_due(loan):
+    if contest_end is None:
+        contest_end = _class_contest_end(class_id)
+    if not peer_lending.is_due(loan, contest_end=contest_end):
         return None
     borrower_id = str(loan.get("borrowerStudentId") or "")
     lender_id = str(loan.get("lenderStudentId") or "")
@@ -5218,7 +5247,7 @@ def _peer_loan_settle_one(class_id: str, loan: dict) -> dict | None:
         return {
             "settled": False,
             "blocked": True,
-            "loan": peer_lending.serialize_loan(loan),
+            "loan": peer_lending.serialize_loan(loan, contest_end=contest_end),
             "cash": cash,
             "shortfall": round(total - cash, 2),
         }
@@ -5265,7 +5294,9 @@ def _peer_loan_settle_one(class_id: str, loan: dict) -> dict | None:
     return {
         "settled": True,
         "blocked": False,
-        "loan": peer_lending.serialize_loan({**loan, "status": "repaid", "repaidAt": now}),
+        "loan": peer_lending.serialize_loan(
+            {**loan, "status": "repaid", "repaidAt": now}, contest_end=contest_end
+        ),
         "cash": round(cash - total, 2),
     }
 
@@ -5279,6 +5310,7 @@ def settle_due_peer_loans(class_id: str, student_id: str) -> dict:
     settled = []
     blocked = []
     seen = set()
+    contest_end = _class_contest_end(class_id)
     rows = fs_ledger.list_peer_loans(class_id, student_id)
     for row in rows:
         if (row.get("status") or "active") != "active":
@@ -5287,7 +5319,7 @@ def settle_due_peer_loans(class_id: str, student_id: str) -> dict:
         if not loan_id or loan_id in seen:
             continue
         seen.add(loan_id)
-        result = _peer_loan_settle_one(class_id, row)
+        result = _peer_loan_settle_one(class_id, row, contest_end=contest_end)
         if not result:
             continue
         if result.get("settled"):
@@ -5307,18 +5339,19 @@ def settle_due_peer_loans(class_id: str, student_id: str) -> dict:
 
 def _peer_loans_payload(class_id: str, student_id: str) -> dict:
     settle = settle_due_peer_loans(class_id, student_id)
+    contest_end = _class_contest_end(class_id)
     rows = fs_ledger.list_peer_loans(class_id, student_id)
     as_borrower = []
     as_lender = []
     for row in rows:
-        serialized = peer_lending.serialize_loan(row)
+        serialized = peer_lending.serialize_loan(row, contest_end=contest_end)
         role = row.get("role") or (
             "lender"
             if str(row.get("lenderStudentId")) == str(student_id)
             else "borrower"
         )
         serialized["role"] = role
-        serialized["isDue"] = peer_lending.is_due(row)
+        serialized["isDue"] = peer_lending.is_due(row, contest_end=contest_end)
         if role == "lender":
             as_lender.append(serialized)
         else:
@@ -5326,7 +5359,7 @@ def _peer_loans_payload(class_id: str, student_id: str) -> dict:
     return {
         "asBorrower": as_borrower,
         "asLender": as_lender,
-        "dueLabel": peer_lending.due_label(),
+        "dueLabel": peer_lending.due_label(contest_end),
         "settled": settle.get("settled") or [],
         "blocked": settle.get("blocked") or [],
     }
@@ -5346,10 +5379,12 @@ def peer_lend_offers(class_id: str):
         peer_lending.serialize_offer(o)
         for o in fs_ledger.list_peer_offers(class_id, open_only=True)
     ]
+    contest_end = _class_contest_end(class_id)
     return jsonify(
         {
             "offers": offers,
-            "dueLabel": peer_lending.due_label(),
+            "dueLabel": peer_lending.due_label(contest_end),
+            "contestEnd": peer_lending.contest_end_date(contest_end).isoformat(),
             "test": peer_lending.test_status(),
         }
     )
@@ -5396,8 +5431,12 @@ def peer_lend_create_offer(class_id: str):
         amount=amount,
         rate_pct=rate_pct,
     )
+    contest_end = _class_contest_end(class_id)
     return jsonify(
-        {"offer": peer_lending.serialize_offer(offer), "dueLabel": peer_lending.due_label()}
+        {
+            "offer": peer_lending.serialize_offer(offer),
+            "dueLabel": peer_lending.due_label(contest_end),
+        }
     )
 
 
@@ -5487,7 +5526,11 @@ def peer_lend_borrow(class_id: str):
     interest = peer_lending.interest_due(amount, rate_pct)
     total = peer_lending.total_due(amount, rate_pct)
     now_dt = datetime.now(timezone.utc)
-    due = peer_lending.due_at_for_new_loan(lent_at=now_dt).isoformat()
+    contest_end = _class_contest_end(class_id)
+    payback = peer_lending.due_label(contest_end)
+    due = peer_lending.due_at_for_new_loan(
+        lent_at=now_dt, contest_end=contest_end
+    ).isoformat()
     now = now_dt.isoformat()
 
     try:
@@ -5530,7 +5573,7 @@ def peer_lend_borrow(class_id: str):
             amount=-amount,
             note=(
                 f"{borrower.get('name') or 'A classmate'} borrowed ${amount:,.2f} "
-                f"from you at {rate_pct:.1f}% (due {peer_lending.due_label()})."
+                f"from you at {rate_pct:.1f}% (due {payback})."
             ),
             kind="peer_loan_lend",
             pre_applied=True,
@@ -5542,7 +5585,7 @@ def peer_lend_borrow(class_id: str):
             amount=amount,
             note=(
                 f"You borrowed ${amount:,.2f} from {lender.get('name') or 'a classmate'} "
-                f"at {rate_pct:.1f}%. Repay ${total:,.2f} on {peer_lending.due_label()}."
+                f"at {rate_pct:.1f}%. Repay ${total:,.2f} on {payback}."
             ),
             kind="peer_loan_borrow",
             pre_applied=True,
@@ -5554,10 +5597,10 @@ def peer_lend_borrow(class_id: str):
     portfolio = _fs_portfolio_payload(class_id, borrower_id)
     return jsonify(
         {
-            "loan": peer_lending.serialize_loan(loan_body),
+            "loan": peer_lending.serialize_loan(loan_body, contest_end=contest_end),
             "offer": peer_lending.serialize_offer(updated_offer),
             "portfolio": portfolio,
-            "dueLabel": peer_lending.due_label(),
+            "dueLabel": payback,
         }
     )
 
@@ -6769,6 +6812,41 @@ def market_news():
             "disclaimer": "Written for Ledger Lab from public market headlines.",
         }
     )
+
+
+# --- Classroom investment advisor (OpenAI) ---
+
+
+@app.post("/api/advisor/chat")
+def advisor_chat():
+    class_id, err = require_firestore_class_id()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    student_id = (data.get("studentId") or "").strip()
+    message = data.get("message") or data.get("text") or ""
+    history = data.get("history") or []
+    portfolio = data.get("portfolio")
+    if not student_id:
+        return jsonify({"error": "studentId is required"}), 400
+    try:
+        import advisor_chat as advisor
+
+        return jsonify(
+            advisor.chat(
+                class_id,
+                student_id,
+                message=message,
+                history=history if isinstance(history, list) else [],
+                portfolio=portfolio if isinstance(portfolio, dict) else None,
+            )
+        )
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 # --- Closet AI creator (any enrolled class student) ---

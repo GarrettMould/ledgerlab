@@ -160,13 +160,31 @@ function addMonthsUtc(d, months) {
  * Interest a $face loan made today pays by the class horizon if every monthly
  * payment comes through (same schedule as backend/lending.py).
  */
-export function interestToHorizon(ratePct, { today = new Date(), face = LENDING_FACE_VALUE } = {}) {
+function horizonUtcEnd(horizon) {
+  if (typeof horizon === "string") {
+    const iso = horizon.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) {
+      return Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])) + 86400000 - 1;
+    }
+  }
+  if (horizon instanceof Date && Number.isFinite(horizon.getTime())) {
+    return (
+      Date.UTC(horizon.getFullYear(), horizon.getMonth(), horizon.getDate()) + 86400000 - 1
+    );
+  }
+  return LENDING_HORIZON.getTime() + 86400000 - 1;
+}
+
+export function interestToHorizon(
+  ratePct,
+  { today = new Date(), face = LENDING_FACE_VALUE, horizon } = {}
+) {
   const rate = Number(ratePct);
   if (!Number.isFinite(rate)) {
     return { interest: null, months: 0, face };
   }
   const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
-  const horizonEnd = LENDING_HORIZON.getTime() + 86400000 - 1;
+  const horizonEnd = horizonUtcEnd(horizon);
   let months = 0;
   while (addMonthsUtc(start, months + 1).getTime() <= horizonEnd) months += 1;
   const monthly = Math.round(face * (rate / 100 / 12) * 100) / 100;

@@ -15,6 +15,16 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['teacher', 'admin'];
     }
 
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isClassOwner() {
+      return signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
     match /users/{uid} {
       allow read: if isSelf(uid);
       allow create, update: if isSelf(uid);
@@ -28,16 +38,35 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Public join-code lookup (students are not signed in yet). One doc per code.
+    match /invites/{inviteCode} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if isTeacher();
+      allow delete: if isTeacher();
+    }
+
     match /classes/{classId} {
-      // Invite links look up a class by inviteCode BEFORE the student signs in.
-      // Class docs are OK to read publicly; roster/cash stay protected below.
-      allow read: if true;
-      allow create: if signedIn();
+      function classDocOwner() {
+        return signedIn()
+          && exists(/databases/$(database)/documents/classes/$(classId))
+          && get(/databases/$(database)/documents/classes/$(classId)).data.ownerUid == request.auth.uid;
+      }
+
+      // Invite links read a class by id AFTER resolving /invites/{code}.
+      // Teachers may list only classes they own (admins may list all).
+      allow get: if true;
+      allow list: if isAdmin() || (isTeacher() && isClassOwner());
+      allow create: if isTeacher()
+        && request.resource.data.ownerUid == request.auth.uid;
       // closetItems are published only via Admin SDK (AI creator).
-      allow update: if signedIn()
+      allow update: if (isClassOwner() || isAdmin())
         && !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(['closetItems']);
-      allow delete: if signedIn();
+          .hasAny(['closetItems'])
+        && (isAdmin()
+          || !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['ownerUid']));
+      allow delete: if isClassOwner() || isAdmin();
 
       match /students/{studentId} {
         allow read: if signedIn();
@@ -46,7 +75,7 @@ service cloud.firestore {
         allow update: if signedIn()
           && !request.resource.data.diff(resource.data).affectedKeys()
             .hasAny(['cash', 'holdingsCount', 'loansOutstanding']);
-        allow delete: if signedIn();
+        allow delete: if classDocOwner() || isAdmin();
 
         match /holdings/{ticker} {
           allow read: if signedIn();

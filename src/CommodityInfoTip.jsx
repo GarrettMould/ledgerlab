@@ -87,7 +87,7 @@ export default function CommodityInfoTip({ name, kind, info }) {
                   ? "No remaining interest"
                   : money(interestPerUnit)}
                 {!info.matured && (
-                  <span> interest by {info.horizon || "May 15, 2027"}</span>
+                  <span> interest by {info.horizon || "contest end"}</span>
                 )}
               </p>
               <p className="commodity-tooltip-body">

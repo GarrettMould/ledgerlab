@@ -9,6 +9,7 @@ import {
   searchMarketTickers,
 } from "./api";
 import ClassAggregatePanel from "./ClassAggregatePanel";
+import ClassUsageStats from "./ClassUsageStats";
 import ClassInviteCard from "./ClassInviteCard";
 import ClassMessageBoard from "./ClassMessageBoard";
 import ClassView from "./ClassView";
@@ -37,6 +38,14 @@ import {
   updateClassSettings,
 } from "./classStore";
 import TeacherHeadToHeadModal from "./TeacherHeadToHeadModal";
+import TeacherGuide, {
+  TeacherGuideTeaser,
+  forceTeacherGuidePreview,
+  hasSeenTeacherGuide,
+  markTeacherGuideSeen,
+} from "./TeacherGuide";
+import ContestDatePicker from "./ContestDatePicker";
+import { DEFAULT_CONTEST_END, formatContestLabel } from "./contestDates";
 
 /** Set true to restore class chat on the teacher dashboard. */
 const SHOW_CLASS_CHAT = false;
@@ -84,6 +93,7 @@ export default function TeacherDashboard({
   const [view, setView] = useState("list"); // list | create | class | roster | settings
   const [className, setClassName] = useState("");
   const [startingCash, setStartingCash] = useState("100000");
+  const [contestEnd, setContestEnd] = useState(DEFAULT_CONTEST_END);
   const [markets, setMarkets] = useState({ ...DEFAULT_MARKETS });
   const [roster, setRoster] = useState([]);
   const [customAmounts, setCustomAmounts] = useState({});
@@ -114,6 +124,8 @@ export default function TeacherDashboard({
   const [marketSearchBusy, setMarketSearchBusy] = useState(false);
   const [marketAddBusy, setMarketAddBusy] = useState("");
   const [marketSearchError, setMarketSearchError] = useState("");
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideStart, setGuideStart] = useState(0);
 
   const activeClass = useMemo(
     () => classes.find((c) => c.id === activeClassId) || null,
@@ -123,7 +135,7 @@ export default function TeacherDashboard({
   const inboxRows = inboxOpen === "stock" ? stockRequests : bugReports;
 
   async function refreshClasses() {
-    const rows = await listClasses();
+    const rows = await listClasses(teacher);
     setClasses(rows);
     return rows;
   }
@@ -203,7 +215,7 @@ export default function TeacherDashboard({
       setBusy(true);
       setError("");
       try {
-        const rows = await listClasses();
+        const rows = await listClasses(teacher);
         if (cancelled) return;
         setClasses(rows);
         const saved = activeClassId || getActiveClassId();
@@ -214,6 +226,9 @@ export default function TeacherDashboard({
             setRoster(rosterRows);
             onRosterChange?.(rosterRows);
           }
+        } else if (saved) {
+          setActiveClassId("");
+          onActiveClassChange("");
         }
         setView(rows.length ? "list" : "create");
       } catch (err) {
@@ -228,6 +243,13 @@ export default function TeacherDashboard({
     // intentionally once on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!teacher?.uid) return;
+    if (forceTeacherGuidePreview() || !hasSeenTeacherGuide(teacher.uid)) {
+      setGuideOpen(true);
+    }
+  }, [teacher?.uid]);
 
   useEffect(() => {
     if (view !== "class" || !activeClassId) return;
@@ -390,12 +412,15 @@ export default function TeacherDashboard({
         name: className,
         startingCash: Number(startingCash) || 0,
         markets,
+        owner: teacher,
+        contestEnd,
       });
       const id = created.id;
       setActiveClassId(id);
       onActiveClassChange(id);
       setClassName("");
       setStartingCash("100000");
+      setContestEnd(DEFAULT_CONTEST_END);
       setMarkets({ ...DEFAULT_MARKETS });
       await refreshClasses();
       await refreshRoster(id);
@@ -433,6 +458,7 @@ export default function TeacherDashboard({
         name: className.trim() || activeClass.name,
         startingCash: Number(startingCash) || 0,
         markets,
+        contestEnd,
       });
       await refreshClasses();
       setView("class");
@@ -448,6 +474,7 @@ export default function TeacherDashboard({
     if (view === "settings") {
       setClassName(activeClass.name || "");
       setStartingCash(String(activeClass.startingCash ?? 100000));
+      setContestEnd(activeClass.contestEnd || DEFAULT_CONTEST_END);
       setMarkets({ ...DEFAULT_MARKETS, ...(activeClass.markets || {}) });
     }
   }, [activeClass, view]);
@@ -616,6 +643,41 @@ export default function TeacherDashboard({
 
   const showNewClass = view === "list";
 
+  function openGuide(step = 0) {
+    setGuideStart(step);
+    setGuideOpen(true);
+  }
+
+  async function handleGuideAction(kind) {
+    setGuideOpen(false);
+    if (!forceTeacherGuidePreview()) markTeacherGuideSeen(teacher?.uid);
+    if (kind === "create" || (kind === "invite" && classes.length === 0)) {
+      setClassName("");
+      setStartingCash("100000");
+      setContestEnd(DEFAULT_CONTEST_END);
+      setMarkets({ ...DEFAULT_MARKETS });
+      setView("create");
+      return;
+    }
+    if (kind === "invite") {
+      const id = activeClassId || classes[0]?.id;
+      if (!id) return;
+      setError("");
+      try {
+        setActiveClassId(id);
+        onActiveClassChange(id);
+        await refreshRoster(id);
+        setShowStandings(false);
+        setView("class");
+        const code = await ensureInviteCode(id);
+        setInviteCode(code);
+        setShowInviteModal(true);
+      } catch (err) {
+        setError(err.message || "Could not load invite code");
+      }
+    }
+  }
+
   function goBackFromClassView() {
     if (showStandings) {
       setShowStandings(false);
@@ -701,11 +763,19 @@ export default function TeacherDashboard({
                   ? "Students who joined with your invite link. Adjust cash or remove accounts here."
                   : view === "settings"
                     ? "Starting cash and markets available to this class."
-                    : "Create a class, then invite students with a QR code or join code."}
+                    : "Create a class, then invite students with a QR code or join code. Open How it works anytime."}
             </p>
           </div>
         </div>
         <div className="teacher-header-actions">
+          <button
+            type="button"
+            className="ghost-btn"
+            data-click="select"
+            onClick={() => openGuide(0)}
+          >
+            How it works
+          </button>
           {activeClass && (view === "class" || view === "roster") && !showJobs && (
             <button
               type="button"
@@ -724,6 +794,7 @@ export default function TeacherDashboard({
               onClick={() => {
                 setClassName("");
                 setStartingCash("100000");
+                setContestEnd(DEFAULT_CONTEST_END);
                 setMarkets({ ...DEFAULT_MARKETS });
                 setView("create");
               }}
@@ -736,8 +807,9 @@ export default function TeacherDashboard({
 
       {view === "list" && (
         <div className="class-list">
+          <TeacherGuideTeaser onOpen={openGuide} />
           {classes.length === 0 && (
-            <p className="empty">No classes yet. Create one to start a roster.</p>
+            <p className="empty">You don’t have any classes yet. Create one to start a roster.</p>
           )}
           {classes.map((c) => (
             <button
@@ -749,7 +821,7 @@ export default function TeacherDashboard({
             >
               <strong>{c.name}</strong>
               <span>
-                Starts at {money(c.startingCash)} ·{" "}
+                Ends {formatContestLabel(c.contestEnd)} · Starts at {money(c.startingCash)} ·{" "}
                 {Object.entries(c.markets || DEFAULT_MARKETS)
                   .filter(([, on]) => on)
                   .map(([id]) => MARKET_OPTIONS.find((m) => m.id === id)?.label || id)
@@ -762,6 +834,7 @@ export default function TeacherDashboard({
 
       {view === "create" && (
         <form className="class-settings-form" onSubmit={handleCreateClass}>
+          {classes.length === 0 ? <TeacherGuideTeaser onOpen={openGuide} /> : null}
           <h3>Create a class</h3>
           <label>
             Class name
@@ -783,6 +856,7 @@ export default function TeacherDashboard({
               onChange={(e) => setStartingCash(parseStartingCash(e.target.value))}
             />
           </label>
+          <ContestDatePicker value={contestEnd} onChange={setContestEnd} />
           <fieldset className="market-toggles">
             <legend>Markets available to students</legend>
             {MARKET_OPTIONS.map((m) => (
@@ -853,6 +927,63 @@ export default function TeacherDashboard({
             ))}
           </div>
 
+          <div className="class-dashboard-actions">
+            <button
+              type="button"
+              className="primary-btn"
+              data-click="select"
+              onClick={() => setShowStandings(true)}
+            >
+              Class standings
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              data-click="select"
+              onClick={() => {
+                setShowJobs(true);
+                window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+              }}
+            >
+              Job board
+            </button>
+            {headToHead ? (
+              <button
+                type="button"
+                className="ghost-btn"
+                data-click="select"
+                onClick={() => setShowH2HMatchups(true)}
+              >
+                View matchups
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="ghost-btn"
+                data-click="select"
+                onClick={() => setConfirmH2H(true)}
+              >
+                Head to head
+              </button>
+            )}
+            <button
+              type="button"
+              className="ghost-btn"
+              data-click="select"
+              onClick={() => setView("roster")}
+            >
+              Manage students
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              data-click="select"
+              onClick={() => setView("settings")}
+            >
+              Class settings
+            </button>
+          </div>
+
           <ClassAggregatePanel
             className={activeClass.name}
             portfolios={classPortfolios}
@@ -860,6 +991,8 @@ export default function TeacherDashboard({
             refreshing={aggRefreshing}
             onRefresh={handleAggRefresh}
           />
+
+          <ClassUsageStats classId={activeClass.id} roster={roster} />
 
           <div className="closet-review-panel market-search-panel">
             <div className="closet-review-head">
@@ -921,63 +1054,6 @@ export default function TeacherDashboard({
                 ))}
               </div>
             ) : null}
-          </div>
-
-          <div className="class-dashboard-actions">
-            <button
-              type="button"
-              className="primary-btn"
-              data-click="select"
-              onClick={() => setShowStandings(true)}
-            >
-              Class standings
-            </button>
-            <button
-              type="button"
-              className="ghost-btn"
-              data-click="select"
-              onClick={() => {
-                setShowJobs(true);
-                window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-              }}
-            >
-              Job board
-            </button>
-            {headToHead ? (
-              <button
-                type="button"
-                className="ghost-btn"
-                data-click="select"
-                onClick={() => setShowH2HMatchups(true)}
-              >
-                View matchups
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="ghost-btn"
-                data-click="select"
-                onClick={() => setConfirmH2H(true)}
-              >
-                Head to head
-              </button>
-            )}
-            <button
-              type="button"
-              className="ghost-btn"
-              data-click="select"
-              onClick={() => setView("roster")}
-            >
-              Manage students
-            </button>
-            <button
-              type="button"
-              className="ghost-btn"
-              data-click="select"
-              onClick={() => setView("settings")}
-            >
-              Class settings
-            </button>
           </div>
 
           {headToHead && (
@@ -1077,6 +1153,11 @@ export default function TeacherDashboard({
               onChange={(e) => setStartingCash(parseStartingCash(e.target.value))}
             />
           </label>
+          <ContestDatePicker
+            id="settings-contest-end"
+            value={contestEnd}
+            onChange={setContestEnd}
+          />
           <fieldset className="market-toggles">
             <legend>Markets available to students</legend>
             {MARKET_OPTIONS.map((m) => (
@@ -1593,6 +1674,18 @@ export default function TeacherDashboard({
           ending={busy}
         />
       ) : null}
+
+      <TeacherGuide
+        open={guideOpen}
+        teacherUid={teacher?.uid}
+        hasClass={classes.length > 0}
+        startAt={guideStart}
+        onClose={() => {
+          if (!forceTeacherGuidePreview()) markTeacherGuideSeen(teacher?.uid);
+          setGuideOpen(false);
+        }}
+        onAction={handleGuideAction}
+      />
 
       {inClassView
         ? createPortal(

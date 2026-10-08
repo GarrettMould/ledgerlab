@@ -12,6 +12,7 @@ import PurchaseHistory from "./PurchaseHistory";
 import InvestmentReport from "./InvestmentReport";
 import InvestmentReportIntro from "./InvestmentReportIntro";
 import HistoryQuizModal, { HistoryQuizFab } from "./HistoryQuizModal";
+import AdvisorChat, { AdvisorChatFab } from "./AdvisorChat";
 import { createPortal } from "react-dom";
 import { analyzePortfolio, CLASS_COLORS, FRIENDLY_NAMES } from "./portfolioReport";
 import HomeJobsPanel from "./HomeJobsPanel";
@@ -64,6 +65,12 @@ import StockRequestForm from "./StockRequestForm";
 import StudentStockSearch from "./StudentStockSearch";
 import FearGreedMeter from "./FearGreedMeter";
 import { groupHoldingsByCategory } from "./portfolioAllocation";
+import {
+  DEFAULT_CONTEST_END,
+  formatContestLabel,
+  formatShortDate,
+  peerLoanDueDate,
+} from "./contestDates";
 import "./App.css";
 
 const StudentCharacter = lazy(() => import("./StudentCharacter"));
@@ -455,6 +462,7 @@ function StudentPortfolio({
   investmentGoal,
   classId = "",
   className = "",
+  contestEnd = DEFAULT_CONTEST_END,
   firestoreStudentId = "",
   studentEmail = "",
   portfolioRefreshToken = 0,
@@ -487,6 +495,7 @@ function StudentPortfolio({
   const [showPurchases, setShowPurchases] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [showHistoryQuiz, setShowHistoryQuiz] = useState(false);
+  const [showAdvisor, setShowAdvisor] = useState(false);
   const [homeOpenJobs, setHomeOpenJobs] = useState(null);
   const [homeHeadline, setHomeHeadline] = useState("");
   useEffect(() => {
@@ -501,6 +510,11 @@ function StudentPortfolio({
       cancelled = true;
     };
   }, []);
+  const closeAdvisor = useCallback(() => setShowAdvisor(false), []);
+  useEffect(() => {
+    document.body.classList.toggle("advisor-open", showAdvisor);
+    return () => document.body.classList.remove("advisor-open");
+  }, [showAdvisor]);
   const closeReport = useCallback(() => setShowReport(false), []);
   const openLendingPage = useCallback((intent = "borrow") => {
     setLendingIntent(intent);
@@ -819,7 +833,10 @@ function StudentPortfolio({
       try {
         // Instant name list, then hydrate live quotes (slow path on cold cache).
         try {
-          const catalog = await getMarket(category, false, { catalog: true });
+          const catalog = await getMarket(category, false, {
+            catalog: true,
+            contestEnd,
+          });
           if (!cancelled) {
             setMarketItems(marketItemsForDisplay(category, catalog.items || []));
             setMarketLoading(false);
@@ -833,7 +850,7 @@ function StudentPortfolio({
           /* full fetch below still runs */
         }
 
-        const data = await getMarket(category);
+        const data = await getMarket(category, false, { contestEnd });
         if (!cancelled) {
           setMarketItems(marketItemsForDisplay(category, data.items || []));
           setPricingStatus(data.pricing || null);
@@ -859,7 +876,7 @@ function StudentPortfolio({
     return () => {
       cancelled = true;
     };
-  }, [category, setError]);
+  }, [category, contestEnd, setError]);
 
   // Fill missing equity prices (Industrials used to starve under Finnhub limits).
   useEffect(() => {
@@ -916,7 +933,7 @@ function StudentPortfolio({
       await loadPortfolio(selectedId);
       if (category) {
         setMarketPricesPending(true);
-        const data = await getMarket(category, true);
+        const data = await getMarket(category, true, { contestEnd });
         setMarketItems(marketItemsForDisplay(category, data.items || []));
         setPricingStatus(data.pricing || null);
         if (data.pricing && data.pricing.ok === false) {
@@ -1140,7 +1157,7 @@ function StudentPortfolio({
     const unitFace = Number(item.face_value) || Number(item.price) || 100;
     const units = face / unitFace;
     const total = (Number(income.interest_per_unit) || 0) * units;
-    return `${money(total)} by May 15, 2027`;
+    return `${money(total)} by ${income.horizon || formatContestLabel(contestEnd)}`;
   }
 
   function openTradeDraft(item, action) {
@@ -1289,7 +1306,14 @@ function StudentPortfolio({
     setTradeDraft((prev) => (prev ? { ...prev, usd: normalized } : prev));
   }
 
+  const advisorStudentId =
+    firestoreStudentId ||
+    (lockedStudentId ? String(lockedStudentId) : "") ||
+    (selectedId ? String(selectedId) : "");
+
   return (
+    <>
+    <div className={showAdvisor ? "student-workspace is-advisor-open" : "student-workspace"}>
     <section className="panel student-panel">
       <header
         className={
@@ -2128,6 +2152,7 @@ function StudentPortfolio({
                 <WorldLendingMap
                   studentId={selectedId}
                   classId={classId}
+                  contestEnd={contestEnd}
                   cash={portfolio?.cash}
                   onPortfolio={(next) => {
                     if (next) setPortfolio(next);
@@ -2634,7 +2659,7 @@ function StudentPortfolio({
                                               Number.isFinite(bondFaceSnapped)
                                                 ? bondFaceSnapped
                                                 : tradeDraft.faceUsd
-                                            ) || "interest by May 15, 2027"}
+                                            ) || `interest by ${formatContestLabel(contestEnd)}`}
                                       </span>
                                     </div>
                                   ) : (
@@ -2911,7 +2936,7 @@ function StudentPortfolio({
                                                 Number.isFinite(bondFaceSnapped)
                                                   ? bondFaceSnapped
                                                   : tradeDraft.faceUsd
-                                              ) || "interest by May 15, 2027"}
+                                              ) || `interest by ${formatContestLabel(contestEnd)}`}
                                         </span>
                                       </div>
                                     ) : (
@@ -3134,7 +3159,7 @@ function StudentPortfolio({
                     </div>
                     {selectedAsset.interest_to_horizon && (
                       <div>
-                        <span>Interest / $100 by May 15</span>
+                        <span>Interest / $100 by {formatShortDate(contestEnd)}</span>
                         <strong>
                           {selectedAsset.interest_to_horizon.matured
                             ? "Matured"
@@ -3148,7 +3173,8 @@ function StudentPortfolio({
                     U.S. Treasury yields update from the official Daily Treasury Par Yield
                     Curve. Corporates keep their fixed coupons. Bonds are sold in{" "}
                     <strong>$100 face</strong> increments. Interest shown is fixed income per
-                    $100 unit from today through May 15, 2027 (or maturity if sooner).
+                    $100 unit from today through {formatContestLabel(contestEnd)}{" "}
+                    (or maturity if sooner).
                   </p>
                 </div>
               )}
@@ -3948,7 +3974,7 @@ function StudentPortfolio({
                       <strong>{loan.borrowerName || "Classmate"}</strong>
                       <span>
                         {Number(loan.ratePct).toFixed(1)}% · due{" "}
-                        {loan.dueLabel || "May 10"}
+                        {loan.dueLabel || formatShortDate(peerLoanDueDate(contestEnd))}
                         {loan.isDue ? " · due now" : ""}
                       </span>
                     </div>
@@ -3982,7 +4008,7 @@ function StudentPortfolio({
                       <strong>{loan.lenderName || "Classmate"}</strong>
                       <span>
                         {Number(loan.ratePct).toFixed(1)}% · due{" "}
-                        {loan.dueLabel || "May 10"}
+                        {loan.dueLabel || formatShortDate(peerLoanDueDate(contestEnd))}
                         {loan.isDue ? " · due now" : ""}
                       </span>
                     </div>
@@ -4184,6 +4210,31 @@ function StudentPortfolio({
         />
       ) : null}
     </section>
+    {portfolio && advisorStudentId && classId ? (
+      <AdvisorChat
+        open={showAdvisor}
+        onClose={closeAdvisor}
+        classId={classId}
+        studentId={advisorStudentId}
+        portfolio={portfolio}
+        lending={{
+          countryLoans: activeLoans,
+          peerLent: peerLoansLender,
+          peerBorrowed: peerLoansBorrower,
+        }}
+        className={className}
+        contestEnd={contestEnd}
+        investmentGoal={investmentGoal}
+      />
+    ) : null}
+    </div>
+    {portfolio && advisorStudentId && classId
+      ? createPortal(
+          <AdvisorChatFab open={showAdvisor} onClick={() => setShowAdvisor(true)} />,
+          document.body
+        )
+      : null}
+    </>
   );
 }
 
@@ -4200,6 +4251,9 @@ export default function App() {
   const [roster, setRoster] = useState([]);
   const [activeClassId, setActiveClassIdState] = useState(() => getActiveClassId());
   const [enabledMarkets, setEnabledMarkets] = useState({ ...DEFAULT_MARKETS });
+  const [contestEnd, setContestEnd] = useState(
+    () => getStudentSession()?.contestEnd || DEFAULT_CONTEST_END
+  );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [portfolioRefreshToken, setPortfolioRefreshToken] = useState(0);
@@ -4297,6 +4351,7 @@ export default function App() {
       if (!activeClassId || (!studentSession && !teacher)) {
         if (!studentSession) {
           setEnabledMarkets({ ...DEFAULT_MARKETS });
+          setContestEnd(DEFAULT_CONTEST_END);
           setRoster([]);
         }
         return;
@@ -4309,6 +4364,7 @@ export default function App() {
         if (cancelled) return;
         if (cls) {
           setEnabledMarkets({ ...DEFAULT_MARKETS, ...(cls.markets || {}) });
+          if (cls.contestEnd) setContestEnd(cls.contestEnd);
         }
         setRoster(students);
       } catch {
@@ -4460,6 +4516,7 @@ export default function App() {
         investmentGoal={investmentGoal}
         classId={studentSession.classId || ""}
         className={studentSession.className || ""}
+        contestEnd={contestEnd || studentSession.contestEnd || DEFAULT_CONTEST_END}
         firestoreStudentId={studentSession.firestoreStudentId || ""}
         studentEmail={studentSession.email || ""}
         portfolioRefreshToken={portfolioRefreshToken}

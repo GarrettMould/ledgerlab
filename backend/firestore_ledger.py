@@ -787,6 +787,97 @@ def get_class(class_id: str) -> dict | None:
     return data
 
 
+def _created_at_sort_key(data: dict | None) -> float:
+    value = (data or {}).get("createdAt")
+    if value is None:
+        return 0.0
+    try:
+        if hasattr(value, "timestamp"):
+            return float(value.timestamp())
+    except Exception:
+        pass
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except Exception:
+        return 0.0
+
+
+_legacy_class_owners_done = False
+
+
+_DEFAULT_LEGACY_OWNER_EMAIL = "blitz@gmail.com"
+
+
+def ensure_legacy_class_owners() -> dict:
+    """Stamp ownerUid on classes created before per-teacher scoping.
+
+    Unowned classes go to blitz@gmail.com when that teacher exists, otherwise
+    the oldest teacher/admin account. Also writes public invite-code index
+    docs used by student join links.
+    """
+    global _legacy_class_owners_done
+    if _legacy_class_owners_done:
+        return {"skipped": True}
+    if not is_configured():
+        return {"skipped": True, "reason": "not configured"}
+
+    database = db()
+    teachers: list[tuple[str, dict]] = []
+    for snap in database.collection("users").stream():
+        data = snap.to_dict() or {}
+        if data.get("role") in ("teacher", "admin"):
+            teachers.append((snap.id, data))
+    teachers.sort(key=lambda row: _created_at_sort_key(row[1]))
+    if not teachers:
+        return {"updated": 0, "reason": "no teachers"}
+
+    preferred = None
+    for uid, data in teachers:
+        email = str(data.get("email") or "").strip().lower()
+        if email == _DEFAULT_LEGACY_OWNER_EMAIL:
+            preferred = (uid, data)
+            break
+    default_uid, default_data = preferred or teachers[0]
+    default_name = str(default_data.get("name") or "")
+    default_email = str(default_data.get("email") or "")
+    updated = 0
+    invites = 0
+    for csnap in database.collection("classes").stream():
+        data = csnap.to_dict() or {}
+        owner_uid = str(data.get("ownerUid") or "").strip()
+        patch: dict[str, Any] = {}
+        if not owner_uid:
+            owner_uid = default_uid
+            patch["ownerUid"] = default_uid
+            patch["ownerName"] = default_name
+            patch["ownerEmail"] = default_email
+        if not str(data.get("contestEnd") or "").strip():
+            patch["contestEnd"] = "2027-05-15"
+        code = str(data.get("inviteCode") or "").strip().upper()
+        if code:
+            inv_ref = database.collection("invites").document(code)
+            if not inv_ref.get().exists:
+                inv_ref.set(
+                    {
+                        "classId": csnap.id,
+                        "name": data.get("name") or "",
+                        "ownerUid": owner_uid,
+                    },
+                    merge=True,
+                )
+                invites += 1
+        if patch:
+            csnap.reference.update(patch)
+            updated += 1
+
+    _legacy_class_owners_done = True
+    return {
+        "updated": updated,
+        "invites": invites,
+        "ownerUid": default_uid,
+    }
+
+
 def _global_market_ref():
     """Shared teacher-added tickers — one catalog for every class."""
     return db().collection("config").document("classroomMarket")
@@ -1520,5 +1611,9 @@ def record_trade(
         pass
     try:
         student_ref(class_id, student_id).collection("trades").document().set(payload)
+    except Exception:
+        pass
+    try:
+        student_ref(class_id, student_id).update({"tradeCount": fs.Increment(1)})
     except Exception:
         pass

@@ -13,6 +13,7 @@ import {
   tradingStudentId,
   updateClassStudent,
 } from "./classStore";
+import { contestEndIso } from "./contestDates";
 import {
   AvatarSetupPanel,
   outfitForStudent,
@@ -305,6 +306,7 @@ export default function StudentJoin({
     setStudentSession({
       classId: classInfo.id,
       className: classInfo.name,
+      contestEnd: contestEndIso(classInfo.contestEnd),
       inviteCode: classInfo.inviteCode,
       firestoreStudentId,
       apiStudentId: studentApiId,

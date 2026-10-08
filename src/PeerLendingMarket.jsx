@@ -15,6 +15,9 @@ import {
 } from "./api";
 import TradeSuccessModal from "./TradeSuccessModal";
 import { POLL, pollWhileVisible } from "./pollWhileVisible";
+import { formatShortDate, peerLoanDueDate } from "./contestDates";
+
+const DEFAULT_PAYBACK_LABEL = formatShortDate(peerLoanDueDate());
 
 function money(n) {
   if (n == null || Number.isNaN(Number(n))) return "—";
@@ -74,9 +77,7 @@ function outfitForSeat(seat, fallbackName = "Student") {
   return loadSavedOutfit(id, name);
 }
 
-const PAYBACK_LABEL = "May 10";
-
-function PeerLendHowItWorks() {
+function PeerLendHowItWorks({ dueLabel = DEFAULT_PAYBACK_LABEL }) {
   return (
     <section className="peer-lend-how" aria-labelledby="peer-lend-how-title">
       <div className="peer-lend-how-main">
@@ -102,7 +103,7 @@ function PeerLendHowItWorks() {
           <div className="peer-lend-how-step">
             <dt>Payback</dt>
             <dd>
-              Everything is due on <em>{PAYBACK_LABEL}</em>. One repayment of
+              Everything is due on <em>{dueLabel}</em>. One repayment of
               what you borrowed plus the listed interest.
             </dd>
           </div>
@@ -111,16 +112,16 @@ function PeerLendHowItWorks() {
       <aside className="peer-lend-how-aside" aria-label="Rate and due date">
         <p className="peer-lend-how-due">
           <span>Payback date</span>
-          <strong>{PAYBACK_LABEL}</strong>
+          <strong>{dueLabel}</strong>
         </p>
         <p className="peer-lend-how-rate-note">
           <strong>Here’s how the rate works</strong>
-          Lend <em>$100</em> at <em>7%</em> and on {PAYBACK_LABEL} you get{" "}
+          Lend <em>$100</em> at <em>7%</em> and on {dueLabel} you get{" "}
           <em>$107</em> back.
         </p>
         <p className="peer-lend-how-example">
           Borrowing? Same math: take <strong>$100</strong> at{" "}
-          <strong>7%</strong> → repay <strong>$107</strong> on {PAYBACK_LABEL}.
+          <strong>7%</strong> → repay <strong>$107</strong> on {dueLabel}.
         </p>
       </aside>
     </section>
@@ -152,7 +153,7 @@ function LenderAvatar({ outfit, name }) {
   );
 }
 
-function OfferForm({ cash, busy, onCancel, onSubmit }) {
+function OfferForm({ cash, busy, onCancel, onSubmit, dueLabel = DEFAULT_PAYBACK_LABEL }) {
   const [amount, setAmount] = useState("500");
   const [rate, setRate] = useState("5");
   const cashNum = Number(cash);
@@ -184,7 +185,7 @@ function OfferForm({ cash, busy, onCancel, onSubmit }) {
       </div>
       <p className="peer-lend-offer-note">
         Classmates can borrow up to the amount you list. Example: $100 at 7% comes
-        back as $107 on {PAYBACK_LABEL}. Cash available:{" "}
+        back as $107 on {dueLabel}. Cash available:{" "}
         <strong>{moneyExact(cash)}</strong>
       </p>
       <div className="peer-lend-offer-fields">
@@ -240,7 +241,15 @@ function OfferForm({ cash, busy, onCancel, onSubmit }) {
   );
 }
 
-function BorrowModal({ lender, outfit, cash, busy = false, onClose, onConfirm }) {
+function BorrowModal({
+  lender,
+  outfit,
+  cash,
+  busy = false,
+  onClose,
+  onConfirm,
+  dueLabel = DEFAULT_PAYBACK_LABEL,
+}) {
   const maxBorrow = Number(lender.amountAvailable) || 0;
   const [amount, setAmount] = useState(String(Math.min(100, maxBorrow) || maxBorrow));
   const [localError, setLocalError] = useState("");
@@ -355,7 +364,7 @@ function BorrowModal({ lender, outfit, cash, busy = false, onClose, onConfirm })
             <div>
               <span className="peer-lend-receipt-label">Interest due</span>
               <span className="peer-lend-receipt-hint">
-                {rateLabel(ratePct)} · due {PAYBACK_LABEL}
+                {rateLabel(ratePct)} · due {dueLabel}
               </span>
             </div>
             <strong className="peer-lend-receipt-value">
@@ -365,7 +374,7 @@ function BorrowModal({ lender, outfit, cash, busy = false, onClose, onConfirm })
           <div className="peer-lend-receipt-total">
             <div>
               <span className="peer-lend-receipt-label">
-                You’d repay on {PAYBACK_LABEL}
+                You’d repay on {dueLabel}
               </span>
               <span className="peer-lend-receipt-hint">Principal + interest</span>
             </div>
@@ -431,6 +440,7 @@ export default function PeerLendingMarket({
   const [borrowBusy, setBorrowBusy] = useState(false);
   const [error, setError] = useState("");
   const [borrowSuccess, setBorrowSuccess] = useState(null);
+  const [dueLabel, setDueLabel] = useState(DEFAULT_PAYBACK_LABEL);
 
   const refreshOffers = useCallback(async () => {
     if (!classId) {
@@ -446,6 +456,7 @@ export default function PeerLendingMarket({
         .map(normalizeOffer)
         .filter((o) => o && Number(o.amountAvailable) > 0);
       setListings(rows);
+      if (data?.dueLabel) setDueLabel(data.dueLabel);
     } catch (err) {
       setError(err.message || "Could not load lenders");
       setListings([]);
@@ -569,7 +580,7 @@ export default function PeerLendingMarket({
         ticker: "PEER",
         total: amountNum,
         oweTotal: totalOwed,
-        dueLabel: PAYBACK_LABEL,
+        dueLabel: dueLabel,
       });
       setSelectedId(null);
       await refreshOffers();
@@ -580,7 +591,7 @@ export default function PeerLendingMarket({
 
   return (
     <div className="peer-lend">
-      <PeerLendHowItWorks />
+      <PeerLendHowItWorks dueLabel={dueLabel} />
 
       {myListing ? (
         <div className="peer-lend-my-bar">
@@ -613,6 +624,7 @@ export default function PeerLendingMarket({
         <OfferForm
           cash={cash}
           busy={busy}
+          dueLabel={dueLabel}
           onCancel={() => setShowOffer(false)}
           onSubmit={handleOffer}
         />
@@ -705,6 +717,7 @@ export default function PeerLendingMarket({
           outfit={outfitForSeat(selectedSeat, selected.name)}
           cash={cash}
           busy={borrowBusy}
+          dueLabel={dueLabel}
           onClose={() => !borrowBusy && setSelectedId(null)}
           onConfirm={handleBorrow}
         />
