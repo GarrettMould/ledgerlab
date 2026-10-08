@@ -8,6 +8,7 @@ _KEY_ALIASES = (
     "OPENAI_API_KEY",
     "OPEN_AI_API_KEY",
     "OPENAI_KEY",
+    "OPEN_AI_KEY",
 )
 
 
