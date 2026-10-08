@@ -39,10 +39,13 @@ def _apply_dotenv_file(path: Path, *, override: bool) -> None:
 
 
 _on_vercel = bool(os.environ.get("VERCEL"))
-_env_root = Path(__file__).resolve().parent
-_env_repo = _env_root.parent
-for _env_path in (_env_root / ".env", _env_repo / ".env", _env_repo / ".env.local"):
-    _apply_dotenv_file(_env_path, override=not _on_vercel)
+# Vercel injects dashboard env into os.environ. Never load .env files there —
+# an empty OPENAI_API_KEY= in a generated file would hide the dashboard secret.
+if not _on_vercel:
+    _env_root = Path(__file__).resolve().parent
+    _env_repo = _env_root.parent
+    for _env_path in (_env_root / ".env", _env_repo / ".env", _env_repo / ".env.local"):
+        _apply_dotenv_file(_env_path, override=True)
 
 import requests
 from flask import Flask, jsonify, request
@@ -3987,13 +3990,19 @@ def health():
             firestore_ok = False
             firestore_error = str(exc)
             ledger = "firestore-error"
-    return jsonify({
+    resp = jsonify({
         "ok": firestore_ok is not False,
         "ledger": ledger,
         "firestore_ok": firestore_ok,
         "firestore_error": firestore_error,
         "openai": openai_configured(),
+        "openai_names": sorted(
+            k for k in os.environ if "openai" in k.lower() or "open_ai" in k.lower()
+        ),
+        "vercel_env": os.environ.get("VERCEL_ENV"),
     })
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.get("/api/fear-greed")
