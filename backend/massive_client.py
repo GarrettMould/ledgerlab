@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 import requests
 
 MASSIVE_BASE = "https://api.massive.com"
-# Stay under typical URL length; catalog is ~100 stocks + ETFs + extras.
+# Unified snapshot allows up to 250 tickers; keep URL length modest.
 SNAPSHOT_CHUNK = 80
 COOLDOWN_SECONDS = 65
 
@@ -129,10 +129,66 @@ def _price_from_snapshot(row: dict) -> tuple[float | None, float | None]:
     return price, change
 
 
-def snapshot_quotes(tickers: list[str]) -> dict[str, tuple[float | None, float | None]]:
-    """One (or few) snapshot calls for our US stock/ETF tickers.
+def _price_from_unified(row: dict) -> tuple[float | None, float | None]:
+    last_trade = row.get("last_trade") if isinstance(row.get("last_trade"), dict) else {}
+    last_minute = row.get("last_minute") if isinstance(row.get("last_minute"), dict) else {}
+    session = row.get("session") if isinstance(row.get("session"), dict) else {}
+    price = (
+        _num(last_trade.get("price"))
+        or _num(last_minute.get("close"))
+        or _num(session.get("close"))
+        or _num(session.get("previous_close"))
+    )
+    change = None
+    raw_chg = session.get("change_percent")
+    try:
+        if raw_chg is not None:
+            change = float(raw_chg)
+    except (TypeError, ValueError):
+        change = None
+    if change is None and price is not None:
+        prev_c = _num(session.get("previous_close"))
+        if prev_c:
+            change = ((price - prev_c) / prev_c) * 100
+    return price, change
 
-    GET /v2/snapshot/locale/us/markets/stocks/tickers?tickers=AAPL,MSFT,...
+
+def _ingest_rows(out: dict, rows) -> None:
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        price, change = _price_from_unified(row)
+        if price is None:
+            price, change = _price_from_snapshot(row)
+        if price is not None:
+            out[ticker] = (price, change)
+
+
+def _prev_bar_quote(ticker: str) -> tuple[float | None, float | None]:
+    payload, err = _get(f"/v2/aggs/ticker/{ticker}/prev", {"adjusted": "true"})
+    if err or not payload:
+        return None, None
+    results = payload.get("results") or []
+    row = results[0] if isinstance(results, list) and results else None
+    if not isinstance(row, dict):
+        row = payload.get("ticker") if isinstance(payload.get("ticker"), dict) else None
+    if not isinstance(row, dict):
+        return None, None
+    return _num(row.get("c")), None
+
+
+def snapshot_quotes(tickers: list[str]) -> dict[str, tuple[float | None, float | None]]:
+    """Price every requested US stock/ETF, including names late in the class list (e.g. EA).
+
+    Primary: GET /v3/snapshot?ticker.any_of=AAPL,EA,...&limit=250
+    Misses: single-ticker snapshot, then previous-day bar.
     """
     out: dict[str, tuple[float | None, float | None]] = {}
     symbols = []
@@ -149,25 +205,36 @@ def snapshot_quotes(tickers: list[str]) -> dict[str, tuple[float | None, float |
     for i in range(0, len(symbols), SNAPSHOT_CHUNK):
         chunk = symbols[i : i + SNAPSHOT_CHUNK]
         payload, err = _get(
-            "/v2/snapshot/locale/us/markets/stocks/tickers",
-            {"tickers": ",".join(chunk)},
+            "/v3/snapshot",
+            {
+                "ticker.any_of": ",".join(chunk),
+                "type": "stocks",
+                "limit": min(250, max(len(chunk), 1)),
+            },
         )
         if err or not payload:
+            payload, err = _get(
+                "/v2/snapshot/locale/us/markets/stocks/tickers",
+                {"tickers": ",".join(chunk)},
+            )
+        if err or not payload:
             continue
-        rows = payload.get("tickers") or []
+        _ingest_rows(out, payload.get("results") or payload.get("tickers"))
         if isinstance(payload.get("ticker"), dict):
-            rows = [payload["ticker"]]
-        if not isinstance(rows, list):
+            _ingest_rows(out, payload.get("ticker"))
+
+    missing = [s for s in symbols if s not in out]
+    for ticker in missing:
+        if on_cooldown():
+            break
+        payload, err = _get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
+        if not err and payload:
+            _ingest_rows(out, payload.get("ticker") or payload.get("tickers") or payload.get("results"))
+        if ticker in out:
             continue
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            ticker = str(row.get("ticker") or "").strip().upper()
-            if not ticker:
-                continue
-            price, change = _price_from_snapshot(row)
-            if price is not None:
-                out[ticker] = (price, change)
+        price, change = _prev_bar_quote(ticker)
+        if price is not None:
+            out[ticker] = (price, change)
     return out
 
 
