@@ -57,6 +57,7 @@ import housing_settlement
 import lending
 import peer_lending
 from openai_env import openai_api_key, openai_configured
+import massive_client
 from portfolio_service import (
     build_history_payload,
     compute_totals as portfolio_compute_totals,
@@ -325,9 +326,10 @@ def finnhub_configured() -> bool:
     return bool(FINNHUB_API_KEY)
 
 
-# Curated classroom menus. Stocks/ETFs/commodities use Finnhub when available;
-# currencies prefer Yahoo FX (free Finnhub keys usually deny OANDA forex).
-# bonds use fixed offerings (+ live Treasury yields); realestate uses city indexes.
+# Curated classroom menus. Stocks/ETFs use Massive (Stocks Starter) when
+# MASSIVE_API_KEY is set, then Finnhub, then Yahoo. Currencies prefer Yahoo FX
+# (free Finnhub keys usually deny OANDA forex). Bonds use fixed offerings
+# (+ live Treasury yields); realestate uses city indexes.
 MARKET_CATALOG = {
     "stocks": [
         # Technology
@@ -3281,7 +3283,7 @@ def _prioritize_finnhub_symbols(symbols: list[str], *, max_n: int) -> list[str]:
 def fetch_quotes_batch(
     tickers: list[str], *, force_refresh: bool = False
 ) -> dict[str, tuple[float | None, float | None]]:
-    """Fetch live quotes (Finnhub first, yfinance fallback, then stale cache)."""
+    """Fetch live quotes (Massive first for US stocks/ETFs, then Finnhub, Yahoo, cache)."""
     global _last_quote_source, _last_quote_provider_error
 
     symbols = [t.strip().upper() for t in tickers if t and t.strip()]
@@ -3336,6 +3338,31 @@ def fetch_quotes_batch(
 
     now = datetime.now(timezone.utc).timestamp()
     finnhub_budget = FINNHUB_MAX_QUOTES_PER_BATCH
+
+    # Massive Stocks Starter: one snapshot for the whole class ticker list.
+    massive_need = [
+        s
+        for s in need
+        if out[s][0] is None
+        and s not in CURRENCY_BY_TICKER
+        and s not in COMMODITY_BY_TICKER
+        and s not in BOND_BY_TICKER
+        and s not in REALESTATE_BY_TICKER
+    ]
+    if massive_need and massive_client.configured() and not massive_client.on_cooldown():
+        try:
+            marks = massive_client.snapshot_quotes(massive_need)
+        except Exception as exc:
+            _last_quote_provider_error = f"massive: {exc}"
+            marks = {}
+        for local, (price, change_pct) in marks.items():
+            if price is None:
+                continue
+            out[local] = (price, change_pct)
+            _remember_quote(local, price, now, change_pct, "massive")
+            sources_used.add("massive")
+        if not marks and massive_client.last_error():
+            _last_quote_provider_error = f"massive: {massive_client.last_error()}"
 
     # Currencies: Yahoo FX first. Free Finnhub keys usually 403 on OANDA forex.
     currency_need = [s for s in need if s in CURRENCY_BY_TICKER and out[s][0] is None]
@@ -3530,8 +3557,14 @@ def fetch_quotes_batch(
 
     missing = [s for s in need if out[s][0] is None]
     if missing and not _last_quote_provider_error:
-        if not finnhub_configured() and "yfinance" not in sources_used:
-            _last_quote_provider_error = "FINNHUB_API_KEY is not set and yfinance fallback failed"
+        if (
+            not massive_client.configured()
+            and not finnhub_configured()
+            and "yfinance" not in sources_used
+        ):
+            _last_quote_provider_error = (
+                "MASSIVE_API_KEY / FINNHUB_API_KEY is not set and yfinance fallback failed"
+            )
         elif _yahoo_on_cooldown() and any(s in CURRENCY_BY_TICKER for s in missing):
             _last_quote_provider_error = (
                 "Currency prices are rate-limited right now. Try again in a moment."
@@ -3999,6 +4032,7 @@ def health():
         "openai_names": sorted(
             k for k in os.environ if "openai" in k.lower() or "open_ai" in k.lower()
         ),
+        "massive": massive_client.configured(),
         "vercel_env": os.environ.get("VERCEL_ENV"),
     })
     resp.headers["Cache-Control"] = "no-store"
@@ -4768,22 +4802,33 @@ def market_category(category: str):
             }
         )
 
-    # Teacher-added tickers first — small set, otherwise catalog Finnhub spend
-    # leaves extras with no mark under free-tier limits.
-    if key in {"stocks", "etfs"} and using_firestore():
-        try:
-            extras = fs_ledger.get_extra_market_items(None, category=key)
-            extra_tickers = [
-                str(row.get("ticker") or "").strip().upper()
-                for row in extras
-                if row.get("ticker")
-            ]
-            if extra_tickers:
-                fetch_quotes_batch(extra_tickers, force_refresh=force)
-        except Exception:
-            pass
+    # Load every class ticker (catalog + teacher extras) in one Massive snapshot.
+    if key in {"stocks", "etfs"}:
+        extra_tickers: list[str] = []
+        if using_firestore():
+            try:
+                extras = fs_ledger.get_extra_market_items(None, category=key)
+                extra_tickers = [
+                    str(row.get("ticker") or "").strip().upper()
+                    for row in extras
+                    if row.get("ticker")
+                ]
+            except Exception:
+                extra_tickers = []
+        catalog_tickers = [
+            str(item.get("ticker") or "").strip().upper()
+            for item in MARKET_CATALOG.get(key, [])
+            if item.get("ticker")
+        ]
+        union = extra_tickers + [t for t in catalog_tickers if t not in extra_tickers]
+        if union:
+            fetch_quotes_batch(union, force_refresh=force)
 
-    items = enrich_catalog(key, force_refresh=force, contest_end=contest_end)
+    items = enrich_catalog(
+        key,
+        force_refresh=False if key in {"stocks", "etfs"} else force,
+        contest_end=contest_end,
+    )
     items = append_class_extra_market(
         items, key, catalog_only=False, force_refresh=force
     )
@@ -5978,8 +6023,8 @@ def yahoo_chart_symbol(local_ticker: str) -> str:
 def _fetch_chart_body(symbol: str, span: str) -> tuple[dict | None, str | None]:
     """
     Historical series for the price chart.
-    Finnhub free accounts cannot call /stock/candle (403), so we use yfinance
-    for on-demand charts only. Live quotes still come from Finnhub.
+    Massive custom bars first (Stocks Starter). Finnhub free accounts cannot
+    call /stock/candle (403), so yfinance is the fallback.
     """
     cfg = CHART_RANGES[span]
     catalog_equity = CATALOG_EQUITY_BY_TICKER.get(symbol)
@@ -6021,6 +6066,16 @@ def _fetch_chart_body(symbol: str, span: str) -> tuple[dict | None, str | None]:
 
     yahoo_symbol = yahoo_chart_symbol(symbol)
     cur_meta = CURRENCY_BY_TICKER.get(symbol)
+
+    if (
+        massive_client.configured()
+        and not massive_client.on_cooldown()
+        and not cur_meta
+        and symbol not in COMMODITY_BY_TICKER
+    ):
+        body, _massive_err = massive_client.chart_body(symbol, span)
+        if body:
+            return body, None
 
     try:
         import yfinance as yf

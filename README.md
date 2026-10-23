@@ -62,7 +62,8 @@ Set environment variables in the Vercel project (Production + Preview):
 | Variable | Where used |
 | --- | --- |
 | `VITE_FIREBASE_*` (all keys from `.env.example`) | Frontend build |
-| `FINNHUB_API_KEY` | Backend |
+| `FINNHUB_API_KEY` | Backend (fallback quotes) |
+| `MASSIVE_API_KEY` | Backend stock/ETF quotes + charts (Stocks Starter). Apply to the **backend** service, Production + Preview, then **Redeploy**. |
 | `OPENAI_API_KEY` | Backend advisor chat + news rewrite. Must apply to the **backend** service (or All services), Production + Preview, then **Redeploy**. |
 
 After deploy, add your `*.vercel.app` domain under Firebase Auth → **Authorized domains**.
