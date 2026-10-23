@@ -76,13 +76,46 @@ export default function ClassView({ currentStudentId, classId, onBack }) {
         if (!classId) {
           throw new Error("Join a class to see standings for that roster.");
         }
-        // Seats (names/outfits) from Firestore client; totals from one light API call.
-        const [seats, standingsPayload] = await Promise.all([
+        // Totals come from Flask (Admin SDK). Seats/outfits come from the
+        // client Firestore list — if live rules deny that list, still show ranks.
+        const [seatsResult, standingsResult] = await Promise.allSettled([
           listClassStudents(classId),
           getStandings(classId),
         ]);
+        let seats =
+          seatsResult.status === "fulfilled" ? seatsResult.value || [] : [];
+        const standingsPayload =
+          standingsResult.status === "fulfilled"
+            ? standingsResult.value
+            : { students: [] };
+        const standingsRows = standingsPayload?.students || [];
+        if (!seats.length && standingsRows.length) {
+          seats = standingsRows.map((row) => ({
+            id: row.id,
+            name: row.name,
+            cash: row.cash,
+            apiStudentId: row.id,
+          }));
+        }
+        if (!seats.length) {
+          const raw =
+            (seatsResult.status === "rejected" && seatsResult.reason?.message) ||
+            (standingsResult.status === "rejected" &&
+              standingsResult.reason?.message) ||
+            "Could not load class standings";
+          const low = String(raw).toLowerCase();
+          if (
+            low.includes("insufficient permissions") ||
+            low.includes("permission-denied")
+          ) {
+            throw new Error(
+              "Couldn’t read the class roster. Refresh and make sure you’re signed in."
+            );
+          }
+          throw new Error(raw);
+        }
         const byId = new Map();
-        for (const row of standingsPayload?.students || []) {
+        for (const row of standingsRows) {
           byId.set(String(row.id), row);
         }
         const rows = (seats || []).map((seat) => {
