@@ -142,6 +142,11 @@ def _remember_quote(
     _quote_cache[ticker] = (price, fetched_at, change_pct)
     if source:
         _quote_source_by_ticker[ticker] = source
+    alt = canonical_equity_ticker(ticker)
+    if alt != ticker:
+        _quote_cache[alt] = (price, fetched_at, change_pct)
+        if source:
+            _quote_source_by_ticker[alt] = source
 
 
 def _forget_quote(ticker: str) -> None:
@@ -554,6 +559,14 @@ MARKET_CATALOG = {
                 "summary": "PepsiCo sells drinks like Pepsi and snacks like Lay’s and Doritos. It earns money from both beverages and packaged foods.",
             },
         },
+        {
+            "ticker": "CROX",
+            "name": "Crocs",
+            "industry": "Consumer",
+            "info": {
+                "summary": "Crocs makes foam clog shoes and other casual footwear sold in stores and online around the world.",
+            },
+        },
         # Finance
         {
             "ticker": "JPM",
@@ -657,6 +670,14 @@ MARKET_CATALOG = {
             "industry": "Finance",
             "info": {
                 "summary": "Coinbase is a cryptocurrency exchange where people buy, sell, and store digital assets like bitcoin and ethereum.",
+            },
+        },
+        {
+            "ticker": "BRK.B",
+            "name": "Berkshire Hathaway",
+            "industry": "Finance",
+            "info": {
+                "summary": "Berkshire Hathaway is Warren Buffett’s company. It owns insurance, railroads, energy businesses, and a large stock portfolio.",
             },
         },
         # Healthcare
@@ -1094,6 +1115,22 @@ MARKET_CATALOG = {
             "industry": "Industrials",
             "info": {
                 "summary": "3M invents and sells thousands of products, from adhesives and safety gear to industrial and consumer materials.",
+            },
+        },
+        {
+            "ticker": "MP",
+            "name": "MP Materials",
+            "industry": "Industrials",
+            "info": {
+                "summary": "MP Materials mines and processes rare-earth minerals used in magnets for electric cars, wind turbines, and electronics.",
+            },
+        },
+        {
+            "ticker": "NOPMF",
+            "name": "Neo Performance Materials",
+            "industry": "Industrials",
+            "info": {
+                "summary": "Neo Performance Materials makes rare-earth magnets and specialty materials used in cars, electronics, and clean-energy equipment.",
             },
         },
     ],
@@ -1759,13 +1796,24 @@ _CURRENCY_YAHOO = {
 }
 
 
+def canonical_equity_ticker(symbol: str) -> str:
+    """BRK-B / BRK/B → BRK.B so catalog, Massive, and Finnhub share one symbol."""
+    s = (symbol or "").strip().upper()
+    if re.fullmatch(r"[A-Z]{1,4}[-/][A-Z]", s):
+        s = s.replace("-", ".").replace("/", ".")
+    return {"BRKB": "BRK.B"}.get(s, s)
+
+
 def yahoo_quote_symbol(local_ticker: str) -> str:
     if local_ticker in _CURRENCY_YAHOO:
         return _CURRENCY_YAHOO[local_ticker]
     commodity = COMMODITY_BY_TICKER.get(local_ticker)
     if commodity and commodity.get("yahoo"):
         return commodity["yahoo"]
-    return local_ticker
+    canon = canonical_equity_ticker(local_ticker)
+    if re.fullmatch(r"[A-Z]{1,4}\.[A-Z]", canon):
+        return canon.replace(".", "-")
+    return canon or local_ticker
 
 
 def commodity_price_scale(local_ticker: str) -> float:
@@ -1966,7 +2014,7 @@ def finnhub_symbol_for(local_ticker: str) -> tuple[str, bool]:
     commodity = COMMODITY_BY_TICKER.get(local_ticker)
     if commodity and commodity.get("finnhub"):
         return commodity["finnhub"], False
-    return local_ticker, False
+    return canonical_equity_ticker(local_ticker), False
 
 
 def _apply_commodity_scale(
@@ -3322,6 +3370,10 @@ def fetch_quotes_batch(
                 continue
         hit = _cache_get(symbol)
         if hit[0] is None:
+            alt = canonical_equity_ticker(symbol)
+            if alt != symbol:
+                hit = _cache_get(alt)
+        if hit[0] is None:
             derived = _commodity_quote_from_feed_cache(symbol)
             if derived[0] is not None:
                 hit = derived
@@ -4575,7 +4627,7 @@ def append_class_extra_market(
         return items
 
     existing = {
-        str(row.get("ticker") or "").strip().upper()
+        canonical_equity_ticker(str(row.get("ticker") or ""))
         for row in items
         if row.get("ticker")
     }
@@ -4583,7 +4635,7 @@ def append_class_extra_market(
     pending: list[dict] = []
     industry_updates: dict[str, str] = {}
     for extra in extras:
-        ticker = str(extra.get("ticker") or "").strip().upper()
+        ticker = canonical_equity_ticker(str(extra.get("ticker") or ""))
         if not ticker or ticker in existing:
             continue
         row = dict(extra)
@@ -4687,8 +4739,8 @@ def _is_us_classroom_symbol(symbol: str) -> bool:
     # Pure letter tickers (most US commons / ETFs).
     if re.fullmatch(r"[A-Z]{1,5}", s):
         return True
-    # US share classes only (BRK.B, BF.A). Reject foreign suffixes like VOD.L.
-    m = re.fullmatch(r"([A-Z]{1,4})\.([A-Z])", s)
+    # US share classes only (BRK.B, BRK-B, BF.A). Reject foreign suffixes like VOD.L.
+    m = re.fullmatch(r"([A-Z]{1,4})[.\-]([A-Z])", s)
     if m and m.group(2) in {"A", "B", "C", "D", "K", "P", "W", "V", "U"}:
         return True
     return False

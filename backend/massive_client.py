@@ -191,16 +191,28 @@ def snapshot_quotes(tickers: list[str]) -> dict[str, tuple[float | None, float |
     Misses: single-ticker snapshot, then previous-day bar.
     """
     out: dict[str, tuple[float | None, float | None]] = {}
+    aliases: dict[str, str] = {}
     symbols = []
     seen: set[str] = set()
     for raw in tickers:
-        symbol = str(raw or "").strip().upper()
-        if not symbol or symbol in seen:
+        original = str(raw or "").strip().upper()
+        if not original:
+            continue
+        symbol = original.replace("-", ".").replace("/", ".")
+        aliases.setdefault(symbol, original)
+        if symbol in seen:
             continue
         seen.add(symbol)
         symbols.append(symbol)
     if not symbols or not configured() or on_cooldown():
         return out
+
+    def _store(batch: dict) -> None:
+        for ticker, mark in batch.items():
+            out[ticker] = mark
+            orig = aliases.get(ticker)
+            if orig and orig != ticker:
+                out[orig] = mark
 
     for i in range(0, len(symbols), SNAPSHOT_CHUNK):
         chunk = symbols[i : i + SNAPSHOT_CHUNK]
@@ -215,26 +227,40 @@ def snapshot_quotes(tickers: list[str]) -> dict[str, tuple[float | None, float |
         if err or not payload:
             payload, err = _get(
                 "/v2/snapshot/locale/us/markets/stocks/tickers",
-                {"tickers": ",".join(chunk)},
+                {"tickers": ",".join(chunk), "include_otc": "true"},
             )
         if err or not payload:
             continue
-        _ingest_rows(out, payload.get("results") or payload.get("tickers"))
+        chunk_out: dict[str, tuple[float | None, float | None]] = {}
+        _ingest_rows(chunk_out, payload.get("results") or payload.get("tickers"))
         if isinstance(payload.get("ticker"), dict):
-            _ingest_rows(out, payload.get("ticker"))
+            _ingest_rows(chunk_out, payload.get("ticker"))
+        _store(chunk_out)
 
     missing = [s for s in symbols if s not in out]
     for ticker in missing:
         if on_cooldown():
             break
-        payload, err = _get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
-        if not err and payload:
-            _ingest_rows(out, payload.get("ticker") or payload.get("tickers") or payload.get("results"))
-        if ticker in out:
+        chunk_out = {}
+        for path in (
+            f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
+            f"/v2/snapshot/locale/us/markets/otc/tickers/{ticker}",
+        ):
+            payload, err = _get(path)
+            if err or not payload:
+                continue
+            _ingest_rows(
+                chunk_out,
+                payload.get("ticker") or payload.get("tickers") or payload.get("results"),
+            )
+            if chunk_out:
+                break
+        if chunk_out:
+            _store(chunk_out)
             continue
         price, change = _prev_bar_quote(ticker)
         if price is not None:
-            out[ticker] = (price, change)
+            _store({ticker: (price, change)})
     return out
 
 
