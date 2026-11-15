@@ -761,6 +761,14 @@ MARKET_CATALOG = {
                 "summary": "Medtronic makes medical devices such as pacemakers, insulin pumps, and surgical tools used by doctors and hospitals.",
             },
         },
+        {
+            "ticker": "CSTL",
+            "name": "Castle Biosciences",
+            "industry": "Healthcare",
+            "info": {
+                "summary": "Castle Biosciences makes diagnostic tests that help doctors understand skin cancers and other diseases so they can choose better treatments.",
+            },
+        },
         # Energy
         {
             "ticker": "XOM",

@@ -8,9 +8,14 @@ import {
 const MAX_CARDS = 5;
 const ROTATE_MS = 9000;
 
+/** Recently added catalog tickers — shown on the “New stocks” strip. */
+export const NEW_CATALOG_STOCKS = [
+  { ticker: "CSTL", name: "Castle Biosciences", industry: "Healthcare" },
+];
+
 /**
  * One highlight row for the stocks market — alternates between
- * “most popular in class” and “new stocks” (teacher-added extras).
+ * “most popular in class” and “new stocks” (catalog highlights + teacher extras).
  */
 export default function PopularStocksTicker({
   classId,
@@ -79,7 +84,22 @@ export default function PopularStocksTicker({
   }, [classId]);
 
   const popularTop = useMemo(() => popular.slice(0, MAX_CARDS), [popular]);
-  const newTop = useMemo(() => extras.slice(0, MAX_CARDS), [extras]);
+  const newTop = useMemo(() => {
+    const seen = new Set();
+    const merged = [];
+    for (const row of [...NEW_CATALOG_STOCKS, ...extras]) {
+      const ticker = String(row?.ticker || "").trim().toUpperCase();
+      if (!ticker || seen.has(ticker)) continue;
+      seen.add(ticker);
+      merged.push({
+        ticker,
+        name: String(row.name || ticker),
+        industry: row.industry || null,
+      });
+      if (merged.length >= MAX_CARDS) break;
+    }
+    return merged;
+  }, [extras]);
   const hasPopular = popularTop.length > 0;
   const hasNew = newTop.length > 0;
 

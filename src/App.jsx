@@ -81,8 +81,8 @@ const SHOW_CLASS_CHAT = false;
 const SHOW_HISTORY_QUIZ = false;
 /** STOCK Act disclosures strip under Popular Stocks — hide until ready for class. */
 const SHOW_CONGRESS_TRADES = false;
-/** “Most popular / New stocks” highlight strip on Stocks — hide until ready. */
-const SHOW_POPULAR_STOCKS = false;
+/** “Most popular / New stocks” highlight strip on Stocks. */
+const SHOW_POPULAR_STOCKS = true;
 /** World lending map on Bonds — classroom country rates. */
 const SHOW_WORLD_LENDING = true;
 /** Test: show a sample Nigeria interest-payment spin on every page load. */
