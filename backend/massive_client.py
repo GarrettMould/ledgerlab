@@ -171,6 +171,9 @@ def _ingest_rows(out: dict, rows) -> None:
             out[ticker] = (price, change)
 
 
+PREV_BAR_MAX_AGE_SECONDS = 10 * 24 * 60 * 60  # covers long holiday weekends
+
+
 def _prev_bar_quote(ticker: str) -> tuple[float | None, float | None]:
     payload, err = _get(f"/v2/aggs/ticker/{ticker}/prev", {"adjusted": "true"})
     if err or not payload:
@@ -180,6 +183,14 @@ def _prev_bar_quote(ticker: str) -> tuple[float | None, float | None]:
     if not isinstance(row, dict):
         row = payload.get("ticker") if isinstance(payload.get("ticker"), dict) else None
     if not isinstance(row, dict):
+        return None, None
+    # A recycled ticker can return a delisted company's last bar (ANT → 2006).
+    # Only trust bars from roughly the last week or so.
+    bar_ms = _num(row.get("t"))
+    if bar_ms is None:
+        return None, None
+    age_s = time.time() - bar_ms / 1000.0
+    if age_s > PREV_BAR_MAX_AGE_SECONDS:
         return None, None
     return _num(row.get("c")), None
 

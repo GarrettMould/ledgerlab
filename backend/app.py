@@ -482,6 +482,8 @@ MARKET_CATALOG = {
             "ticker": "ANT",
             "name": "Anthropic",
             "industry": "Technology",
+            # Shown until quote providers carry ANT (no trades on Yahoo yet, Nov 2026).
+            "fallback_price": 83.0,
             "info": {
                 "summary": (
                     "Anthropic is an artificial intelligence company that builds Claude, "
@@ -1805,6 +1807,12 @@ CATALOG_EQUITY_BY_TICKER = {
     item["ticker"]: item
     for item in MARKET_CATALOG.get("stocks", [])
     if isinstance(item, dict) and item.get("ticker") and item.get("price") is not None
+}
+# Equities with a price to show only until live providers return one.
+CATALOG_EQUITY_FALLBACK_BY_TICKER = {
+    item["ticker"]: item
+    for item in MARKET_CATALOG.get("stocks", [])
+    if isinstance(item, dict) and item.get("ticker") and item.get("fallback_price") is not None
 }
 
 _CURRENCY_YAHOO = {
@@ -3629,6 +3637,22 @@ def fetch_quotes_batch(
         if stale[0] is not None:
             out[symbol] = stale
             sources_used.add("stale")
+
+    # Catalog fallback marks (e.g. a new IPO before providers carry a price).
+    # Unlike a fixed catalog "price", live quotes win as soon as they exist.
+    for symbol in need:
+        if out[symbol][0] is not None:
+            continue
+        item = CATALOG_EQUITY_FALLBACK_BY_TICKER.get(symbol)
+        if not item:
+            continue
+        try:
+            px = float(item["fallback_price"])
+        except (TypeError, ValueError):
+            continue
+        if px > 0:
+            out[symbol] = (px, None)
+            sources_used.add("catalog-fallback")
 
     missing = [s for s in need if out[s][0] is None]
     if missing and not _last_quote_provider_error:
