@@ -478,6 +478,18 @@ MARKET_CATALOG = {
                 ),
             },
         },
+        {
+            "ticker": "ANT",
+            "name": "Anthropic",
+            "industry": "Technology",
+            "info": {
+                "summary": (
+                    "Anthropic is an artificial intelligence company that builds Claude, "
+                    "an AI assistant used by people and businesses for writing, research, "
+                    "and coding. Its Class A shares trade on Nasdaq as ANT."
+                ),
+            },
+        },
         # Consumer
         {
             "ticker": "AMZN",
@@ -1423,8 +1435,9 @@ MARKET_CATALOG = {
             "kind": "Precious metal",
             "yahoo": "SI=F",
             "finnhub": "SLV",
-            "scale": 1,
-            "proxy": "unit",
+            # SLV share ≈ 0.91 oz (expense drag) — ×1.10 ≈ SI=F $/oz (Nov 2026).
+            "scale": 1.10,
+            "proxy": "scaled",
             "unit_label": "troy oz",
             "info": {
                 "summary": "Silver is used in jewelry, electronics, and solar panels. Price here is dollars per troy ounce.",
@@ -1451,7 +1464,7 @@ MARKET_CATALOG = {
             "yahoo": "CL=F",
             # USO is not $/barrel; scale approximates WTI when Yahoo futures are blocked.
             "finnhub": "USO",
-            "scale": 0.65,
+            "scale": 0.61,  # CL=F / USO, re-measured Nov 2026 (was 0.65)
             "proxy": "approx",
             "unit_label": "barrel",
             "info": {
@@ -1464,7 +1477,9 @@ MARKET_CATALOG = {
             "kind": "Energy",
             "yahoo": "NG=F",
             "finnhub": "UNG",
-            "scale": 0.28,
+            # NG=F / UNG, re-measured Nov 2026. UNG lags spot gas over time (futures
+            # roll costs), so this drifts — live calibration corrects it when Yahoo works.
+            "scale": 0.316,
             "proxy": "approx",
             "unit_label": "MMBtu",
             "info": {

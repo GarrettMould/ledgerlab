@@ -10,6 +10,7 @@ const ROTATE_MS = 9000;
 
 /** Recently added catalog tickers — shown on the “New stocks” strip. */
 export const NEW_CATALOG_STOCKS = [
+  { ticker: "ANT", name: "Anthropic", industry: "Technology" },
   { ticker: "CSTL", name: "Castle Biosciences", industry: "Healthcare" },
 ];
 
